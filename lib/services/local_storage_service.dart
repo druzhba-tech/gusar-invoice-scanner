@@ -91,8 +91,8 @@ class LocalStorageService {
     final rows = await db.query('invoices', orderBy: 'created_at DESC');
 
     return rows.map((r) {
-      final itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
-          .map((item) => InvoiceItem.fromJson(item))
+      final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
+          .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
           .toList();
 
       final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
@@ -104,8 +104,8 @@ class LocalStorageService {
         supplierName: r['supplier_name'] as String,
         invoiceNumber: r['invoice_number'] as String,
         invoiceDate: DateTime.parse(r['invoice_date'] as String),
-        totalAmount: r['total_amount'] as double,
-        paidAmount: r['paid_amount'] as double,
+        totalAmount: (r['total_amount'] as num).toDouble(),
+        paidAmount: (r['paid_amount'] as num).toDouble(),
         items: itemsList,
         pagePhotos: photosList,
         status: DocumentStatus.values.firstWhere(
