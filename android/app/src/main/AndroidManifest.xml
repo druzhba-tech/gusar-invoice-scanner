@@ -25,7 +25,7 @@
     <application
         android:label="Gusar Scanner"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:usesCleartextTraffic="true">
         
         <activity
