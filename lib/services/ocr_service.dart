@@ -138,8 +138,8 @@ class OcrService {
       ));
     }
 
-    final totalAmount = (data['total_amount'] as num?)?.toDouble() ?? 
-        items.fold(0.0, (sum, i) => sum + i.totalPrice);
+    final double totalAmount = (data['total_amount'] as num?)?.toDouble() ?? 
+        items.fold<double>(0.0, (double sum, i) => sum + i.totalPrice);
 
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
