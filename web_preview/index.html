@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gusar Scanner — Интерактивный терминал приёмки (gusar.tj)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --primary: #10b981;
+      --primary-hover: #059669;
+      --accent: #0284c7;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+
+    body {
+      background-color: #090d16;
+      color: var(--text-main);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    /* Мобильный фрейм */
+    .phone-container {
+      width: 420px;
+      height: 860px;
+      background: var(--bg-dark);
+      border-radius: 40px;
+      border: 8px solid #2d3748;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 40px rgba(16, 185, 129, 0.15);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Верхний статус-бар */
+    .phone-header {
+      background: var(--card-bg);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      background: rgba(16, 185, 129, 0.2);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+      font-size: 18px;
+    }
+
+    .brand-info h1 { font-size: 14px; font-weight: 700; color: #fff; }
+    .brand-info span { font-size: 11px; color: var(--text-muted); }
+
+    /* Контент экранов */
+    .screen-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: none;
+    }
+
+    .screen-content.active { display: block; }
+
+    /* Карточки действий */
+    .action-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .action-btn {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.9), #059669);
+      border: none;
+      border-radius: 14px;
+      padding: 14px;
+      color: #fff;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 110px;
+      transition: transform 0.15s ease;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+    }
+
+    .action-btn.blue {
+      background: linear-gradient(135deg, rgba(2, 132, 199, 0.9), #0369a1);
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
+    }
+
+    .action-btn:active { transform: scale(0.97); }
+
+    .action-btn .icon {
+      font-size: 22px;
+      background: rgba(0,0,0,0.2);
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .action-btn .title { font-size: 13px; font-weight: 700; line-height: 1.2; }
+    .action-btn .subtitle { font-size: 10px; opacity: 0.8; }
+
+    /* Блок статистики */
+    .stats-card {
+      background: var(--card-bg);
+      border-radius: 14px;
+      padding: 14px;
+      border: 1px solid var(--card-border);
+      margin-bottom: 16px;
+    }
+
+    .stats-title { font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: 1px; margin-bottom: 10px; }
+
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .stat-item { text-align: left; }
+    .stat-item .val { font-size: 15px; font-weight: 700; color: #fff; }
+    .stat-item .lbl { font-size: 10px; color: var(--text-muted); }
+
+    /* Список позиций накладной */
+    .item-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid var(--card-border);
+      margin-bottom: 10px;
+    }
+
+    .item-card.has-error { border-color: var(--danger); }
+    .item-card.has-spike { border-color: var(--warning); }
+
+    .item-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .raw-name { font-size: 13px; font-weight: 700; color: #fff; }
+    .price-total { font-size: 13px; font-weight: 700; color: var(--primary); }
+
+    .matched-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--primary);
+      margin-bottom: 6px;
+    }
+
+    .unmatched-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--warning);
+      margin-bottom: 6px;
+    }
+
+    .item-details {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding-top: 6px;
+    }
+
+    .alert-tag {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--warning);
+    }
+
+    /* Нижняя навигация */
+    .phone-bottom-nav {
+      background: var(--card-bg);
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-around;
+      padding: 10px 0;
+    }
+
+    .nav-tab {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+
+    .nav-tab.active { color: var(--primary); font-weight: 700; }
+    .nav-tab .icon { font-size: 18px; }
+
+    /* Кнопки действий на экранах */
+    .primary-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 700;
+      width: 100%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .secondary-btn {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 10px;
+      font-size: 12px;
+      font-weight: 600;
+      width: 100%;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+
+    /* Холст подписи */
+    #sigCanvas {
+      background: #ffffff;
+      border-radius: 10px;
+      width: 100%;
+      height: 120px;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body>
+
+<div class="phone-container">
+  <!-- Верхний бар -->
+  <div class="phone-header">
+    <div class="brand">
+      <div class="brand-icon">📦</div>
+      <div class="brand-info">
+        <h1>GUSAR SCANNER</h1>
+        <span>Сеть gusar.tj • Магазин #1</span>
+      </div>
+    </div>
+    <div style="font-size: 11px; background: rgba(16,185,129,0.15); color: var(--primary); padding: 4px 8px; border-radius: 6px; font-weight: 700;">
+      ONLINE
+    </div>
+  </div>
+
+  <!-- ЭКРАН 1: ГЛАВНАЯ / ДАШБОРД -->
+  <div id="screen-home" class="screen-content active">
+    <div class="action-grid">
+      <button class="action-btn" onclick="showScreen('screen-scan')">
+        <div class="icon">📷</div>
+        <div>
+          <div class="title">Сканировать<br>накладную</div>
+          <div class="subtitle">Камера / Чек</div>
+        </div>
+      </button>
+
+      <button class="action-btn blue" onclick="simulateUpload()">
+        <div class="icon">📁</div>
+        <div>
+          <div class="title">Импорт из<br>WhatsApp</div>
+          <div class="subtitle">PDF / Фото</div>
+        </div>
+      </button>
+    </div>
+
+    <!-- Статистика -->
+    <div class="stats-card">
+      <div class="stats-title">ИТОГИ ПРИЁМКИ СЕГОДНЯ</div>
+      <div class="stats-row">
+        <div class="stat-item">
+          <div class="val" id="stat-docs">3 шт</div>
+          <div class="lbl">Накладных</div>
+        </div>
+        <div class="stat-item">
+          <div class="val" id="stat-items">54 поз.</div>
+          <div class="lbl">Товаров</div>
+        </div>
+        <div class="stat-item">
+          <div class="val" id="stat-sum">4 850 TJS</div>
+          <div class="lbl">Оприходовано</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Список накладных в работе -->
+    <div style="font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; justify-content: space-between;">
+      <span>Журнал документов</span>
+      <span style="color: var(--text-muted); font-size: 11px;">Активных: 2</span>
+    </div>
+
+    <div class="item-card" onclick="showScreen('screen-review')">
+      <div class="item-header">
+        <span class="raw-name">ООО "Coca-Cola Истиклол"</span>
+        <span class="price-total">1 240.00 TJS</span>
+      </div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
+        Накладная №452 от 05.10.2026 • 4 позиции
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <span style="background: rgba(245,158,11,0.2); color: var(--warning); padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
+          ⚠️ 1 новинка
+        </span>
+        <span style="background: rgba(239,68,68,0.2); color: var(--danger); padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
+          🚨 Скачок цены +12%
+        </span>
+      </div>
+    </div>
+
+    <div class="item-card">
+      <div class="item-header">
+        <span class="raw-name">ЧП Рахимов (Молочная ферма)</span>
+        <span class="price-total">850.00 TJS</span>
+      </div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
+        Накладная №12 от 05.10.2026 • 6 позиций
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <span style="background: rgba(16,185,129,0.2); color: var(--primary); padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
+          ✅ Оприходовано в остатки
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ЭКРАН 2: СКАНИРОВАНИЕ ДОКУМЕНТА -->
+  <div id="screen-scan" class="screen-content">
+    <div style="text-align: center; margin-bottom: 14px;">
+      <h2 style="font-size: 15px; font-weight: 700;">Скан накладной / чека</h2>
+      <p style="font-size: 11px; color: var(--text-muted);">Распознавание ТОРГ-12 и чеков (RU / TJ)</p>
+    </div>
+
+    <!-- Видоискатель -->
+    <div style="height: 280px; background: #000; border-radius: 16px; border: 2px dashed var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; overflow: hidden;">
+      <div style="font-size: 40px; margin-bottom: 10px;">📄</div>
+      <div style="font-size: 12px; color: #fff; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px;">
+        Поместите документ в рамку
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 10px; margin-top: 16px;">
+      <button class="primary-btn" onclick="startOcrProcess()">
+        ⚡ Распознать (Gemini AI Vision)
+      </button>
+    </div>
+
+    <button class="secondary-btn" onclick="showScreen('screen-home')">
+      Отмена
+    </button>
+  </div>
+
+  <!-- ЭКРАН 3: ПРЕДПРОСМОТР НАКЛАДНОЙ И ОПРИХОДОВАНИЕ -->
+  <div id="screen-review" class="screen-content">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <div>
+        <h2 style="font-size: 15px; font-weight: 700;">Накладная №452</h2>
+        <span style="font-size: 11px; color: var(--text-muted);">ООО "Coca-Cola Истиклол" • 05.10.2026</span>
+      </div>
+      <div style="text-align: right;">
+        <div style="font-size: 16px; font-weight: 800; color: var(--primary);">1 240.00 TJS</div>
+        <span style="font-size: 10px; color: var(--primary);">Сумма сходится</span>
+      </div>
+    </div>
+
+    <!-- Позиция 1 (Связана) -->
+    <div class="item-card">
+      <div class="item-header">
+        <span class="raw-name">Кока-Кола 1.5л пэт</span>
+        <span class="price-total">480.00 TJS</span>
+      </div>
+      <div class="matched-badge">✅ База: Напиток Coca-Cola Classic 1.5L</div>
+      <div class="item-details">
+        <span>40 шт × 12.00 TJS</span>
+        <span style="color: var(--primary);">Факт: 40/40 проверено</span>
+      </div>
+    </div>
+
+    <!-- Позиция 2 (Скачок цены) -->
+    <div class="item-card has-spike">
+      <div class="item-header">
+        <span class="raw-name">Фанта Апельсин 1л</span>
+        <span class="price-total">360.00 TJS</span>
+      </div>
+      <div class="matched-badge">✅ База: Напиток Fanta Orange 1000ml</div>
+      <div class="item-details">
+        <span>30 шт × 12.00 TJS</span>
+        <span class="alert-tag">⚠️ +14% (было 10.50 TJS)</span>
+      </div>
+    </div>
+
+    <!-- Позиция 3 (Требует привязки - Новинка) -->
+    <div class="item-card has-error" id="unmatched-card">
+      <div class="item-header">
+        <span class="raw-name">НАП.СПРАЙТ ЛИМОН 0.5Л СТ</span>
+        <span class="price-total">400.00 TJS</span>
+      </div>
+      <div class="unmatched-badge">⚠️ Не сопоставлен с базой магазина</div>
+      <div class="item-details">
+        <span>40 шт × 10.00 TJS</span>
+        <button onclick="showScreen('screen-matching')" style="background: var(--warning); border:none; color:#000; font-weight:700; border-radius:6px; padding:3px 8px; font-size:10px; cursor:pointer;">
+          Связать в 1 клик
+        </button>
+      </div>
+    </div>
+
+    <button class="primary-btn" onclick="submitToGusar()">
+      ⬆️ Зачислить в остатки gusar.tj
+    </button>
+    <button class="secondary-btn" onclick="showScreen('screen-discrepancy')">
+      📑 Акт расхождений / Брак
+    </button>
+  </div>
+
+  <!-- ЭКРАН 4: СВЯЗКА НОМЕНКЛАТУРЫ (SCAN-TO-BIND & AI) -->
+  <div id="screen-matching" class="screen-content">
+    <h2 style="font-size: 15px; font-weight: 700; margin-bottom: 6px;">Быстрая привязка</h2>
+    <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Позиция: "НАП.СПРАЙТ ЛИМОН 0.5Л СТ"</p>
+
+    <!-- Scan to Bind кнопка -->
+    <div style="background: rgba(2, 132, 199, 0.15); border: 1px dashed var(--accent); border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 14px;">
+      <div style="font-size: 20px; margin-bottom: 4px;">📲</div>
+      <div style="font-size: 12px; font-weight: 700; color: #fff;">Механика «Один пик с коробки»</div>
+      <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 8px;">Наведите сканер на штрихкод коробки на складе</div>
+      <button onclick="simulateScanToBind()" style="background: var(--accent); color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:11px; font-weight:700; cursor:pointer;">
+        «Пикнуть» штрихкод 5449000000996
+      </button>
+    </div>
+
+    <!-- AI Подсказки -->
+    <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;">AI ВАРИАНТЫ ИЗ ВАШЕЙ БАЗЫ:</div>
+
+    <div class="item-card" style="border-color: var(--primary);">
+      <div class="item-header">
+        <span class="raw-name">Напиток Sprite 500 мл стекло</span>
+        <span style="font-size: 11px; color: var(--primary); font-weight: 700;">98% совпадение</span>
+      </div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">
+        Штрихкод: 5449000000996 • Розница: 14.00 TJS
+      </div>
+      <button class="primary-btn" style="margin: 0; padding: 8px; font-size: 11px;" onclick="applyAiMatch()">
+        Привязать и запомнить навсегда
+      </button>
+    </div>
+  </div>
+
+  <!-- ЭКРАН 5: АКТ РАСХОЖДЕНИЙ С ПОДПИСЬЮ -->
+  <div id="screen-discrepancy" class="screen-content">
+    <h2 style="font-size: 15px; font-weight: 700; margin-bottom: 6px;">Акт расхождений и брака</h2>
+    <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">Накладная №452 • ООО "Coca-Cola Истиклол"</p>
+
+    <div style="background: rgba(239,68,68,0.15); border: 1px solid var(--danger); border-radius: 10px; padding: 10px; margin-bottom: 12px; font-size: 12px;">
+      ⚠️ Выявлен бой/брак: 2 бутылки "Фанта Апельсин" (разбиты при перевозке экспедитором).
+    </div>
+
+    <div style="font-size: 11px; font-weight: 700; margin-bottom: 6px; color: var(--text-muted);">
+      ЭЛЕКТРОННАЯ РОСПИСЬ ЭКСПЕДИТОРА НА ЭКРАНЕ:
+    </div>
+
+    <canvas id="sigCanvas"></canvas>
+    <button onclick="clearCanvas()" style="background:none; border:none; color:var(--danger); font-size:11px; cursor:pointer; margin-top:4px;">
+      Очистить подпись
+    </button>
+
+    <button class="primary-btn" onclick="generatePdfAct()">
+      📄 Сформировать PDF и отправить в WhatsApp
+    </button>
+    <button class="secondary-btn" onclick="showScreen('screen-review')">
+      Назад
+    </button>
+  </div>
+
+  <!-- ЭКРАН 6: НАСТРОЙКИ -->
+  <div id="screen-settings" class="screen-content">
+    <h2 style="font-size: 15px; font-weight: 700; margin-bottom: 12px;">Настройки терминала</h2>
+    <div style="margin-bottom: 10px;">
+      <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Сервер gusar.tj</label>
+      <input type="text" value="https://gusar.tj" style="width:100%; background:var(--card-bg); border:1px solid var(--card-border); color:#fff; padding:10px; border-radius:8px; font-size:12px;">
+    </div>
+    <div style="margin-bottom: 10px;">
+      <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Google Gemini Flash API Key</label>
+      <input type="password" value="••••••••••••••••••••••••" style="width:100%; background:var(--card-bg); border:1px solid var(--card-border); color:#fff; padding:10px; border-radius:8px; font-size:12px;">
+    </div>
+    <div style="margin-bottom: 14px;">
+      <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Склад / Магазин</label>
+      <select style="width:100%; background:var(--card-bg); border:1px solid var(--card-border); color:#fff; padding:10px; border-radius:8px; font-size:12px;">
+        <option>Магазин Gusar #1 (Центральный)</option>
+        <option>Магазин Gusar #2</option>
+        <option>Основной склад</option>
+      </select>
+    </div>
+    <button class="primary-btn" onclick="alert('Настройки сохранены!')">Сохранить</button>
+  </div>
+
+  <!-- Нижняя панель навигации -->
+  <div class="phone-bottom-nav">
+    <button class="nav-tab active" onclick="showScreen('screen-home', this)">
+      <span class="icon">🏠</span>
+      <span>Склад</span>
+    </button>
+    <button class="nav-tab" onclick="showScreen('screen-scan', this)">
+      <span class="icon">📷</span>
+      <span>Скан</span>
+    </button>
+    <button class="nav-tab" onclick="showScreen('screen-review', this)">
+      <span class="icon">📋</span>
+      <span>Накладная</span>
+    </button>
+    <button class="nav-tab" onclick="showScreen('screen-settings', this)">
+      <span class="icon">⚙️</span>
+      <span>Опции</span>
+    </button>
+  </div>
+</div>
+
+<script>
+  function showScreen(screenId, tabElement) {
+    document.querySelectorAll('.screen-content').forEach(s => s.classList.remove('active'));
+    document.getElementById(screenId).classList.add('active');
+
+    if (tabElement) {
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      tabElement.classList.add('active');
+    }
+  }
+
+  function simulateUpload() {
+    alert('Импорт файла из WhatsApp/Галереи...\nНакладная принята в обработку!');
+    showScreen('screen-review');
+  }
+
+  function startOcrProcess() {
+    alert('🧠 Gemini AI Vision анализирует накладную...\n- Поставщик: ООО Coca-Cola Истиклол\n- 4 позиции извлечены\n- Математика сошлась');
+    showScreen('screen-review');
+  }
+
+  function simulateScanToBind() {
+    alert('✅ Пик!\nШтрихкод 5449000000996 считан!\nТовар привязан к "Напиток Sprite 500 мл стекло" и сохранен в постоянный словарь сети Gusar!');
+    document.getElementById('unmatched-card').style.borderColor = 'var(--primary)';
+    document.getElementById('unmatched-card').querySelector('.unmatched-badge').className = 'matched-badge';
+    document.getElementById('unmatched-card').querySelector('.matched-badge').innerHTML = '✅ База: Напиток Sprite 500 мл стекло (Привязано)';
+    showScreen('screen-review');
+  }
+
+  function applyAiMatch() {
+    alert('✅ Привязано в 1 клик через семантический AI!\nСвязка сохранена в базу gusar.tj.');
+    document.getElementById('unmatched-card').style.borderColor = 'var(--primary)';
+    document.getElementById('unmatched-card').querySelector('.unmatched-badge').className = 'matched-badge';
+    document.getElementById('unmatched-card').querySelector('.matched-badge').innerHTML = '✅ База: Напиток Sprite 500 мл стекло (AI)';
+    showScreen('screen-review');
+  }
+
+  function submitToGusar() {
+    alert('🚀 УСПЕХ!\nНакладная №452 успешно проведена в системе gusar.tj!\nОстатки магазина #1 пополнены на 1 240 TJS.');
+    showScreen('screen-home');
+  }
+
+  // Рисование подписи
+  const canvas = document.getElementById('sigCanvas');
+  const ctx = canvas.getContext('2d');
+  let isDrawing = false;
+
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#000';
+  ctx.lineCap = 'round';
+
+  canvas.addEventListener('mousedown', (e) => { isDrawing = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); });
+  canvas.addEventListener('mousemove', (e) => { if (isDrawing) { ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); } });
+  window.addEventListener('mouseup', () => isDrawing = false);
+
+  canvas.addEventListener('touchstart', (e) => {
+    isDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    ctx.beginPath();
+    ctx.moveTo(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+  });
+  canvas.addEventListener('touchmove', (e) => {
+    if (isDrawing) {
+      const rect = canvas.getBoundingClientRect();
+      ctx.lineTo(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+      ctx.stroke();
+    }
+  });
+  window.addEventListener('touchend', () => isDrawing = false);
+
+  function clearCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function generatePdfAct() {
+    alert('📄 Официальный Акт расхождений (PDF) с цифровой подписью сформирован!\nОтправка в WhatsApp экспедитору...');
+    showScreen('screen-home');
+  }
+</script>
+
+</body>
+</html>
