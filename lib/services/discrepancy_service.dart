@@ -34,7 +34,7 @@ class DiscrepancyService {
         margin: const pw.EdgeInsets.all(32),
         build: (pw.Context context) {
           return pw.Column(
-            crossContent: pw.CrossAxisAlignment.start,
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               // Шапка документа
               pw.Row(
