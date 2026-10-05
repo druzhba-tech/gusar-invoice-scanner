@@ -144,7 +144,9 @@ class _HomeScreenState extends State<HomeScreen> {
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
-          children: [
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             // 1. Главные кнопки действия
             Row(
               children: [
@@ -230,6 +232,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
           ],
+          ),
         ),
       ),
     );
