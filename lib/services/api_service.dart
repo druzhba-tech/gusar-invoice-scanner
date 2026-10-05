@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/product.dart';
 import '../models/supplier.dart';
 import '../models/invoice_document.dart';
+import '../models/invoice_item.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
