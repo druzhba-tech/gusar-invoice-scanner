@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/invoice_document.dart';
+import '../models/invoice_item.dart';
 import '../models/product.dart';
 
 class LocalStorageService {
