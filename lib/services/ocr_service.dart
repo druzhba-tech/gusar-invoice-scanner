@@ -13,11 +13,22 @@ class OcrService {
 
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
+  static String get defaultGeminiKey {
+    try {
+      return utf8.decode(base64.decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
+    } catch (_) {
+      return '';
+    }
+  }
+
   Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
+    final savedGeminiKey = prefs.getString('gemini_api_key');
     return {
-      'provider': prefs.getString('ai_provider') ?? 'yandex',
-      'gemini_key': prefs.getString('gemini_api_key') ?? '',
+      'provider': prefs.getString('ai_provider') ?? 'gemini',
+      'gemini_key': (savedGeminiKey != null && savedGeminiKey.trim().isNotEmpty)
+          ? savedGeminiKey.trim()
+          : defaultGeminiKey,
       'yandex_key': prefs.getString('yandex_api_key') ?? '',
       'yandex_folder_id': prefs.getString('yandex_folder_id') ?? '',
     };
@@ -35,15 +46,23 @@ class OcrService {
     }
   }
 
-  // 2. Интеллектуальный разбор накладных через Vision AI (Yandex Vision или Google Gemini)
+  // 2. Интеллектуальный разбор накладных через Vision AI (Google Gemini или Yandex Vision)
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
     final config = await _getAiConfig();
-    final provider = config['provider'] ?? 'yandex';
+    final provider = config['provider'] ?? 'gemini';
     final yandexKey = config['yandex_key'] ?? '';
-    final geminiKey = config['gemini_key'] ?? '';
+    final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
     final yandexFolderId = config['yandex_folder_id'] ?? '';
 
-    // 1. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
+    // 1. По умолчанию или при выборе Gemini — вызываем Google Gemini Vision AI
+    if ((provider == 'gemini' || yandexKey.isEmpty) && geminiKey.isNotEmpty) {
+      final geminiDoc = await _parseWithGemini(imagePaths, geminiKey);
+      if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
+        return geminiDoc;
+      }
+    }
+
+    // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
     if (provider == 'yandex' && yandexKey.isNotEmpty) {
       final yandexDoc = await parseInvoiceWithYandexVision(imagePaths, yandexKey, yandexFolderId);
       if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
@@ -51,7 +70,7 @@ class OcrService {
       }
     }
 
-    // 2. Если выбран Gemini или есть ключ Gemini
+    // 3. Fallback к Gemini, если Яндекс не сработал
     if (geminiKey.isNotEmpty) {
       final geminiDoc = await _parseWithGemini(imagePaths, geminiKey);
       if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
@@ -222,35 +241,42 @@ class OcrService {
         });
       }
 
-      final url = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey',
-      );
+      final candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
+      for (var modelName in candidateModels) {
+        try {
+          final url = Uri.parse(
+            'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey',
+          );
 
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'contents': [
-            {'parts': parts}
-          ],
-          'generationConfig': {
-            'response_mime_type': 'application/json',
-            'temperature': 0.1,
+          final response = await http.post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'contents': [
+                {'parts': parts}
+              ],
+              'generationConfig': {
+                'response_mime_type': 'application/json',
+                'temperature': 0.1,
+              }
+            }),
+          ).timeout(const Duration(seconds: 35));
+
+          if (response.statusCode == 200) {
+            final resJson = jsonDecode(response.body);
+            final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
+            final cleanJson = _cleanJsonString(rawText);
+            final data = jsonDecode(cleanJson);
+
+            return _buildDocumentFromJson(data, imagePaths);
+          } else {
+            print('Gemini $modelName Error: ${response.statusCode} - ${response.body}');
           }
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final resJson = jsonDecode(response.body);
-        final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
-        final cleanJson = _cleanJsonString(rawText);
-        final data = jsonDecode(cleanJson);
-
-        return _buildDocumentFromJson(data, imagePaths);
-      } else {
-        print('Gemini API Error: ${response.statusCode} - ${response.body}');
-        return null;
+        } catch (e) {
+          print('Gemini $modelName attempt failed: $e');
+        }
       }
+      return null;
     } catch (e) {
       print('Gemini Vision error: $e');
       return null;

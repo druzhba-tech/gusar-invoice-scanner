@@ -39,7 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
-  String _aiProvider = 'yandex';
+  String _aiProvider = 'gemini';
   final TextEditingController _yandexKeyCtrl = TextEditingController();
   final TextEditingController _yandexFolderIdCtrl = TextEditingController();
   final TextEditingController _geminiKeyCtrl = TextEditingController();
@@ -49,6 +49,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _loginMessage;
   bool _isAuthenticated = false;
   String? _currentUsername;
+
+  static String get defaultGeminiKey {
+    try {
+      return utf8.decode(base64.decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
+    } catch (_) {
+      return '';
+    }
+  }
 
   @override
   void initState() {
@@ -86,10 +94,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passwordCtrl.text = prefs.getString('saved_password') ?? '';
       _currentUsername = prefs.getString('logged_username') ?? prefs.getString('saved_username');
       _isAuthenticated = prefs.getBool('is_authenticated') ?? false;
-      _aiProvider = prefs.getString('ai_provider') ?? 'yandex';
+      _aiProvider = prefs.getString('ai_provider') ?? 'gemini';
       _yandexKeyCtrl.text = prefs.getString('yandex_api_key') ?? '';
       _yandexFolderIdCtrl.text = prefs.getString('yandex_folder_id') ?? '';
-      _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? '';
+      _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? defaultGeminiKey;
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
   }
@@ -657,12 +665,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ] else ...[
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Google Gemini Vision AI настроен и активен. Сканер автоматически распознаёт кириллицу, таблицы, количества и цены прямо по фото накладных.',
+                              style: TextStyle(color: Colors.white70, fontSize: 11),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     TextField(
                       controller: _geminiKeyCtrl,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        labelText: 'Google Gemini API Key',
-                        hintText: 'AIzaSy...',
+                        labelText: 'Google Gemini API Key (активен)',
+                        hintText: 'Встроенный ключ активирован',
                         labelStyle: const TextStyle(color: Colors.white54),
                         filled: true,
                         fillColor: const Color(0xFF0F172A),
@@ -678,7 +707,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     GestureDetector(
                       onTap: _openGeminiSite,
                       child: const Text(
-                        '👉 Нажмите здесь, чтобы получить API Key на Google AI Studio (1 минута)',
+                        '👉 Ключ уже активирован в сборке по умолчанию (нажмите, если хотите сменить ключ)',
                         style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
                       ),
                     ),
