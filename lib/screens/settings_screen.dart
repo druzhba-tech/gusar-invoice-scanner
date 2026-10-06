@@ -76,20 +76,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1E293B),
-          title: Text('🚀 Доступно обновление ${update.version}', style: const TextStyle(color: Colors.white)),
-          content: Text(update.releaseNotes, style: const TextStyle(color: Colors.white70)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text('🚀 Доступно обновление v${update.version}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Вышла новая версия приложения Gusar Scanner. Вы можете установить её прямо сейчас или отложить на потом.',
+                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: const Color(0xFF0F172A), borderRadius: BorderRadius.circular(8)),
+                child: Text(
+                  update.releaseNotes.isEmpty ? 'Плановые оптимизации и исправления' : update.releaseNotes,
+                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
           actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Позже (я решу сам)', style: TextStyle(color: Colors.white54)),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-              onPressed: () => _updater.launchDownload(update.downloadUrl),
-              child: const Text('Скачать APK', style: TextStyle(color: Colors.white)),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _updater.launchDownload(update.downloadUrl);
+              },
+              child: const Text('Обновить сейчас', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
       );
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('У вас установлена последняя версия приложения!')),
+        const SnackBar(
+          content: Text('У вас установлена самая актуальная версия приложения!'),
+          backgroundColor: Color(0xFF10B981),
+        ),
       );
     }
   }
