@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 import '../models/product.dart';
+import '../models/supplier.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
 import '../services/matching_service.dart';
