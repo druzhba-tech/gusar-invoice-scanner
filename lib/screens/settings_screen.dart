@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +11,13 @@ class StoreOption {
   final String address;
 
   const StoreOption({required this.id, required this.name, required this.address});
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'address': address};
+  factory StoreOption.fromJson(Map<String, dynamic> json) => StoreOption(
+    id: json['id'] is int ? json['id'] as int : int.tryParse(json['id']?.toString() ?? '1') ?? 1,
+    name: json['name']?.toString() ?? 'Магазин gusar.tj',
+    address: json['address']?.toString() ?? json['description']?.toString() ?? 'База gusar.tj',
+  );
 }
 
 class SettingsScreen extends StatefulWidget {
@@ -23,16 +31,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final ApiService _api = ApiService();
   final UpdaterService _updater = UpdaterService();
 
-  final List<StoreOption> _availableStores = const [
-    StoreOption(id: 1, name: 'Магазин Gusar #1 (Центральный)', address: 'г. Душанбе, ул. Рудаки'),
-    StoreOption(id: 2, name: 'Магазин Gusar #2 (Сино)', address: 'г. Душанбе, р-н Сино'),
-    StoreOption(id: 3, name: 'Магазин Gusar #3 (Фирдавси)', address: 'г. Душанбе, р-н Фирдавси'),
-    StoreOption(id: 4, name: 'Магазин Gusar #4 (Шохмансур)', address: 'г. Душанбе, р-н Шохмансур'),
-    StoreOption(id: 5, name: 'Основной склад (РЦ)', address: 'Центральный распределительный склад'),
+  List<StoreOption> _availableStores = [
+    const StoreOption(
+      id: 1,
+      name: 'База gusar.tj (Основной склад)',
+      address: 'Центральная база товаров gusar.tj',
+    ),
+    const StoreOption(
+      id: 2,
+      name: 'Склад приёмки товаров (gusar.tj)',
+      address: 'Склад оприходования накладных',
+    ),
   ];
 
   int _selectedStoreId = 1;
-  String _selectedStoreName = 'Магазин Gusar #1 (Центральный)';
+  String _selectedStoreName = 'База gusar.tj (Основной склад)';
+  bool _isSyncingStores = false;
 
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
@@ -52,9 +66,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+
+    // Восстановление ранее сохранённого или загруженного списка складов
+    final savedStoresJson = prefs.getString('cached_stores_list');
+    if (savedStoresJson != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(savedStoresJson);
+        final list = decoded.map((e) => StoreOption.fromJson(e as Map<String, dynamic>)).toList();
+        if (list.isNotEmpty) {
+          _availableStores = list;
+        }
+      } catch (_) {}
+    }
+
+    int savedId = prefs.getInt('store_id') ?? 1;
+    String savedName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
+
+    // Очистка старых фиктивных названий (с улицами и районами)
+    if (savedName.contains('Центральный') ||
+        savedName.contains('Сино') ||
+        savedName.contains('Фирдавси') ||
+        savedName.contains('Шохмансур')) {
+      savedName = 'База gusar.tj (Основной склад)';
+      savedId = 1;
+      await prefs.setString('store_name', savedName);
+      await prefs.setInt('store_id', 1);
+    }
+
+    // Убедимся, что выбранный ID есть в списке, иначе добавляем
+    if (!_availableStores.any((s) => s.id == savedId)) {
+      _availableStores.insert(0, StoreOption(id: savedId, name: savedName, address: 'База gusar.tj'));
+    }
+
     setState(() {
-      _selectedStoreId = prefs.getInt('store_id') ?? 1;
-      _selectedStoreName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
+      _selectedStoreId = savedId;
+      _selectedStoreName = savedName;
       _usernameCtrl.text = prefs.getString('saved_username') ?? prefs.getString('logged_username') ?? '';
       _passwordCtrl.text = prefs.getString('saved_password') ?? '';
       _currentUsername = prefs.getString('logged_username') ?? prefs.getString('saved_username');
@@ -62,6 +108,138 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
+  }
+
+  Future<void> _fetchStoresFromGusar() async {
+    setState(() => _isSyncingStores = true);
+    final stores = await _api.fetchStores();
+    setState(() => _isSyncingStores = false);
+
+    if (stores.isNotEmpty) {
+      final newOptions = stores.map((s) => StoreOption(
+        id: s['id'] as int,
+        name: s['name'] as String,
+        address: s['address'] as String,
+      )).toList();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_stores_list', jsonEncode(newOptions.map((e) => e.toJson()).toList()));
+
+      setState(() {
+        _availableStores = newOptions;
+        if (!_availableStores.any((s) => s.id == _selectedStoreId)) {
+          _selectedStoreId = _availableStores.first.id;
+          _selectedStoreName = _availableStores.first.name;
+        }
+      });
+      await _api.updateStore(_selectedStoreId, _selectedStoreName);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Загружено подразделений с сервера gusar.tj: ${newOptions.length}'),
+            backgroundColor: const Color(0xFF10B981),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Используется единая база gusar.tj. Для подгрузки закрытых филиалов выполните вход в систему ниже.'),
+            backgroundColor: Color(0xFF3B82F6),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showCustomStoreDialog() {
+    final idCtrl = TextEditingController(text: _selectedStoreId.toString());
+    final nameCtrl = TextEditingController(text: _selectedStoreName);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.edit_note_rounded, color: Color(0xFF10B981)),
+            SizedBox(width: 8),
+            Text('Указать склад gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Укажите ID и название подразделения в базе gusar.tj:',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: idCtrl,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                labelText: 'ID склада / магазина',
+                labelStyle: const TextStyle(color: Colors.white60),
+                filled: true,
+                fillColor: const Color(0xFF0F172A),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                labelText: 'Название подразделения',
+                labelStyle: const TextStyle(color: Colors.white60),
+                filled: true,
+                fillColor: const Color(0xFF0F172A),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            onPressed: () async {
+              final newId = int.tryParse(idCtrl.text.trim()) ?? 1;
+              final newName = nameCtrl.text.trim().isEmpty ? 'База gusar.tj' : nameCtrl.text.trim();
+              Navigator.pop(ctx);
+
+              final newOption = StoreOption(id: newId, name: newName, address: 'База gusar.tj');
+              setState(() {
+                if (!_availableStores.any((s) => s.id == newId)) {
+                  _availableStores.add(newOption);
+                }
+                _selectedStoreId = newId;
+                _selectedStoreName = newName;
+              });
+              await _api.updateStore(newId, newName);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Выбрано: $newName (ID: $newId)'),
+                    backgroundColor: const Color(0xFF10B981),
+                  ),
+                );
+              }
+            },
+            child: const Text('Применить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _onStoreChanged(int? newId) {
@@ -107,6 +285,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (_isAuthenticated) {
         _currentUsername = user;
         _loginMessage = '✅ ${result['message']}';
+        // Пробуем подгрузить список подразделений с сервера
+        _fetchStoresFromGusar();
       } else {
         _loginMessage = '❌ ${result['message']}';
       }
@@ -115,7 +295,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_isAuthenticated && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Вход выполнен! Магазин: $_selectedStoreName'),
+          content: Text('Вход выполнен! Подразделение: $_selectedStoreName'),
           backgroundColor: const Color(0xFF10B981),
         ),
       );
@@ -205,12 +385,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ==========================================
-            // ШАГ 1: ВЫБОР МАГАЗИНА / СКЛАДА
+            // ШАГ 1: ВЫБОР СКЛАДА / МАГАЗИНА GUSAR.TJ
             // ==========================================
             _sectionHeader(
               stepNumber: '1',
-              title: 'ВЫБЕРИТЕ ВАШ МАГАЗИН / СКЛАД',
-              subtitle: 'Куда будут оприходоваться принимаемые накладные',
+              title: 'ВЫБЕРИТЕ СКЛАД / ТОЧКУ GUSAR.TJ',
+              subtitle: 'Куда будут оприходоваться принимаемые накладные в базе gusar.tj',
             ),
             const SizedBox(height: 10),
             Container(
@@ -222,7 +402,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<int>(
-                  value: _selectedStoreId,
+                  value: _availableStores.any((s) => s.id == _selectedStoreId)
+                      ? _selectedStoreId
+                      : _availableStores.first.id,
                   isExpanded: true,
                   dropdownColor: const Color(0xFF1E293B),
                   icon: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981)),
@@ -239,7 +421,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           Text(
                             store.address,
-                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            style: const TextStyle(color: Color(0xFF10B981), fontSize: 11),
                           ),
                         ],
                       ),
@@ -248,6 +430,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: _onStoreChanged,
                 ),
               ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isSyncingStores ? null : _fetchStoresFromGusar,
+                    icon: _isSyncingStores
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
+                          )
+                        : const Icon(Icons.sync_rounded, size: 16, color: Color(0xFF10B981)),
+                    label: Text(
+                      _isSyncingStores ? 'Загрузка...' : 'Синхронизировать с gusar.tj',
+                      style: const TextStyle(color: Color(0xFF10B981), fontSize: 12),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF10B981)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _showCustomStoreDialog,
+                  icon: const Icon(Icons.edit_note_rounded, size: 16, color: Colors.white70),
+                  label: const Text('Свой склад/ID', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                  ),
+                ),
+              ],
             ),
 
             const SizedBox(height: 24),
