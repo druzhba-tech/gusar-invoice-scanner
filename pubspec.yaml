@@ -1,7 +1,7 @@
 name: gusar_invoice_scanner
 description: "Мобильный терминал приёмки товаров по накладным и чекам для сети Gusar (gusar.tj)"
 publish_to: "none"
-version: 1.0.1+2
+version: 1.0.2+3
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
