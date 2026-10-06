@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../services/updater_service.dart';
+
+class StoreOption {
+  final int id;
+  final String name;
+  final String address;
+
+  const StoreOption({required this.id, required this.name, required this.address});
+}
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -14,14 +23,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final ApiService _api = ApiService();
   final UpdaterService _updater = UpdaterService();
 
-  final TextEditingController _urlCtrl = TextEditingController();
-  final TextEditingController _geminiKeyCtrl = TextEditingController();
+  final List<StoreOption> _availableStores = const [
+    StoreOption(id: 1, name: 'Магазин Gusar #1 (Центральный)', address: 'г. Душанбе, ул. Рудаки'),
+    StoreOption(id: 2, name: 'Магазин Gusar #2 (Сино)', address: 'г. Душанбе, р-н Сино'),
+    StoreOption(id: 3, name: 'Магазин Gusar #3 (Фирдавси)', address: 'г. Душанбе, р-н Фирдавси'),
+    StoreOption(id: 4, name: 'Магазин Gusar #4 (Шохмансур)', address: 'г. Душанбе, р-н Шохмансур'),
+    StoreOption(id: 5, name: 'Основной склад (РЦ)', address: 'Центральный распределительный склад'),
+  ];
+
+  int _selectedStoreId = 1;
+  String _selectedStoreName = 'Магазин Gusar #1 (Центральный)';
+
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
-  int _storeId = 1;
+  final TextEditingController _geminiKeyCtrl = TextEditingController();
+  final TextEditingController _urlCtrl = TextEditingController();
 
-  bool _isTestingConnection = false;
-  String? _connectionStatus;
+  bool _isLoggingIn = false;
+  String? _loginMessage;
+  bool _isAuthenticated = false;
+  String? _currentUsername;
 
   @override
   void initState() {
@@ -32,41 +53,101 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
+      _selectedStoreId = prefs.getInt('store_id') ?? 1;
+      _selectedStoreName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
+      _usernameCtrl.text = prefs.getString('logged_username') ?? '';
+      _currentUsername = prefs.getString('logged_username');
+      _isAuthenticated = prefs.getBool('is_authenticated') ?? false;
       _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? '';
-      _storeId = prefs.getInt('store_id') ?? 1;
+      _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
   }
 
-  void _saveSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('api_base_url', _urlCtrl.text.trim());
-    await prefs.setString('gemini_api_key', _geminiKeyCtrl.text.trim());
-    await prefs.setInt('store_id', _storeId);
+  void _onStoreChanged(int? newId) {
+    if (newId == null) return;
+    final store = _availableStores.firstWhere((s) => s.id == newId, orElse: () => _availableStores.first);
+    setState(() {
+      _selectedStoreId = store.id;
+      _selectedStoreName = store.name;
+    });
+    _api.updateStore(store.id, store.name);
+  }
 
+  Future<void> _handleLogin() async {
+    final user = _usernameCtrl.text.trim();
+    final pass = _passwordCtrl.text.trim();
+
+    if (user.isEmpty || pass.isEmpty) {
+      setState(() {
+        _loginMessage = '⚠️ Введите логин и пароль сотрудника.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoggingIn = true;
+      _loginMessage = null;
+    });
+
+    // Сохраняем выбранный магазин перед входом
+    await _api.updateStore(_selectedStoreId, _selectedStoreName);
+
+    final result = await _api.login(user, pass);
+
+    setState(() {
+      _isLoggingIn = false;
+      _isAuthenticated = result['success'] == true;
+      if (_isAuthenticated) {
+        _currentUsername = user;
+        _loginMessage = '✅ ${result['message']}';
+      } else {
+        _loginMessage = '❌ ${result['message']}';
+      }
+    });
+
+    if (_isAuthenticated && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Вход выполнен! Магазин: $_selectedStoreName'),
+          backgroundColor: const Color(0xFF10B981),
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleLogout() async {
+    await _api.logout();
+    setState(() {
+      _isAuthenticated = false;
+      _currentUsername = null;
+      _passwordCtrl.clear();
+      _loginMessage = 'Вы вышли из учетной записи.';
+    });
+  }
+
+  Future<void> _saveAllSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await _api.updateStore(_selectedStoreId, _selectedStoreName);
+    await prefs.setString('gemini_api_key', _geminiKeyCtrl.text.trim());
+    await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
-    _api.updateStoreId(_storeId);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настройки успешно сохранены!'), backgroundColor: Color(0xFF10B981)),
+        const SnackBar(
+          content: Text('Настройки успешно сохранены!'),
+          backgroundColor: Color(0xFF10B981),
+        ),
       );
       Navigator.pop(context);
     }
   }
 
-  void _testLogin() async {
-    setState(() {
-      _isTestingConnection = true;
-      _connectionStatus = null;
-    });
-
-    final success = await _api.login(_usernameCtrl.text.trim(), _passwordCtrl.text.trim());
-
-    setState(() {
-      _isTestingConnection = false;
-      _connectionStatus = success ? '✅ Связь с gusar.tj установлена!' : '❌ Ошибка авторизации. Проверьте логин и пароль.';
-    });
+  void _openGeminiSite() async {
+    final uri = Uri.parse('https://aistudio.google.com/app/apikey');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   void _checkApkUpdate() async {
@@ -128,146 +209,331 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Настройки системы', style: TextStyle(color: Colors.white, fontSize: 16)),
+        elevation: 0,
+        title: const Text('Настройки и авторизация', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. Блок API gusar.tj
-            const Text('СЕРВЕР УЧЕТА GUSAR (gusar.tj)',
-                style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _urlCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'URL сервера',
-                hintText: 'https://gusar.tj',
-                labelStyle: TextStyle(color: Colors.white54),
-                filled: true,
-                fillColor: Color(0xFF1E293B),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _usernameCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Логин сотрудника / телефон',
-                labelStyle: TextStyle(color: Colors.white54),
-                filled: true,
-                fillColor: Color(0xFF1E293B),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _passwordCtrl,
-              obscureText: true,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Пароль',
-                labelStyle: TextStyle(color: Colors.white54),
-                filled: true,
-                fillColor: Color(0xFF1E293B),
-              ),
+            // ==========================================
+            // ШАГ 1: ВЫБОР МАГАЗИНА / СКЛАДА
+            // ==========================================
+            _sectionHeader(
+              stepNumber: '1',
+              title: 'ВЫБЕРИТЕ ВАШ МАГАЗИН / СКЛАД',
+              subtitle: 'Куда будут оприходоваться принимаемые накладные',
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
-                  onPressed: _isTestingConnection ? null : _testLogin,
-                  child: _isTestingConnection
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Text('Проверить связь', style: TextStyle(color: Colors.white)),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5), width: 1.5),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  value: _selectedStoreId,
+                  isExpanded: true,
+                  dropdownColor: const Color(0xFF1E293B),
+                  icon: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981)),
+                  items: _availableStores.map((store) {
+                    return DropdownMenuItem<int>(
+                      value: store.id,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            store.name,
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          Text(
+                            store.address,
+                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: _onStoreChanged,
                 ),
-                const SizedBox(width: 12),
-                if (_connectionStatus != null)
-                  Expanded(
-                    child: Text(
-                      _connectionStatus!,
-                      style: TextStyle(
-                        color: _connectionStatus!.startsWith('✅') ? const Color(0xFF10B981) : Colors.redAccent,
-                        fontSize: 12,
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // ==========================================
+            // ШАГ 2: ВХОД СОТРУДНИКА (АВТОРИЗАЦИЯ)
+            // ==========================================
+            _sectionHeader(
+              stepNumber: '2',
+              title: 'ВХОД СОТРУДНИКА В СИСТЕМУ',
+              subtitle: 'Введите учетные данные для доступа к складу gusar.tj',
+            ),
+            const SizedBox(height: 12),
+
+            if (_isAuthenticated) ...[
+              // Карточка активной сессии
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF064E3B).withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF10B981)),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          backgroundColor: Color(0xFF10B981),
+                          radius: 20,
+                          child: Icon(Icons.check_rounded, color: Colors.white, size: 24),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Сотрудник: ${_currentUsername ?? "Товаровед"}',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                              Text('Привязан к: $_selectedStoreName',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white30),
+                        minimumSize: const Size(double.infinity, 38),
+                      ),
+                      icon: const Icon(Icons.logout_rounded, color: Colors.white70, size: 18),
+                      label: const Text('Сменить пользователя / Выйти', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                      onPressed: _handleLogout,
+                    ),
+                  ],
+                ),
+              ),
+            ] else ...[
+              // Форма логина и пароля
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _usernameCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Логин / Телефон сотрудника',
+                        hintText: 'admin или 992...',
+                        prefixIcon: Icon(Icons.person_outline_rounded, color: Colors.white54),
+                        labelStyle: TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _passwordCtrl,
+                      obscureText: true,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Пароль',
+                        prefixIcon: Icon(Icons.lock_outline_rounded, color: Colors.white54),
+                        labelStyle: TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 46),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: _isLoggingIn
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                          : const Icon(Icons.login_rounded, size: 20),
+                      label: Text(_isLoggingIn ? 'Подключение к gusar.tj...' : 'Войти в систему магазина',
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      onPressed: _isLoggingIn ? null : _handleLogin,
+                    ),
+                    if (_loginMessage != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        _loginMessage!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _loginMessage!.startsWith('✅') ? const Color(0xFF10B981) : Colors.redAccent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 24),
+
+            // ==========================================
+            // ШАГ 3: GEMINI VISION AI МОДУЛЬ
+            // ==========================================
+            _sectionHeader(
+              stepNumber: '3',
+              title: 'AI МОДУЛЬ РАСПОЗНАВАНИЯ ТАБЛИЦ',
+              subtitle: 'Google Gemini 1.5 Flash для быстрого чтения накладных',
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: _geminiKeyCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'Google Gemini API Key',
+                      hintText: 'AIzaSy...',
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      filled: true,
+                      fillColor: const Color(0xFF0F172A),
+                      border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF0284C7)),
+                        tooltip: 'Получить ключ на сайте Google',
+                        onPressed: _openGeminiSite,
                       ),
                     ),
                   ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            // 2. Блок Gemini Vision AI
-            const Text('AI МОДУЛЬ РАСПОЗНАВАНИЯ (GEMINI VISION)',
-                style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _geminiKeyCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Google Gemini API Key',
-                hintText: 'AIzaSy...',
-                labelStyle: TextStyle(color: Colors.white54),
-                filled: true,
-                fillColor: Color(0xFF1E293B),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: _openGeminiSite,
+                    child: const Text(
+                      '👉 Нажмите здесь, чтобы бесплатно получить API Key на Google AI Studio (1 минута)',
+                      style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
-            const Text('Используется для точного разбора таблиц, чеков и накладных на таджикском и русском языках.',
-                style: TextStyle(color: Colors.white38, fontSize: 11)),
 
             const SizedBox(height: 24),
 
-            // 3. Выбор магазина
-            const Text('ТЕКУЩИЙ МАГАЗИН / СКЛАД',
-                style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+            // ==========================================
+            // ШАГ 4: СЕРВЕР GUSAR И ОБНОВЛЕНИЯ
+            // ==========================================
+            _sectionHeader(
+              stepNumber: '4',
+              title: 'СЕРВЕР И ВЕРСИЯ ПРИЛОЖЕНИЯ',
+              subtitle: 'Связь с базой и проверка обновлений',
+            ),
             const SizedBox(height: 10),
-            DropdownButtonFormField<int>(
-              value: _storeId,
-              dropdownColor: const Color(0xFF1E293B),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(filled: true, fillColor: Color(0xFF1E293B)),
-              items: const [
-                DropdownMenuItem(value: 1, child: Text('Магазин Gusar #1 (Центральный)')),
-                DropdownMenuItem(value: 2, child: Text('Магазин Gusar #2')),
-                DropdownMenuItem(value: 3, child: Text('Основной склад')),
-              ],
-              onChanged: (val) {
-                if (val != null) setState(() => _storeId = val);
-              },
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _urlCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'URL сервера gusar.tj',
+                      hintText: 'https://gusar.tj',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      filled: true,
+                      fillColor: Color(0xFF0F172A),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white24),
+                      minimumSize: const Size(double.infinity, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.system_update_rounded, color: Colors.white70),
+                    label: const Text('Проверить обновление APK (v1.0.1)', style: TextStyle(color: Colors.white70)),
+                    onPressed: _checkApkUpdate,
+                  ),
+                ],
+              ),
             ),
 
             const SizedBox(height: 32),
 
-            // 4. Кнопка сохранения
+            // Кнопка сохранения всех настроек
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF10B981),
-                minimumSize: const Size(double.infinity, 48),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 50),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 3,
               ),
-              onPressed: _saveSettings,
-              child: const Text('Сохранить настройки', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              onPressed: _saveAllSettings,
+              child: const Text('Сохранить все настройки', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             ),
-
             const SizedBox(height: 20),
-
-            // 5. Проверка обновлений
-            OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.white24),
-                minimumSize: const Size(double.infinity, 44),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: const Icon(Icons.system_update_rounded, color: Colors.white70),
-              label: const Text('Проверить обновление APK на GitHub', style: TextStyle(color: Colors.white70)),
-              onPressed: _checkApkUpdate,
-            ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _sectionHeader({required String stepNumber, required String title, required String subtitle}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF10B981),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(stepNumber, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.5)),
+              const SizedBox(height: 2),
+              Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
