@@ -39,6 +39,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
+  String _aiProvider = 'yandex';
+  final TextEditingController _yandexKeyCtrl = TextEditingController();
+  final TextEditingController _yandexFolderIdCtrl = TextEditingController();
   final TextEditingController _geminiKeyCtrl = TextEditingController();
   final TextEditingController _urlCtrl = TextEditingController();
 
@@ -59,7 +62,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     int savedId = prefs.getInt('store_id') ?? _api.currentStoreId;
     String savedName = prefs.getString('store_name') ?? _api.currentStoreName;
 
-    // Строго изолируем только доступные магазины конкретного сотрудника
     if (_api.accessibleStores.isNotEmpty) {
       _availableStores = _api.accessibleStores.map((s) => StoreOption(
         id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1,
@@ -84,6 +86,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passwordCtrl.text = prefs.getString('saved_password') ?? '';
       _currentUsername = prefs.getString('logged_username') ?? prefs.getString('saved_username');
       _isAuthenticated = prefs.getBool('is_authenticated') ?? false;
+      _aiProvider = prefs.getString('ai_provider') ?? 'yandex';
+      _yandexKeyCtrl.text = prefs.getString('yandex_api_key') ?? '';
+      _yandexFolderIdCtrl.text = prefs.getString('yandex_folder_id') ?? '';
       _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
@@ -154,7 +159,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _isAuthenticated = result['success'] == true;
       if (_isAuthenticated) {
         _currentUsername = user;
-        _loginMessage = '✅ ${result['message']}';
+        _loginMessage = '✅ ${result["message"]}';
         _selectedStoreName = _api.currentStoreName;
         _selectedStoreId = _api.currentStoreId;
         _availableStores = _api.accessibleStores.map((s) => StoreOption(
@@ -163,7 +168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           address: s['address']?.toString() ?? 'Подразделение сотрудника',
         )).toList();
       } else {
-        _loginMessage = '❌ ${result['message']}';
+        _loginMessage = '❌ ${result["message"]}';
       }
     });
 
@@ -226,6 +231,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final pass = _passwordCtrl.text.trim();
 
     await _api.updateStore(_selectedStoreId, _selectedStoreName);
+    await prefs.setString('ai_provider', _aiProvider);
+    await prefs.setString('yandex_api_key', _yandexKeyCtrl.text.trim());
+    await prefs.setString('yandex_folder_id', _yandexFolderIdCtrl.text.trim());
     await prefs.setString('gemini_api_key', _geminiKeyCtrl.text.trim());
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
@@ -260,6 +268,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  void _openYandexSite() async {
+    final uri = Uri.parse('https://cloud.yandex.ru/services/vision');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
   void _checkApkUpdate() async {
     final update = await _updater.checkForUpdate();
     if (update != null && mounted) {
@@ -289,9 +304,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ==========================================
-            // ШАГ 1: ВАШ МАГАЗИН GUSAR.TJ
-            // ==========================================
             _sectionHeader(
               stepNumber: '1',
               title: 'ВАШ МАГАЗИН GUSAR.TJ',
@@ -300,7 +312,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 10),
 
             if (_availableStores.length <= 1) ...[
-              // Закреплённый магазин пользователя (остальные магазины скрыты)
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -364,7 +375,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ] else ...[
-              // Выбор из списка РАЗРЕШЕННЫХ магазинов сотрудника
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                 decoration: BoxDecoration(
@@ -407,9 +417,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 24),
 
-            // ==========================================
-            // ШАГ 2: ВХОД СОТРУДНИКА (АВТОРИЗАЦИЯ)
-            // ==========================================
             _sectionHeader(
               stepNumber: '2',
               title: 'УЧЕТНАЯ ЗАПИСЬ СОТРУДНИКА',
@@ -418,7 +425,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 12),
 
             if (_isAuthenticated) ...[
-              // Карточка активной сессии
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -465,7 +471,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ] else ...[
-              // Форма логина и пароля
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -537,12 +542,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 24),
 
             // ==========================================
-            // ШАГ 3: GEMINI VISION AI МОДУЛЬ
+            // ШАГ 3: AI МОДУЛЬ РАСПОЗНАВАНИЯ ТАБЛИЦ (КИРИЛЛИЦА)
             // ==========================================
             _sectionHeader(
               stepNumber: '3',
-              title: 'AI МОДУЛЬ РАСПОЗНАВАНИЯ ТАБЛИЦ',
-              subtitle: 'Google Gemini 1.5 Flash для быстрого чтения накладных',
+              title: 'AI МОДУЛЬ РАСПОЗНАВАНИЯ ТАБЛИЦ (КИРИЛЛИЦА)',
+              subtitle: 'Яндекс Vision (для РФ и РТ) или Google Gemini',
             ),
             const SizedBox(height: 10),
             Container(
@@ -555,40 +560,135 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  TextField(
-                    controller: _geminiKeyCtrl,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      labelText: 'Google Gemini API Key',
-                      hintText: 'AIzaSy...',
-                      labelStyle: const TextStyle(color: Colors.white54),
-                      filled: true,
-                      fillColor: const Color(0xFF0F172A),
-                      border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF0284C7)),
-                        tooltip: 'Получить ключ на сайте Google',
-                        onPressed: _openGeminiSite,
+                  const Text(
+                    'Сервис распознавания текста и таблиц:',
+                    style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(
+                            child: Text('🇷🇺 Яндекс AI', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                          ),
+                          selected: _aiProvider == 'yandex',
+                          selectedColor: const Color(0xFF10B981),
+                          backgroundColor: const Color(0xFF0F172A),
+                          labelStyle: TextStyle(color: _aiProvider == 'yandex' ? Colors.white : Colors.white60),
+                          onSelected: (val) => setState(() => _aiProvider = 'yandex'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(
+                            child: Text('🌐 Google Gemini', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                          ),
+                          selected: _aiProvider == 'gemini',
+                          selectedColor: const Color(0xFF10B981),
+                          backgroundColor: const Color(0xFF0F172A),
+                          labelStyle: TextStyle(color: _aiProvider == 'gemini' ? Colors.white : Colors.white60),
+                          onSelected: (val) => setState(() => _aiProvider = 'gemini'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+
+                  if (_aiProvider == 'yandex') ...[
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Яндекс Vision специально обучен на кириллице (русский и таджикский языки) и идеально распознаёт печатные таблицы накладных.',
+                              style: TextStyle(color: Colors.white70, fontSize: 11),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  GestureDetector(
-                    onTap: _openGeminiSite,
-                    child: const Text(
-                      '👉 Нажмите здесь, чтобы бесплатно получить API Key на Google AI Studio (1 минута)',
-                      style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _yandexKeyCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'Yandex Cloud API-Key',
+                        hintText: 'AQVN...',
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: const Color(0xFF0F172A),
+                        border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF0284C7)),
+                          tooltip: 'Открыть сайт Yandex Cloud',
+                          onPressed: _openYandexSite,
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _yandexFolderIdCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Folder ID каталога Yandex (необязательно)',
+                        hintText: 'b1g...',
+                        labelStyle: TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    GestureDetector(
+                      onTap: _openYandexSite,
+                      child: const Text(
+                        '👉 Нажмите здесь, чтобы получить ключ Yandex Cloud Vision (cloud.yandex.ru)',
+                        style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
+                      ),
+                    ),
+                  ] else ...[
+                    TextField(
+                      controller: _geminiKeyCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'Google Gemini API Key',
+                        hintText: 'AIzaSy...',
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: const Color(0xFF0F172A),
+                        border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF0284C7)),
+                          tooltip: 'Получить ключ на сайте Google',
+                          onPressed: _openGeminiSite,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    GestureDetector(
+                      onTap: _openGeminiSite,
+                      child: const Text(
+                        '👉 Нажмите здесь, чтобы получить API Key на Google AI Studio (1 минута)',
+                        style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
 
             const SizedBox(height: 24),
 
-            // ==========================================
-            // ШАГ 4: СЕРВЕР GUSAR И ОБНОВЛЕНИЯ
-            // ==========================================
             _sectionHeader(
               stepNumber: '4',
               title: 'СЕРВЕР И ВЕРСИЯ ПРИЛОЖЕНИЯ',
@@ -620,7 +720,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   FutureBuilder<String>(
                     future: _updater.getCurrentVersion(),
                     builder: (ctx, snapshot) {
-                      final ver = snapshot.data ?? '1.0.8';
+                      final ver = snapshot.data ?? '1.0.9';
                       return Column(
                         children: [
                           Row(
@@ -653,7 +753,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 32),
 
-            // Кнопка сохранения всех настроек
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF10B981),

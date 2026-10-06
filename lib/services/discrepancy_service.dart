@@ -140,7 +140,8 @@ class DiscrepancyService {
     );
 
     final outputDir = await getApplicationDocumentsDirectory();
-    final file = File('${outputDir.path}/act_discrepancy_${document.invoiceNumber}.pdf');
+    final safeInvoiceNumber = document.invoiceNumber.replaceAll(RegExp(r'[\\/:*?"<>|\s]'), '_');
+    final file = File('${outputDir.path}/act_discrepancy_${safeInvoiceNumber}_${DateTime.now().millisecondsSinceEpoch}.pdf');
     await file.writeAsBytes(await pdf.save());
     return file;
   }

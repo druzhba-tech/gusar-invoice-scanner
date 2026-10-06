@@ -13,9 +13,14 @@ class OcrService {
 
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
-  Future<String> _getGeminiApiKey() async {
+  Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('gemini_api_key') ?? '';
+    return {
+      'provider': prefs.getString('ai_provider') ?? 'yandex',
+      'gemini_key': prefs.getString('gemini_api_key') ?? '',
+      'yandex_key': prefs.getString('yandex_api_key') ?? '',
+      'yandex_folder_id': prefs.getString('yandex_folder_id') ?? '',
+    };
   }
 
   // 1. Быстрое локальное извлечение текста через Google ML Kit (Офлайн)
@@ -30,19 +35,136 @@ class OcrService {
     }
   }
 
-  // 2. Интеллектуальный разбор накладных и чеков через Vision AI (Gemini 1.5 Flash)
+  // 2. Интеллектуальный разбор накладных через Vision AI (Yandex Vision или Google Gemini)
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
-    final apiKey = await _getGeminiApiKey();
+    final config = await _getAiConfig();
+    final provider = config['provider'] ?? 'yandex';
+    final yandexKey = config['yandex_key'] ?? '';
+    final geminiKey = config['gemini_key'] ?? '';
+    final yandexFolderId = config['yandex_folder_id'] ?? '';
 
-    if (apiKey.isEmpty) {
-      // Если ключ не задан, используем эвристический локальный парсер
-      return _fallbackLocalParse(imagePaths);
+    // 1. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
+    if (provider == 'yandex' && yandexKey.isNotEmpty) {
+      final yandexDoc = await parseInvoiceWithYandexVision(imagePaths, yandexKey, yandexFolderId);
+      if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
+        return yandexDoc;
+      }
     }
 
+    // 2. Если выбран Gemini или есть ключ Gemini
+    if (geminiKey.isNotEmpty) {
+      final geminiDoc = await _parseWithGemini(imagePaths, geminiKey);
+      if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
+        return geminiDoc;
+      }
+    }
+
+    // 3. Если есть ключ Яндекс, но был выбран другой провайдер
+    if (yandexKey.isNotEmpty) {
+      final yandexDoc = await parseInvoiceWithYandexVision(imagePaths, yandexKey, yandexFolderId);
+      if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
+        return yandexDoc;
+      }
+    }
+
+    // 4. Если ключ не задан, используем эвристический локальный парсер
+    return _fallbackLocalParse(imagePaths);
+  }
+
+  // =========================================================================
+  // РАСПОЗНАВАНИЕ ЧЕРЕЗ YANDEX CLOUD VISION OCR (КИРИЛЛИЦА / РУС / ТАДЖ)
+  // =========================================================================
+  Future<InvoiceDocument?> parseInvoiceWithYandexVision(
+    List<String> imagePaths,
+    String apiKey, [
+    String? folderId,
+  ]) async {
+    try {
+      final List<String> extractedLines = [];
+
+      for (var path in imagePaths) {
+        final bytes = await File(path).readAsBytes();
+        final base64Image = base64Encode(bytes);
+
+        final url = Uri.parse('https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText');
+        final headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Api-Key $apiKey',
+          'x-data-logging-enabled': 'true',
+          if (folderId != null && folderId.trim().isNotEmpty) 'x-folder-id': folderId.trim(),
+        };
+
+        // Запрашиваем распознавание с моделью 'table' для кириллицы
+        final body = jsonEncode({
+          'mimeType': 'JPEG',
+          'languageCodes': ['ru', 'en'],
+          'model': 'table',
+          'content': base64Image,
+        });
+
+        final response = await http.post(url, headers: headers, body: body).timeout(const Duration(seconds: 25));
+
+        if (response.statusCode == 200) {
+          final resJson = jsonDecode(response.body);
+          final textAnnotation = resJson['result']?['textAnnotation'];
+          if (textAnnotation != null) {
+            // 1. Извлекаем ячейки таблиц, если Yandex структурировал таблицу
+            final tables = textAnnotation['tables'] as List<dynamic>? ?? [];
+            if (tables.isNotEmpty) {
+              for (var t in tables) {
+                final cells = t['cells'] as List<dynamic>? ?? [];
+                final Map<int, List<Map<String, dynamic>>> rowMap = {};
+                for (var c in cells) {
+                  final rIdx = (c['rowIndex'] as num?)?.toInt() ?? 0;
+                  rowMap.putIfAbsent(rIdx, () => []).add(c as Map<String, dynamic>);
+                }
+                final sortedRows = rowMap.keys.toList()..sort();
+                for (var r in sortedRows) {
+                  final cellsInRow = rowMap[r]!;
+                  cellsInRow.sort((a, b) => ((a['columnIndex'] as num?)?.toInt() ?? 0).compareTo((b['columnIndex'] as num?)?.toInt() ?? 0));
+                  final rowStr = cellsInRow.map((c) => c['text']?.toString().trim() ?? '').where((s) => s.isNotEmpty).join('  ');
+                  if (rowStr.isNotEmpty) {
+                    extractedLines.add(rowStr);
+                  }
+                }
+              }
+            }
+
+            // 2. Если табличная структура не выделилась, берём строки из текстовых блоков
+            if (extractedLines.isEmpty) {
+              final blocks = textAnnotation['blocks'] as List<dynamic>? ?? [];
+              for (var b in blocks) {
+                final lines = b['lines'] as List<dynamic>? ?? [];
+                for (var l in lines) {
+                  final text = l['text']?.toString().trim() ?? '';
+                  if (text.isNotEmpty) {
+                    extractedLines.add(text);
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          print('Yandex OCR API error: ${response.statusCode} - ${response.body}');
+        }
+      }
+
+      if (extractedLines.isNotEmpty) {
+        return _parseUnifiedLines(extractedLines, imagePaths);
+      }
+    } catch (e) {
+      print('Yandex Vision error: $e');
+    }
+    return null;
+  }
+
+  // =========================================================================
+  // РАСПОЗНАВАНИЕ ЧЕРЕЗ GOOGLE GEMINI 1.5 FLASH (VISION AI)
+  // =========================================================================
+  Future<InvoiceDocument?> _parseWithGemini(List<String> imagePaths, String apiKey) async {
     try {
       final List<Map<String, dynamic>> parts = [];
 
-      // Системный промпт с максимальной строгостью: ТОЛЬКО строки таблицы товаров, БЕЗ шапки, реквизитов и подвала
       final systemInstruction = '''
 Ты профессиональный финансовый аудитор и парсер товарных накладных (ТОРГ-12, счетов-фактур, товарных и кассовых чеков) розничной торговли в Таджикистане.
 Твоя задача — извлечь СТРОГО данные строк ТАБЛИЦЫ ТОВАРОВ и ничего лишнего. Поддерживай русский и таджикский языки (ҳ, ҷ, ӣ, ӯ, ғ, қ).
@@ -53,8 +175,8 @@ class OcrService {
    - Таблица заканчивается строкой "Итого" / "Всего к оплате" / "Ҳамагӣ" / "Ҷамъ".
 
 2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО извлекать в "items" данные ВНЕ таблицы товаров:
-   - ЗАПРЕЩЕНО извлекать реквизиты, названия магазинов, ИНН, расчетные счета, телефоны, адреса, ФИО экспедитора, водителя, коды документов (например: 'IPJWO87-001', 'VapnHa', 'TJS' и т.д.).
-   - ЗАПРЕЩЕНО превращать номера счетов, телефоны или артикулы в цены! (Никаких цен вроде 3104400.04 TJS!).
+   - ЗАПРЕЩЕНО извлекать реквизиты, названия магазинов, ИНН, расчетные счета, телефоны, адреса, ФИО экспедитора, водителя, коды документов.
+   - ЗАПРЕЩЕНО превращать номера счетов, телефоны или артикулы в цены!
    - ЗАПРЕЩЕНО извлекать текст подвала, подписи, штампы: "Отпустил", "Принял", "Сдал", "Бухгалтер", "Печать".
 
 3. ДЛЯ КАЖДОЙ ПОЗИЦИИ В "items":
@@ -68,7 +190,7 @@ class OcrService {
 4. ИТОГ НАКЛАДНОЙ ("total_amount"):
    - СТРОГО равен сумме строк товаров (значение из строки 'Итого' / 'Ҳамагӣ' в конце таблицы).
 
-Обязательно верни СТРОГО валидный JSON следующей структуры, без разметки и без лишних слов:
+Верни СТРОГО валидный JSON:
 {
   "supplier_name": "Название поставщика или 'Поставщик'",
   "invoice_number": "Номер накладной или 'б/н'",
@@ -89,7 +211,6 @@ class OcrService {
 
       parts.add({'text': systemInstruction});
 
-      // Добавляем все страницы документа в формате Base64
       for (var path in imagePaths) {
         final bytes = await File(path).readAsBytes();
         final base64Image = base64Encode(bytes);
@@ -128,11 +249,11 @@ class OcrService {
         return _buildDocumentFromJson(data, imagePaths);
       } else {
         print('Gemini API Error: ${response.statusCode} - ${response.body}');
-        return _fallbackLocalParse(imagePaths);
+        return null;
       }
     } catch (e) {
-      print('Vision AI error: $e');
-      return _fallbackLocalParse(imagePaths);
+      print('Gemini Vision error: $e');
+      return null;
     }
   }
 
@@ -174,8 +295,10 @@ class OcrService {
     );
   }
 
-  // Офлайн-парсинг со СТРОГОЙ изоляцией границ таблицы товаров (только между шапкой и итого)
-  Future<InvoiceDocument> _fallbackLocalParse(List<String> imagePaths) async {
+  // =========================================================================
+  // УНИФИЦИРОВАННЫЙ РАЗБОР СТРОК ТАБЛИЦЫ ДЛЯ КИРИЛЛИЦЫ
+  // =========================================================================
+  InvoiceDocument _parseUnifiedLines(List<String> unifiedRows, List<String> imagePaths) {
     final List<InvoiceItem> items = [];
     double detectedTotal = 0.0;
     String detectedSupplier = 'Поставщик';
@@ -200,12 +323,169 @@ class OcrService {
       'миқдор', 'цена', 'нарх', 'сумма', 'маблағ', 'ед.изм', 'ед. изм', '№ п/п'
     ];
 
+    int tableStartIndex = 0;
+    int tableEndIndex = unifiedRows.length;
+
+    // Поиск начала таблицы (строка заголовков)
+    for (int i = 0; i < unifiedRows.length; i++) {
+      final lower = unifiedRows[i].toLowerCase();
+      int headerHits = 0;
+      for (var keyword in tableHeaderKeywords) {
+        if (lower.contains(keyword)) headerHits++;
+      }
+      if (headerHits >= 2 || (headerHits >= 1 && (lower.contains('цена') || lower.contains('нарх') || lower.contains('кол-во') || lower.contains('миқдор')))) {
+        tableStartIndex = i + 1;
+        break;
+      }
+    }
+
+    // Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ)
+    for (int i = tableStartIndex; i < unifiedRows.length; i++) {
+      final lower = unifiedRows[i].toLowerCase();
+      bool isFooter = false;
+      for (var footerKey in footerKeywords) {
+        if (lower.contains(footerKey)) {
+          isFooter = true;
+          break;
+        }
+      }
+
+      if (isFooter) {
+        final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(unifiedRows[i]);
+        if (totalMatch != null) {
+          final val = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
+          if (val > 0 && val < 500000) {
+            detectedTotal = val;
+          }
+        }
+        tableEndIndex = i;
+        break;
+      }
+    }
+
+    // Извлечение метаданных документа (поставщик, номер, дата)
+    for (var row in unifiedRows) {
+      final lower = row.toLowerCase();
+      if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
+        final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
+        if (cleaned.length > 2 && detectedSupplier == 'Поставщик') {
+          detectedSupplier = cleaned;
+        }
+      }
+      if (lower.contains('накладная') || lower.contains('чек') || row.contains('№')) {
+        final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(row);
+        if (numMatch != null && detectedInvoiceNum == 'б/н') {
+          detectedInvoiceNum = numMatch.group(1)!;
+        }
+      }
+    }
+
+    // Разбор строк товаров строго внутри границ таблицы
+    for (int i = tableStartIndex; i < tableEndIndex; i++) {
+      final row = unifiedRows[i];
+      final lower = row.toLowerCase();
+
+      bool isNoise = false;
+      for (var stop in headerStopWords) {
+        if (lower.contains(stop)) {
+          isNoise = true;
+          break;
+        }
+      }
+      if (isNoise) continue;
+
+      if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
+        continue;
+      }
+
+      final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
+      if (numberMatches.length >= 2) {
+        final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
+        final firstNumIndex = lastNumbers.first.start;
+        var rawName = row.substring(0, firstNumIndex).trim();
+
+        rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
+        rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+
+        if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с')) {
+          continue;
+        }
+
+        double qty = 1.0;
+        double price = 0.0;
+        double total = 0.0;
+
+        if (lastNumbers.length == 3) {
+          final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+          final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+          final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+          if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
+            qty = n1;
+            price = n2;
+            total = n3;
+          } else if ((n1 * n3 - n2).abs() <= (n2 * 0.15 + 1.0)) {
+            qty = n1;
+            price = n3;
+            total = n2;
+          } else {
+            qty = n1;
+            price = n2;
+            total = (n3 > 0) ? n3 : (n1 * n2);
+          }
+        } else if (lastNumbers.length == 2) {
+          final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+          final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+          if (n1 > 0 && n1 <= 1000) {
+            qty = n1;
+            price = n2;
+            total = qty * price;
+          } else {
+            price = n1;
+            total = n2;
+            qty = (price > 0) ? (total / price) : 1.0;
+          }
+        }
+
+        if (price > 0.05 && price < 50000.0 && total > 0.05 && total < 500000.0 && qty > 0.001 && qty < 10000.0) {
+          items.add(InvoiceItem(
+            id: 'item_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
+            rawName: rawName,
+            quantity: qty,
+            buyPrice: price,
+            totalPrice: total > 0 ? total : (qty * price),
+          ));
+        }
+      }
+    }
+
+    final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
+    final double finalTotal = (detectedTotal > 0 && computedTotal > 0 && (detectedTotal - computedTotal).abs() / computedTotal < 0.25)
+        ? detectedTotal
+        : computedTotal;
+
+    return InvoiceDocument(
+      id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
+      storeId: 1,
+      supplierName: detectedSupplier,
+      invoiceNumber: detectedInvoiceNum,
+      invoiceDate: detectedDate,
+      totalAmount: finalTotal,
+      items: items,
+      pagePhotos: imagePaths,
+    );
+  }
+
+  // Офлайн-парсинг через локальный ML Kit
+  Future<InvoiceDocument> _fallbackLocalParse(List<String> imagePaths) async {
+    final List<String> unifiedRows = [];
+
     for (var path in imagePaths) {
       try {
         final inputImage = InputImage.fromFilePath(path);
         final recognizedText = await _mlKitRecognizer.processImage(inputImage);
 
-        // 1. Собираем все строки с их координатами boundingBox
         final List<_OcrLineBox> rawLines = [];
         for (var block in recognizedText.blocks) {
           for (var line in block.lines) {
@@ -223,10 +503,8 @@ class OcrService {
           }
         }
 
-        // 2. Сортируем строки по вертикали (сверху вниз)
         rawLines.sort((a, b) => a.top.compareTo(b.top));
 
-        // 3. Группируем элементы, находящиеся на одной горизонтальной линии (строке таблицы)
         final List<List<_OcrLineBox>> rows = [];
         for (var line in rawLines) {
           bool addedToExisting = false;
@@ -244,8 +522,6 @@ class OcrService {
           }
         }
 
-        // 4. В каждой строке сортируем слева направо и объединяем текст
-        final List<String> unifiedRows = [];
         for (var row in rows) {
           row.sort((a, b) => a.left.compareTo(b.left));
           final rowText = row.map((l) => l.text).join(' ').trim();
@@ -253,175 +529,12 @@ class OcrService {
             unifiedRows.add(rowText);
           }
         }
-
-        // 5. ОПРЕДЕЛЯЕМ ГРАНИЦЫ ТАБЛИЦЫ ТОВАРОВ:
-        // ТОВАРЫ НАХОДЯТСЯ СТРОГО МЕЖДУ tableStartIndex и tableEndIndex!
-        int tableStartIndex = 0;
-        int tableEndIndex = unifiedRows.length;
-
-        // Поиск начала таблицы (строка заголовков: Наименование, Кол-во, Цена, Сумма...)
-        for (int i = 0; i < unifiedRows.length; i++) {
-          final lower = unifiedRows[i].toLowerCase();
-          int headerHits = 0;
-          for (var keyword in tableHeaderKeywords) {
-            if (lower.contains(keyword)) headerHits++;
-          }
-          if (headerHits >= 2 || (headerHits >= 1 && (lower.contains('цена') || lower.contains('нарх') || lower.contains('кол-во') || lower.contains('миқдор')))) {
-            tableStartIndex = i + 1; // Товары начинаются со следующей строки
-            break;
-          }
-        }
-
-        // Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ / Отпустил...)
-        for (int i = tableStartIndex; i < unifiedRows.length; i++) {
-          final lower = unifiedRows[i].toLowerCase();
-          bool isFooter = false;
-          for (var footerKey in footerKeywords) {
-            if (lower.contains(footerKey)) {
-              isFooter = true;
-              break;
-            }
-          }
-
-          if (isFooter) {
-            // Извлекаем итоговую сумму из строки итого
-            final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(unifiedRows[i]);
-            if (totalMatch != null) {
-              final val = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
-              if (val > 0 && val < 500000) {
-                detectedTotal = val;
-              }
-            }
-            tableEndIndex = i; // Граница конца таблицы! Всё, что ниже — реквизиты, подписи, штампы
-            break;
-          }
-        }
-
-        // 6. Извлечение метаданных документа (поставщик, номер, дата) из всего текста
-        for (var row in unifiedRows) {
-          final lower = row.toLowerCase();
-          if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
-            final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
-            if (cleaned.length > 2 && detectedSupplier == 'Поставщик') {
-              detectedSupplier = cleaned;
-            }
-          }
-          if (lower.contains('накладная') || lower.contains('чек') || row.contains('№')) {
-            final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(row);
-            if (numMatch != null && detectedInvoiceNum == 'б/н') {
-              detectedInvoiceNum = numMatch.group(1)!;
-            }
-          }
-        }
-
-        // 7. СТРОГИЙ РАЗБОР СТРОК ТОВАРОВ — ТОЛЬКО ВНУТРИ ТАБЛИЦЫ [tableStartIndex .. tableEndIndex]
-        for (int i = tableStartIndex; i < tableEndIndex; i++) {
-          final row = unifiedRows[i];
-          final lower = row.toLowerCase();
-
-          // Исключаем шум и случайные служебные строки
-          bool isNoise = false;
-          for (var stop in headerStopWords) {
-            if (lower.contains(stop)) {
-              isNoise = true;
-              break;
-            }
-          }
-          if (isNoise) continue;
-
-          // Строка товара обязательно должна содержать текст (название), а не быть просто цифрами
-          if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
-            continue;
-          }
-
-          // Ищем числа в строке (Количество, Цена, Сумма)
-          final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
-          if (numberMatches.length >= 2) {
-            // Выделяем название товара (текст до чисел)
-            final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
-            final firstNumIndex = lastNumbers.first.start;
-            var rawName = row.substring(0, firstNumIndex).trim();
-
-            // Очищаем от номера строки "1.", "2 ", "1)"
-            rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
-            rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
-
-            // Исключаем мусорные однобуквенные или системные названия
-            if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с')) {
-              continue;
-            }
-
-            double qty = 1.0;
-            double price = 0.0;
-            double total = 0.0;
-
-            if (lastNumbers.length == 3) {
-              final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-              final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
-              final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
-
-              // Математическая проверка (qty * price ≈ total)
-              if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
-                qty = n1;
-                price = n2;
-                total = n3;
-              } else if ((n1 * n3 - n2).abs() <= (n2 * 0.15 + 1.0)) {
-                qty = n1;
-                price = n3;
-                total = n2;
-              } else {
-                qty = n1;
-                price = n2;
-                total = (n3 > 0) ? n3 : (n1 * n2);
-              }
-            } else if (lastNumbers.length == 2) {
-              final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-              final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
-
-              if (n1 > 0 && n1 <= 1000) {
-                qty = n1;
-                price = n2;
-                total = qty * price;
-              } else {
-                price = n1;
-                total = n2;
-                qty = (price > 0) ? (total / price) : 1.0;
-              }
-            }
-
-            // ЖЕСТКИЙ ФИЛЬТР ЗДРАВОГО СМЫСЛА:
-            // Отсекаем телефонные номера, банковские счета и мусор (вроде 3104400.04 TJS)
-            if (price > 0.05 && price < 50000.0 && total > 0.05 && total < 500000.0 && qty > 0.001 && qty < 10000.0) {
-              items.add(InvoiceItem(
-                id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
-                rawName: rawName,
-                quantity: qty,
-                buyPrice: price,
-                totalPrice: total > 0 ? total : (qty * price),
-              ));
-            }
-          }
-        }
       } catch (e) {
-        print('Smart offline parse error: $e');
+        print('Offline ML Kit error: $e');
       }
     }
 
-    final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
-    final double finalTotal = (detectedTotal > 0 && computedTotal > 0 && (detectedTotal - computedTotal).abs() / computedTotal < 0.25)
-        ? detectedTotal
-        : computedTotal;
-
-    return InvoiceDocument(
-      id: 'doc_local_${DateTime.now().millisecondsSinceEpoch}',
-      storeId: 1,
-      supplierName: detectedSupplier,
-      invoiceNumber: detectedInvoiceNum,
-      invoiceDate: detectedDate,
-      totalAmount: finalTotal,
-      items: items,
-      pagePhotos: imagePaths,
-    );
+    return _parseUnifiedLines(unifiedRows, imagePaths);
   }
 
   String _cleanJsonString(String text) {
@@ -458,7 +571,6 @@ class _OcrLineBox {
     required this.right,
   });
 
-  double get centerY => (top + bottom) / 2.0;
   double get height => (bottom - top).abs();
+  double get centerY => top + height / 2;
 }
-

@@ -146,4 +146,16 @@ class LocalStorageService {
     }
     return null;
   }
+
+  // 5. Удаление накладной из локальной базы
+  Future<void> deleteInvoice(String id) async {
+    final db = await database;
+    await db.delete('invoices', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // 6. Очистка всех локальных накладных
+  Future<void> clearAllInvoices() async {
+    final db = await database;
+    await db.delete('invoices');
+  }
 }

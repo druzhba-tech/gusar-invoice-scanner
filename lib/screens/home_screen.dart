@@ -435,7 +435,21 @@ class _HomeScreenState extends State<HomeScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text('Журнал накладных', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                Text('${_recentInvoices.length} документов', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                Row(
+                  children: [
+                    Text('${_recentInvoices.length} документов', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                    if (_recentInvoices.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent, size: 20),
+                        tooltip: 'Очистить весь журнал',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: _confirmClearAllInvoices,
+                      ),
+                    ],
+                  ],
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -456,10 +470,114 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
           ],
-          ),
         ),
       ),
+    ),
+  );
+}
+
+  Future<bool> _confirmDeleteInvoice(InvoiceDocument doc) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever_rounded, color: Colors.redAccent, size: 24),
+            SizedBox(width: 8),
+            Text('Удалить накладную?', style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Вы действительно хотите удалить накладную №${doc.invoiceNumber} поставщика "${doc.supplierName}" на сумму ${doc.totalAmount.toStringAsFixed(2)} TJS?',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Документ будет безвозвратно удален из локального журнала терминала.',
+              style: TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
     );
+
+    if (result == true) {
+      await _storage.deleteInvoice(doc.id);
+      await _loadData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Накладная №${doc.invoiceNumber} удалена из журнала'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _confirmClearAllInvoices() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 24),
+            SizedBox(width: 8),
+            Text('Очистить весь журнал?', style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Text(
+          'Удалить все ${_recentInvoices.length} накладных из журнала терминала? Это действие нельзя отменить.',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Очистить всё', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true) {
+      await _storage.clearAllInvoices();
+      await _loadData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Журнал накладных очищен'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
   }
 
   Widget _actionCard({
@@ -550,52 +668,85 @@ class _HomeScreenState extends State<HomeScreen> {
       statusText = 'Готов к отправке';
     }
 
-    return Card(
-      color: const Color(0xFF1E293B),
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => InvoiceReviewScreen(document: doc)),
-          ).then((_) => _loadData());
-        },
-        leading: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(Icons.description_outlined, color: statusColor),
+    return Dismissible(
+      key: Key(doc.id),
+      direction: DismissDirection.endToStart,
+      confirmDismiss: (_) => _confirmDeleteInvoice(doc),
+      background: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: Colors.redAccent.withOpacity(0.85),
+          borderRadius: BorderRadius.circular(12),
         ),
-        title: Text(
-          doc.supplierName,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            const SizedBox(height: 4),
-            Text('№${doc.invoiceNumber} от ${dateFormat.format(doc.invoiceDate)} • ${doc.items.length} поз.',
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(statusText, style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold)),
-            ),
+            Icon(Icons.delete_outline_rounded, color: Colors.white, size: 24),
+            SizedBox(width: 8),
+            Text('Удалить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ],
         ),
-        trailing: Text(
-          '${doc.totalAmount.toStringAsFixed(2)} TJS',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+      ),
+      child: Card(
+        color: const Color(0xFF1E293B),
+        margin: const EdgeInsets.only(bottom: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => InvoiceReviewScreen(document: doc)),
+            ).then((_) => _loadData());
+          },
+          leading: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(Icons.description_outlined, color: statusColor),
+          ),
+          title: Text(
+            doc.supplierName,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              Text('№${doc.invoiceNumber} от ${dateFormat.format(doc.invoiceDate)} • ${doc.items.length} поз.',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(statusText, style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${doc.totalAmount.toStringAsFixed(2)} TJS',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.delete_outline_rounded, color: Colors.white38, size: 20),
+                tooltip: 'Удалить накладную',
+                onPressed: () => _confirmDeleteInvoice(doc),
+              ),
+            ],
+          ),
         ),
       ),
     );
