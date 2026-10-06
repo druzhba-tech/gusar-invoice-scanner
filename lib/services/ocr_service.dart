@@ -155,10 +155,13 @@ class OcrService {
     );
   }
 
-  // Офлайн-парсинг строк на случай отсутствия интернета
+  // Офлайн-парсинг строк на случай отсутствия интернета или прямого фото документа
   Future<InvoiceDocument> _fallbackLocalParse(List<String> imagePaths) async {
     final List<InvoiceItem> items = [];
     double totalAmount = 0.0;
+    String detectedSupplier = 'Поставщик';
+    String detectedInvoiceNum = 'б/н';
+    DateTime detectedDate = DateTime.now();
 
     for (var path in imagePaths) {
       final text = await extractTextOffline(path);
@@ -167,6 +170,23 @@ class OcrService {
       for (var line in lines) {
         final trimmed = line.trim();
         if (trimmed.length < 3) continue;
+
+        // Поиск поставщика
+        if (trimmed.toLowerCase().contains('поставщик') || 
+            trimmed.toLowerCase().contains('чдмм') || 
+            trimmed.toLowerCase().contains('ооо') || 
+            trimmed.toLowerCase().contains('фурӯшанда')) {
+          detectedSupplier = trimmed.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
+          if (detectedSupplier.isEmpty) detectedSupplier = trimmed;
+        }
+
+        // Поиск номера накладной
+        if (trimmed.toLowerCase().contains('накладная') || trimmed.toLowerCase().contains('чек') || trimmed.contains('№')) {
+          final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(trimmed);
+          if (numMatch != null) {
+            detectedInvoiceNum = numMatch.group(1)!;
+          }
+        }
 
         // Поиск строк вида: "Название 10 шт 45.00 450.00"
         final regex = RegExp(r'(.+?)\s+([0-9]+(?:[\.,][0-9]+)?)\s*(?:шт|кг|кор|л)?\s+([0-9]+(?:[\.,][0-9]+)?)\s+([0-9]+(?:[\.,][0-9]+)?)');
@@ -190,13 +210,46 @@ class OcrService {
       }
     }
 
+    // Если строгий регекс не нашёл строки (например, другой формат чека), извлекаем непустые строки с ценами
+    if (items.isEmpty) {
+      for (var path in imagePaths) {
+        final text = await extractTextOffline(path);
+        final lines = text.split('\n');
+        for (var line in lines) {
+          final trimmed = line.trim();
+          if (trimmed.length > 3 && 
+              !trimmed.toLowerCase().contains('итого') && 
+              !trimmed.toLowerCase().contains('всего') &&
+              !trimmed.toLowerCase().contains('поставщик')) {
+            final numMatch = RegExp(r'([0-9]+(?:[\.,][0-9]+)?)$').firstMatch(trimmed);
+            double price = 0.0;
+            String name = trimmed;
+            if (numMatch != null) {
+              price = double.tryParse(numMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
+              name = trimmed.substring(0, numMatch.start).trim();
+            }
+            if (name.isNotEmpty && name.length > 2) {
+              items.add(InvoiceItem(
+                id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
+                rawName: name,
+                quantity: 1.0,
+                buyPrice: price,
+                totalPrice: price,
+              ));
+              totalAmount += price;
+            }
+          }
+        }
+      }
+    }
+
     return InvoiceDocument(
       id: 'doc_local_${DateTime.now().millisecondsSinceEpoch}',
       storeId: 1,
-      supplierName: 'Поставщик (Локальный OCR)',
-      invoiceNumber: 'б/н',
-      invoiceDate: DateTime.now(),
-      totalAmount: totalAmount,
+      supplierName: detectedSupplier,
+      invoiceNumber: detectedInvoiceNum,
+      invoiceDate: detectedDate,
+      totalAmount: totalAmount > 0 ? totalAmount : items.fold<double>(0.0, (s, i) => s + i.totalPrice),
       items: items,
       pagePhotos: imagePaths,
     );
