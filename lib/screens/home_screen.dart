@@ -23,7 +23,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<InvoiceDocument> _recentInvoices = [];
   bool _isLoading = true;
-  String? _storeName = 'Магазин Gusar #1';
+  String? _storeName = 'Магазин Gusar #1 (Центральный)';
+  String? _loggedUser;
+  bool _isAuthenticated = false;
   UpdateInfo? _availableUpdate;
 
   @override
@@ -35,9 +37,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
+    final prefs = await SharedPreferences.getInstance();
     final localDocs = await _storage.getLocalInvoices();
+    final storeName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
+    final loggedUser = prefs.getString('logged_username');
+    final isAuth = prefs.getBool('is_authenticated') ?? false;
+
     setState(() {
       _recentInvoices = localDocs;
+      _storeName = storeName;
+      _loggedUser = loggedUser;
+      _isAuthenticated = isAuth;
       _isLoading = false;
     });
 
@@ -285,12 +295,51 @@ class _HomeScreenState extends State<HomeScreen> {
               child: const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF10B981), size: 24),
             ),
             const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('GUSAR SCANNER', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                Text(_storeName!, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-              ],
+            Expanded(
+              child: InkWell(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  ).then((_) {
+                    _loadData();
+                    _checkUpdates();
+                  });
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Text('GUSAR SCANNER', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: _isAuthenticated ? const Color(0xFF10B981).withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _isAuthenticated ? (_loggedUser ?? 'Вход OK') : 'Войти ⚙️',
+                            style: TextStyle(
+                              color: _isAuthenticated ? const Color(0xFF10B981) : Colors.orangeAccent,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      _storeName ?? 'Магазин Gusar #1 (Центральный)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
