@@ -155,93 +155,181 @@ class OcrService {
     );
   }
 
-  // Офлайн-парсинг строк на случай отсутствия интернета или прямого фото документа
+  // Офлайн-парсинг с группировкой строк по Y-координатам (реконструкция таблицы) и умной фильтрацией мусора
   Future<InvoiceDocument> _fallbackLocalParse(List<String> imagePaths) async {
     final List<InvoiceItem> items = [];
-    double totalAmount = 0.0;
+    double detectedTotal = 0.0;
     String detectedSupplier = 'Поставщик';
     String detectedInvoiceNum = 'б/н';
     DateTime detectedDate = DateTime.now();
 
+    final stopWords = [
+      'инн', 'кпп', 'р/с', 'расчетный', 'бик', 'банк', 'огрн', 'мфо', 'корр', 
+      'адрес', 'тел.', 'телефон', 'факс', 'email', 'www.', 'сайт',
+      'поставщик', 'покупатель', 'грузополучатель', 'грузоотправитель', 
+      'накладная', 'счет-фактура', 'счёт-фактура', 'упд', 'товарный чек',
+      'итого', 'всего к оплате', 'всего наименований', 'сумма к оплате', 
+      'в том числе ндс', 'без ндс', 'ставка ндс',
+      'отпустил', 'получил', 'принял', 'сдал', 'бухгалтер', 'водитель', 
+      'доверенность', 'подпись', 'печать', 'м.п.', 'страница', 'стр.',
+      'наименование товара', 'ед.изм', 'ед. изм', 'кол-во', 'количество', 'цена с ндс'
+    ];
+
     for (var path in imagePaths) {
-      final text = await extractTextOffline(path);
-      final lines = text.split('\n');
+      try {
+        final inputImage = InputImage.fromFilePath(path);
+        final recognizedText = await _mlKitRecognizer.processImage(inputImage);
 
-      for (var line in lines) {
-        final trimmed = line.trim();
-        if (trimmed.length < 3) continue;
-
-        // Поиск поставщика
-        if (trimmed.toLowerCase().contains('поставщик') || 
-            trimmed.toLowerCase().contains('чдмм') || 
-            trimmed.toLowerCase().contains('ооо') || 
-            trimmed.toLowerCase().contains('фурӯшанда')) {
-          detectedSupplier = trimmed.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
-          if (detectedSupplier.isEmpty) detectedSupplier = trimmed;
-        }
-
-        // Поиск номера накладной
-        if (trimmed.toLowerCase().contains('накладная') || trimmed.toLowerCase().contains('чек') || trimmed.contains('№')) {
-          final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(trimmed);
-          if (numMatch != null) {
-            detectedInvoiceNum = numMatch.group(1)!;
-          }
-        }
-
-        // Поиск строк вида: "Название 10 шт 45.00 450.00"
-        final regex = RegExp(r'(.+?)\s+([0-9]+(?:[\.,][0-9]+)?)\s*(?:шт|кг|кор|л)?\s+([0-9]+(?:[\.,][0-9]+)?)\s+([0-9]+(?:[\.,][0-9]+)?)');
-        final match = regex.firstMatch(trimmed);
-
-        if (match != null) {
-          final name = match.group(1)!.trim();
-          final qty = double.tryParse(match.group(2)!.replaceAll(',', '.')) ?? 1.0;
-          final price = double.tryParse(match.group(3)!.replaceAll(',', '.')) ?? 0.0;
-          final total = double.tryParse(match.group(4)!.replaceAll(',', '.')) ?? (qty * price);
-
-          items.add(InvoiceItem(
-            id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
-            rawName: name,
-            quantity: qty,
-            buyPrice: price,
-            totalPrice: total,
-          ));
-          totalAmount += total;
-        }
-      }
-    }
-
-    // Если строгий регекс не нашёл строки (например, другой формат чека), извлекаем непустые строки с ценами
-    if (items.isEmpty) {
-      for (var path in imagePaths) {
-        final text = await extractTextOffline(path);
-        final lines = text.split('\n');
-        for (var line in lines) {
-          final trimmed = line.trim();
-          if (trimmed.length > 3 && 
-              !trimmed.toLowerCase().contains('итого') && 
-              !trimmed.toLowerCase().contains('всего') &&
-              !trimmed.toLowerCase().contains('поставщик')) {
-            final numMatch = RegExp(r'([0-9]+(?:[\.,][0-9]+)?)$').firstMatch(trimmed);
-            double price = 0.0;
-            String name = trimmed;
-            if (numMatch != null) {
-              price = double.tryParse(numMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
-              name = trimmed.substring(0, numMatch.start).trim();
-            }
-            if (name.isNotEmpty && name.length > 2) {
-              items.add(InvoiceItem(
-                id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
-                rawName: name,
-                quantity: 1.0,
-                buyPrice: price,
-                totalPrice: price,
+        // 1. Собираем все строки с их координатами boundingBox
+        final List<_OcrLineBox> rawLines = [];
+        for (var block in recognizedText.blocks) {
+          for (var line in block.lines) {
+            final t = line.text.trim();
+            if (t.isNotEmpty) {
+              final box = line.boundingBox;
+              rawLines.add(_OcrLineBox(
+                text: t,
+                top: box.top.toDouble(),
+                bottom: box.bottom.toDouble(),
+                left: box.left.toDouble(),
+                right: box.right.toDouble(),
               ));
-              totalAmount += price;
             }
           }
         }
+
+        // 2. Сортируем строки по вертикали (сверху вниз)
+        rawLines.sort((a, b) => a.top.compareTo(b.top));
+
+        // 3. Группируем элементы, находящиеся на одной горизонтальной линии (строке таблицы)
+        final List<List<_OcrLineBox>> rows = [];
+        for (var line in rawLines) {
+          bool addedToExisting = false;
+          for (var row in rows) {
+            final rowCenterY = row.map((l) => l.centerY).reduce((a, b) => a + b) / row.length;
+            final tolerance = (line.height * 0.75).clamp(12.0, 30.0);
+            if ((line.centerY - rowCenterY).abs() <= tolerance) {
+              row.add(line);
+              addedToExisting = true;
+              break;
+            }
+          }
+          if (!addedToExisting) {
+            rows.add([line]);
+          }
+        }
+
+        // 4. В каждой строке сортируем слева направо и объединяем текст
+        final List<String> unifiedRows = [];
+        for (var row in rows) {
+          row.sort((a, b) => a.left.compareTo(b.left));
+          final rowText = row.map((l) => l.text).join(' ').trim();
+          if (rowText.length >= 3) {
+            unifiedRows.add(rowText);
+          }
+        }
+
+        // 5. Разбираем реконструированные строки таблицы
+        for (var row in unifiedRows) {
+          final lower = row.toLowerCase();
+
+          // Извлечение поставщика из шапки
+          if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
+            final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
+            if (cleaned.length > 2 && detectedSupplier == 'Поставщик') {
+              detectedSupplier = cleaned;
+            }
+            continue;
+          }
+
+          // Извлечение номера накладной
+          if (lower.contains('накладная') || lower.contains('чек') || row.contains('№')) {
+            final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(row);
+            if (numMatch != null && detectedInvoiceNum == 'б/н') {
+              detectedInvoiceNum = numMatch.group(1)!;
+            }
+            if (lower.contains('накладная') || lower.contains('счет-фактура')) continue;
+          }
+
+          // Извлечение итоговой суммы накладной
+          if (lower.contains('итого') || lower.contains('всего к оплате') || lower.contains('всего:')) {
+            final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(row);
+            if (totalMatch != null) {
+              detectedTotal = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? detectedTotal;
+            }
+            continue;
+          }
+
+          // Пропускаем служебный шум и шапки таблиц
+          bool isNoise = false;
+          for (var stop in stopWords) {
+            if (lower.contains(stop)) {
+              isNoise = true;
+              break;
+            }
+          }
+          if (isNoise) continue;
+
+          // Ищем числа в конце строки (Количество, Цена, Сумма)
+          // Поддерживаем форматы: "Кола 0.5 10 шт 5.00 50.00" или "Печенье 20 4.50 90.00"
+          final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
+
+          if (numberMatches.length >= 2) {
+            // Берем последние 2 или 3 числа
+            final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
+            final firstNumIndex = lastNumbers.first.start;
+            var rawName = row.substring(0, firstNumIndex).trim();
+
+            // Удаляем порядковый номер в начале (например "1.", "2 ", "1)")
+            rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
+
+            // Удаляем мусорные знаки
+            rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+
+            if (rawName.length >= 2) {
+              double qty = 1.0;
+              double price = 0.0;
+              double total = 0.0;
+
+              if (lastNumbers.length == 3) {
+                qty = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+                price = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+                total = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? (qty * price);
+              } else if (lastNumbers.length == 2) {
+                final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+                final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+                // Если первое число похоже на количество (не слишком дробное и <= 1000)
+                if (n1 > 0 && n1 <= 1000 && (n1 == n1.roundToDouble() || n1 * 10 == (n1 * 10).roundToDouble())) {
+                  qty = n1;
+                  price = n2;
+                  total = qty * price;
+                } else {
+                  price = n1;
+                  total = n2;
+                  qty = price > 0 ? (total / price) : 1.0;
+                }
+              }
+
+              // Защита от мусора: отсекаем телефонные номера и ИНН (больше 100000)
+              if (price > 0 && price < 100000 && total < 1000000) {
+                items.add(InvoiceItem(
+                  id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
+                  rawName: rawName,
+                  quantity: qty > 0 ? qty : 1.0,
+                  buyPrice: price,
+                  totalPrice: total > 0 ? total : (qty * price),
+                ));
+              }
+            }
+          }
+        }
+      } catch (e) {
+        print('Smart offline parse error: $e');
       }
     }
+
+    final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
 
     return InvoiceDocument(
       id: 'doc_local_${DateTime.now().millisecondsSinceEpoch}',
@@ -249,7 +337,7 @@ class OcrService {
       supplierName: detectedSupplier,
       invoiceNumber: detectedInvoiceNum,
       invoiceDate: detectedDate,
-      totalAmount: totalAmount > 0 ? totalAmount : items.fold<double>(0.0, (s, i) => s + i.totalPrice),
+      totalAmount: detectedTotal > 0 ? detectedTotal : computedTotal,
       items: items,
       pagePhotos: imagePaths,
     );
@@ -273,3 +361,23 @@ class OcrService {
     _mlKitRecognizer.close();
   }
 }
+
+class _OcrLineBox {
+  final String text;
+  final double top;
+  final double bottom;
+  final double left;
+  final double right;
+
+  _OcrLineBox({
+    required this.text,
+    required this.top,
+    required this.bottom,
+    required this.left,
+    required this.right,
+  });
+
+  double get centerY => (top + bottom) / 2.0;
+  double get height => (bottom - top).abs();
+}
+
