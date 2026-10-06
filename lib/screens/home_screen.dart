@@ -188,84 +188,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openScanOptions() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1E293B),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Приёмка и сканирование', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54, size: 20),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ],
-              ),
-              const Text('Используйте камеру вашего телефона для максимальной чёткости:', style: TextStyle(color: Colors.white54, fontSize: 12)),
-              const SizedBox(height: 16),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: const Color(0xFF10B981).withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-                  child: const Icon(Icons.camera_alt_rounded, color: Color(0xFF10B981), size: 24),
-                ),
-                title: const Text('Камера телефона (штатное приложение)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text('Сфотографировать штатной камерой с автофокусом и вспышкой', style: TextStyle(color: Colors.white54, fontSize: 11)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const CameraScannerScreen(autoLaunchNativeCamera: true)),
-                  ).then((_) => _loadData());
-                },
-              ),
-              const Divider(color: Colors.white10),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: const Color(0xFF0284C7).withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-                  child: const Icon(Icons.photo_library_rounded, color: Color(0xFF0284C7), size: 24),
-                ),
-                title: const Text('Выбрать фото из Галереи', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text('Один или несколько готовых листов накладной', style: TextStyle(color: Colors.white54, fontSize: 11)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _pickFromGallery();
-                },
-              ),
-              const Divider(color: Colors.white10),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: const Color(0xFF8B5CF6).withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-                  child: const Icon(Icons.document_scanner_rounded, color: Color(0xFF8B5CF6), size: 24),
-                ),
-                title: const Text('Открыть центр оцифровки документов', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text('Просмотр страниц, добавление PDF и запуск AI', style: TextStyle(color: Colors.white54, fontSize: 11)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const CameraScannerScreen()),
-                  ).then((_) => _loadData());
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    // Сразу открываем камеру телефона без лишних всплывающих меню
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const CameraScannerScreen(autoLaunchNativeCamera: true)),
+    ).then((_) => _loadData());
   }
 
   void _pickFromGallery() async {
