@@ -89,6 +89,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   // 2. Выбор товара из базы gusar.tj через поиск
   void _showCatalogPicker(InvoiceItem item) {
     final searchCtrl = TextEditingController();
+    bool isSyncing = false;
     List<Product> searchResults = List.from(_api.cachedProducts);
 
     showModalBottomSheet(
@@ -97,110 +98,168 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       backgroundColor: const Color(0xFF1E293B),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (modalCtx) => StatefulBuilder(
-        builder: (ctx, setModalState) => Container(
-          height: MediaQuery.of(context).size.height * 0.8,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Поиск в базе gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
-                    onPressed: () => Navigator.pop(modalCtx),
-                  ),
-                ],
-              ),
-              Text(
-                'Привязка позиции: "${item.rawName}"',
-                style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: searchCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Поиск по названию или штрихкоду...',
-                  hintStyle: const TextStyle(color: Colors.white38),
-                  prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
-                  filled: true,
-                  fillColor: const Color(0xFF0F172A),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                ),
-                onChanged: (val) async {
-                  final results = await _api.searchProducts(val);
-                  setModalState(() {
-                    searchResults = results;
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: searchResults.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.inventory_2_outlined, color: Colors.white38, size: 48),
-                            const SizedBox(height: 8),
-                            const Text('Товары не найдены', style: TextStyle(color: Colors.white54)),
-                            const SizedBox(height: 12),
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-                              icon: const Icon(Icons.add, color: Colors.white),
-                              label: const Text('Создать такой товар в gusar.tj', style: TextStyle(color: Colors.white)),
-                              onPressed: () {
-                                Navigator.pop(modalCtx);
-                                _showCreateProductDialog(item, initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : item.rawName);
-                              },
-                            ),
-                          ],
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: searchResults.length,
-                        separatorBuilder: (_, __) => const Divider(color: Colors.white10),
-                        itemBuilder: (ctx, i) {
-                          final p = searchResults[i];
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            title: Text(p.name, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                            subtitle: Text(
-                              'Штрихкод: ${p.barcode ?? 'нет'} • Розница: ${p.price.toStringAsFixed(2)} TJS • Остаток: ${p.stockQuantity}',
-                              style: const TextStyle(color: Colors.white54, fontSize: 12),
-                            ),
-                            trailing: ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF38BDF8),
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                              ),
-                              onPressed: () async {
-                                _matcher.applyMatch(item, p, confidence: 1.0);
-                                await _matcher.saveAlias(_doc.supplierName, item.rawName, p.id);
-                                Navigator.pop(modalCtx);
-                                await _saveAndRefresh();
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('✅ Позиция привязана к "${p.name}"!'),
-                                      backgroundColor: const Color(0xFF10B981),
-                                    ),
-                                  );
-                                }
-                              },
-                              child: const Text('Связать', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
-                            ),
-                          );
-                        },
+        builder: (ctx, setModalState) {
+          // Если локальный каталог пуст, подгружаем онлайн с сервера gusar.tj
+          if (searchResults.isEmpty && !isSyncing) {
+            isSyncing = true;
+            _api.getProducts().then((prods) {
+              if (modalCtx.mounted) {
+                setModalState(() {
+                  isSyncing = false;
+                  searchResults = prods;
+                });
+              }
+            });
+          }
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.82,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Поиск в базе gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                          Text('Склад: ${_api.currentStoreName}', style: const TextStyle(color: Color(0xFF10B981), fontSize: 11)),
+                        ],
                       ),
-              ),
-            ],
-          ),
-        ),
+                    ),
+                    IconButton(
+                      icon: isSyncing
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)))
+                          : const Icon(Icons.sync_rounded, color: Color(0xFF10B981), size: 22),
+                      tooltip: 'Обновить товары с сервера gusar.tj',
+                      onPressed: isSyncing
+                          ? null
+                          : () async {
+                              setModalState(() => isSyncing = true);
+                              final prods = await _api.getProducts(forceRefresh: true);
+                              if (modalCtx.mounted) {
+                                setModalState(() {
+                                  isSyncing = false;
+                                  searchResults = prods;
+                                });
+                              }
+                            },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(modalCtx),
+                    ),
+                  ],
+                ),
+                Text(
+                  'Привязка позиции: "${item.rawName}"',
+                  style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: searchCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Поиск по названию или штрихкоду...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
+                    filled: true,
+                    fillColor: const Color(0xFF0F172A),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                  ),
+                  onChanged: (val) async {
+                    final results = await _api.searchProducts(val);
+                    setModalState(() {
+                      searchResults = results;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: isSyncing
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              CircularProgressIndicator(color: Color(0xFF10B981)),
+                              SizedBox(height: 12),
+                              Text('Загрузка товаров из базы gusar.tj...', style: TextStyle(color: Colors.white70)),
+                            ],
+                          ),
+                        )
+                      : searchResults.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.inventory_2_outlined, color: Colors.white38, size: 48),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    searchCtrl.text.isEmpty
+                                        ? 'В вашем магазине на gusar.tj пока нет товаров или требуется войти в систему (Настройки).'
+                                        : 'Товар "${searchCtrl.text}" не найден в базе магазина',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                                    icon: const Icon(Icons.add, color: Colors.white),
+                                    label: const Text('Создать такой товар в gusar.tj', style: TextStyle(color: Colors.white)),
+                                    onPressed: () {
+                                      Navigator.pop(modalCtx);
+                                      _showCreateProductDialog(item, initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : item.rawName);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: searchResults.length,
+                              separatorBuilder: (_, __) => const Divider(color: Colors.white10),
+                              itemBuilder: (ctx, i) {
+                                final p = searchResults[i];
+                                return ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  title: Text(p.name, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                                  subtitle: Text(
+                                    'Штрихкод: ${p.barcode ?? 'нет'} • Розница: ${p.price.toStringAsFixed(2)} TJS • Остаток: ${p.stockQuantity}',
+                                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                  ),
+                                  trailing: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF38BDF8),
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                    ),
+                                    onPressed: () async {
+                                      _matcher.applyMatch(item, p, confidence: 1.0);
+                                      await _matcher.saveAlias(_doc.supplierName, item.rawName, p.id);
+                                      Navigator.pop(modalCtx);
+                                      await _saveAndRefresh();
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('✅ Позиция привязана к "${p.name}"!'),
+                                            backgroundColor: const Color(0xFF10B981),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    child: const Text('Связать', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+                                  ),
+                                );
+                              },
+                            ),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
