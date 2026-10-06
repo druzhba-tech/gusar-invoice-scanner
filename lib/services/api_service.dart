@@ -189,40 +189,66 @@ class ApiService {
     Product(id: 110, storeId: 1, name: 'Шоколад Алёнка молочный 100г', barcode: '4600605001234', price: 12.00, costPrice: 9.20, stockQuantity: 65),
   ];
 
-  // 2. Получение актуального каталога товаров и остатков магазина
+  // 2. Получение актуального каталога товаров и остатков магазина из gusar.tj
   Future<List<Product>> getProducts({bool forceRefresh = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+
     if (!forceRefresh && _cachedProducts.isNotEmpty) {
       return _cachedProducts;
     }
 
     // Загрузка сохраненного кеша из SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
     final localJson = prefs.getString('cached_products_list');
-    if (localJson != null && _cachedProducts.isEmpty) {
+    if (localJson != null && _cachedProducts.isEmpty && !forceRefresh) {
       try {
         final list = jsonDecode(localJson) as List;
-        _cachedProducts = list.map((p) => Product.fromJson(p)).toList();
+        final prods = list.map((p) => Product.fromJson(p as Map<String, dynamic>)).toList();
+        if (prods.isNotEmpty) {
+          _cachedProducts = prods;
+          return _cachedProducts;
+        }
       } catch (_) {}
     }
 
     try {
-      final response = await _dio.get('/api/products').timeout(const Duration(seconds: 8));
-      if (response.statusCode == 200 && response.data is List) {
-        final serverProds = (response.data as List).map((p) => Product.fromJson(p)).toList();
-        if (serverProds.isNotEmpty) {
+      Response? response;
+      // Запрос списка товаров конкретного магазина из gusar.tj
+      try {
+        response = await _dio.get(
+          '/api/products',
+          queryParameters: {
+            'store_id': currentStoreId,
+            'limit': 1000,
+          },
+        ).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        response = await _dio.get('/api/products').timeout(const Duration(seconds: 10));
+      }
+
+      if (response != null && response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['products'] is List) {
+          items = raw['products'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        } else if (raw is Map && raw['items'] is List) {
+          items = raw['items'];
+        }
+
+        if (items.isNotEmpty) {
+          final serverProds = items.map((p) => Product.fromJson(p as Map<String, dynamic>)).toList();
           _cachedProducts = serverProds;
           await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
           return _cachedProducts;
         }
       }
     } catch (e) {
-      print('Fetch products from gusar.tj error (using offline cache): $e');
+      print('Fetch products from gusar.tj error: $e');
     }
 
-    if (_cachedProducts.isEmpty) {
-      _cachedProducts = List.from(_seedProducts);
-      await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
-    }
     return _cachedProducts;
   }
 
@@ -231,7 +257,7 @@ class ApiService {
     final clean = barcode.trim();
     if (clean.isEmpty) return null;
 
-    // 1. Поиск в памяти
+    // 1. Поиск в локальном каталоге
     if (_cachedProducts.isEmpty) {
       await getProducts();
     }
@@ -242,16 +268,30 @@ class ApiService {
       }
     }
 
-    // 2. Поиск через прямой запрос на сайт gusar.tj
+    // 2. Прямой онлайн-поиск в базе gusar.tj
     try {
-      final response = await _dio.get('/api/products', queryParameters: {'barcode': clean}).timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        if (response.data is List && (response.data as List).isNotEmpty) {
-          final prod = Product.fromJson((response.data as List).first);
+      final response = await _dio.get('/api/products', queryParameters: {
+        'barcode': clean,
+        'store_id': currentStoreId,
+      }).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['products'] is List) {
+          items = raw['products'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        } else if (raw is Map && raw['id'] != null) {
+          final prod = Product.fromJson(raw as Map<String, dynamic>);
           _addOrUpdateCachedProduct(prod);
           return prod;
-        } else if (response.data is Map<String, dynamic> && response.data['id'] != null) {
-          final prod = Product.fromJson(response.data);
+        }
+
+        if (items.isNotEmpty) {
+          final prod = Product.fromJson(items.first as Map<String, dynamic>);
           _addOrUpdateCachedProduct(prod);
           return prod;
         }
@@ -269,11 +309,43 @@ class ApiService {
     }
     if (clean.isEmpty) return _cachedProducts;
 
-    return _cachedProducts.where((p) {
+    final localMatches = _cachedProducts.where((p) {
       final nameMatches = p.name.toLowerCase().contains(clean);
       final barcodeMatches = p.barcode != null && p.barcode!.contains(clean);
       return nameMatches || barcodeMatches;
     }).toList();
+
+    if (localMatches.isNotEmpty) return localMatches;
+
+    // Если локально не найдено, пробуем онлайн поиск на сервере gusar.tj
+    try {
+      final response = await _dio.get('/api/products', queryParameters: {
+        'search': clean,
+        'store_id': currentStoreId,
+      }).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['products'] is List) {
+          items = raw['products'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        }
+
+        if (items.isNotEmpty) {
+          final serverMatches = items.map((p) => Product.fromJson(p as Map<String, dynamic>)).toList();
+          for (var p in serverMatches) {
+            _addOrUpdateCachedProduct(p);
+          }
+          return serverMatches;
+        }
+      }
+    } catch (_) {}
+
+    return [];
   }
 
   void _addOrUpdateCachedProduct(Product prod) async {
