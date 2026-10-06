@@ -178,51 +178,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _checkApkUpdate() async {
     final update = await _updater.checkForUpdate();
     if (update != null && mounted) {
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('🚀 Доступно обновление v${update.version}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Вышла новая версия приложения Gusar Scanner. Вы можете установить её прямо сейчас или отложить на потом.',
-                  style: TextStyle(color: Colors.white70, fontSize: 13)),
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: const Color(0xFF0F172A), borderRadius: BorderRadius.circular(8)),
-                child: Text(
-                  update.releaseNotes.isEmpty ? 'Плановые оптимизации и исправления' : update.releaseNotes,
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Позже (я решу сам)', style: TextStyle(color: Colors.white54)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-              onPressed: () {
-                Navigator.pop(ctx);
-                _updater.launchDownload(update.downloadUrl);
-              },
-              child: const Text('Обновить сейчас', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-          ],
-        ),
-      );
+      _updater.showDownloadAndInstallDialog(context, update);
     } else if (mounted) {
+      final currentVer = await _updater.getCurrentVersion();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('У вас установлена самая актуальная версия приложения!'),
-          backgroundColor: Color(0xFF10B981),
+        SnackBar(
+          content: Text('У вас установлена самая актуальная версия: v$currentVer!'),
+          backgroundColor: const Color(0xFF10B981),
         ),
       );
     }
@@ -498,15 +460,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white24),
-                      minimumSize: const Size(double.infinity, 44),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    icon: const Icon(Icons.system_update_rounded, color: Colors.white70),
-                    label: const Text('Проверить обновление APK (v1.0.1)', style: TextStyle(color: Colors.white70)),
-                    onPressed: _checkApkUpdate,
+                  FutureBuilder<String>(
+                    future: _updater.getCurrentVersion(),
+                    builder: (ctx, snapshot) {
+                      final ver = snapshot.data ?? '1.0.4';
+                      return Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.verified, color: Color(0xFF10B981), size: 16),
+                              const SizedBox(width: 6),
+                              Text('Установленная версия: v$ver', style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFF38BDF8), width: 1.5),
+                              foregroundColor: const Color(0xFF38BDF8),
+                              minimumSize: const Size(double.infinity, 44),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: const Icon(Icons.system_update_rounded),
+                            label: const Text('Проверить и скачать обновление APK', style: TextStyle(fontWeight: FontWeight.bold)),
+                            onPressed: _checkApkUpdate,
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ],
               ),
