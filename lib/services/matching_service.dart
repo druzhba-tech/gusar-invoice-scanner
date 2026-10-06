@@ -16,15 +16,28 @@ class MatchingService {
   factory MatchingService() => _instance;
   MatchingService._internal();
 
-  // Словарь синонимов: "supplier_name:raw_name" -> productId
+  // Словарь синонимов: "supplier::raw_name" -> productId и "global::raw_name" -> productId
   Map<String, int> _aliasDictionary = {};
+
+  // Обучаемая память исправлений пользователя: "rawOcrText" -> "cleanText"
+  Map<String, String> _correctionsDictionary = {};
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     final rawDict = prefs.getString('supplier_aliases_dict');
     if (rawDict != null) {
-      final decoded = jsonDecode(rawDict) as Map<String, dynamic>;
-      _aliasDictionary = decoded.map((k, v) => MapEntry(k, v as int));
+      try {
+        final decoded = jsonDecode(rawDict) as Map<String, dynamic>;
+        _aliasDictionary = decoded.map((k, v) => MapEntry(k, v as int));
+      } catch (_) {}
+    }
+
+    final rawCorrections = prefs.getString('ocr_corrections_dict');
+    if (rawCorrections != null) {
+      try {
+        final decoded = jsonDecode(rawCorrections) as Map<String, dynamic>;
+        _correctionsDictionary = decoded.map((k, v) => MapEntry(k, v.toString()));
+      } catch (_) {}
     }
   }
 
@@ -39,7 +52,6 @@ class MatchingService {
     required String supplierName,
     required List<Product> catalog,
   }) async {
-    // Ищем товар в базе по штрихкоду
     Product? matchedProduct;
     try {
       matchedProduct = catalog.firstWhere((p) => p.barcode == barcode.trim());
@@ -55,24 +67,91 @@ class MatchingService {
     return false;
   }
 
-  // 2. Сохранение связки в постоянный обучаемый словарь сети
+  // 2. Сохранение связки в постоянный обучаемый словарь сети (поставщик + глобально)
   Future<void> saveAlias(String supplierName, String rawName, int productId) async {
     final key = _buildKey(supplierName, rawName);
+    final globalKey = 'global::${_normalizeText(rawName)}';
+
     _aliasDictionary[key] = productId;
+    _aliasDictionary[globalKey] = productId;
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('supplier_aliases_dict', jsonEncode(_aliasDictionary));
   }
 
-  // 3. Автоматическое сопоставление документа
+  // 3. Запоминание ручного исправления названия (самообучение системы)
+  Future<void> learnCorrection({required String rawOcrText, required String cleanText}) async {
+    final normRaw = _normalizeText(rawOcrText);
+    final normClean = cleanText.trim();
+    if (normRaw.isNotEmpty && normClean.isNotEmpty && normRaw != _normalizeText(normClean)) {
+      _correctionsDictionary[normRaw] = normClean;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ocr_corrections_dict', jsonEncode(_correctionsDictionary));
+    }
+  }
+
+  String applyCorrection(String rawText) {
+    final norm = _normalizeText(rawText);
+    if (norm.isEmpty) return rawText;
+
+    // 1. Точное совпадение
+    if (_correctionsDictionary.containsKey(norm)) {
+      return _correctionsDictionary[norm]!;
+    }
+
+    // 2. Нечеткое совпадение по схожести токенов (защита от мелких дефектов сканирования)
+    final inputTokens = norm.split(' ').where((t) => t.length > 2).toSet();
+    if (inputTokens.isNotEmpty) {
+      for (var entry in _correctionsDictionary.entries) {
+        final keyTokens = entry.key.split(' ').where((t) => t.length > 2).toSet();
+        if (keyTokens.isNotEmpty) {
+          final intersect = inputTokens.intersection(keyTokens).length;
+          final union = inputTokens.union(keyTokens).length;
+          if (union > 0 && (intersect / union) >= 0.75) {
+            return entry.value;
+          }
+        }
+      }
+    }
+
+    return rawText;
+  }
+
+  int get rememberedAliasesCount => _aliasDictionary.length;
+  int get rememberedCorrectionsCount => _correctionsDictionary.length;
+
+  // 4. Автоматическое сопоставление накладной с каталогом товаров gusar.tj с приоритетом памяти
   void autoMatchDocument(InvoiceDocument doc, List<Product> catalog) {
     for (var item in doc.items) {
+      // Шаг 0: Применяем ранее выученные исправления названия
+      final correctedName = applyCorrection(item.rawName);
+      if (correctedName != item.rawName) {
+        item.rawName = correctedName;
+      }
+
       if (item.matchedProductId != null) continue;
 
-      // Шаг 1: Проверяем память истории (словарь синонимов)
+      // Шаг 1: Проверяем память истории (словарь привязок конкретного поставщика или глобальный)
       final key = _buildKey(doc.supplierName, item.rawName);
-      if (_aliasDictionary.containsKey(key)) {
-        final savedId = _aliasDictionary[key];
+      final globalKey = 'global::${_normalizeText(item.rawName)}';
+
+      int? savedId = _aliasDictionary[key] ?? _aliasDictionary[globalKey];
+
+      // Если прямого совпадения нет, ищем среди сохраненных связок по высокому сходству
+      if (savedId == null) {
+        final normItem = _normalizeText(item.rawName);
+        for (var entry in _aliasDictionary.entries) {
+          if (entry.key.startsWith('global::')) {
+            final savedNorm = entry.key.substring(8);
+            if (savedNorm.length > 3 && (normItem.contains(savedNorm) || savedNorm.contains(normItem))) {
+              savedId = entry.value;
+              break;
+            }
+          }
+        }
+      }
+
+      if (savedId != null) {
         try {
           final prod = catalog.firstWhere((p) => p.id == savedId);
           applyMatch(item, prod, confidence: 1.0);
@@ -91,7 +170,7 @@ class MatchingService {
 
       // Шаг 3: Нечеткое семантическое сопоставление (Fuzzy Match)
       final candidates = getCandidates(item.rawName, catalog, limit: 1);
-      if (candidates.isNotEmpty && candidates.first.score >= 0.82) {
+      if (candidates.isNotEmpty && candidates.first.score >= 0.75) {
         applyMatch(item, candidates.first.product, confidence: candidates.first.score);
       }
     }
@@ -107,7 +186,7 @@ class MatchingService {
     item.status = ItemStatus.matched;
   }
 
-  // 4. Получение ТОП-3 похожих кандидатов для 1-тап выбора
+  // 5. Получение ТОП-3 похожих кандидатов для 1-тап выбора
   List<MatchCandidate> getCandidates(String rawName, List<Product> catalog, {int limit = 3}) {
     final cleanInput = _normalizeText(rawName);
     final inputTokens = cleanInput.split(' ').where((t) => t.length > 1).toSet();
@@ -118,7 +197,6 @@ class MatchingService {
       final cleanTarget = _normalizeText(prod.name);
       final targetTokens = cleanTarget.split(' ').where((t) => t.length > 1).toSet();
 
-      // Jaccard similarity по токенам + учет вхождения
       if (inputTokens.isEmpty || targetTokens.isEmpty) continue;
 
       final intersection = inputTokens.intersection(targetTokens).length;

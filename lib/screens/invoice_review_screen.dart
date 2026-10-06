@@ -349,7 +349,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     );
   }
 
-  // 4. Редактирование строки накладной
+  // 4. Редактирование строки накладной с самообучением и живым подсчетом
   void _editItem(InvoiceItem item) {
     final nameCtrl = TextEditingController(text: item.rawName);
     final qtyCtrl = TextEditingController(text: item.quantity.toString());
@@ -358,52 +358,207 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
 
     showDialog(
       context: context,
-      builder: (dlgCtx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Редактировать строку', style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Наименование', labelStyle: TextStyle(color: Colors.white60))),
-            const SizedBox(height: 8),
-            Row(
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          final curQty = double.tryParse(qtyCtrl.text) ?? 0.0;
+          final curPrice = double.tryParse(priceCtrl.text) ?? 0.0;
+          final curTotal = curQty * curPrice;
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
               children: [
-                Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Кол-во', labelStyle: TextStyle(color: Colors.white60)))),
-                const SizedBox(width: 8),
-                SizedBox(width: 60, child: TextField(controller: unitCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Ед.', labelStyle: TextStyle(color: Colors.white60)))),
-                const SizedBox(width: 8),
-                Expanded(child: TextField(controller: priceCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Цена, TJS', labelStyle: TextStyle(color: Colors.white60)))),
+                Icon(Icons.edit_note_rounded, color: Color(0xFF38BDF8), size: 22),
+                SizedBox(width: 8),
+                Text('Редактировать товар', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
               ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dlgCtx), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF38BDF8)),
-            onPressed: () {
-              final newName = nameCtrl.text.trim();
-              final newQty = double.tryParse(qtyCtrl.text) ?? item.quantity;
-              final newPrice = double.tryParse(priceCtrl.text) ?? item.buyPrice;
-              if (newName.isNotEmpty) {
-                item.rawName = newName;
-                item.quantity = newQty;
-                item.unit = unitCtrl.text.trim();
-                item.buyPrice = newPrice;
-                item.totalPrice = newQty * newPrice;
-                _doc.totalAmount = _doc.items.fold(0.0, (sum, i) => sum + i.totalPrice);
-                Navigator.pop(dlgCtx);
-                _saveAndRefresh();
-              }
-            },
-            child: const Text('Сохранить', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-          ),
-        ],
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Наименование товара',
+                      labelStyle: TextStyle(color: Colors.white60),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: TextField(
+                          controller: qtyCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Кол-во',
+                            labelStyle: TextStyle(color: Colors.white60),
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setDlgState(() {}),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 70,
+                        child: TextField(
+                          controller: unitCtrl,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Ед.',
+                            labelStyle: TextStyle(color: Colors.white60),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 3,
+                        child: TextField(
+                          controller: priceCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Цена, TJS',
+                            labelStyle: TextStyle(color: Colors.white60),
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setDlgState(() {}),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Сумма строки:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                        Text(
+                          '${curTotal.toStringAsFixed(2)} TJS',
+                          style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Row(
+                    children: [
+                      Icon(Icons.psychology_outlined, color: Color(0xFF38BDF8), size: 14),
+                      SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Приложение запомнит это исправление для последующих накладных',
+                          style: TextStyle(color: Colors.white38, fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dlgCtx),
+                child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: const Icon(Icons.check, size: 18),
+                label: const Text('Сохранить и запомнить', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () async {
+                  final originalRawName = item.rawName;
+                  final newName = nameCtrl.text.trim();
+                  final newQty = double.tryParse(qtyCtrl.text) ?? item.quantity;
+                  final newPrice = double.tryParse(priceCtrl.text) ?? item.buyPrice;
+
+                  if (newName.isNotEmpty) {
+                    item.rawName = newName;
+                    item.quantity = newQty;
+                    item.unit = unitCtrl.text.trim().isNotEmpty ? unitCtrl.text.trim() : item.unit;
+                    item.buyPrice = newPrice;
+                    item.totalPrice = newQty * newPrice;
+
+                    // 1. Пересчет точного итога накладной
+                    _doc.totalAmount = _doc.items.fold(0.0, (sum, i) => sum + i.totalPrice);
+
+                    // 2. Обучение памяти OCR исправлений
+                    if (originalRawName != newName) {
+                      await _matcher.learnCorrection(rawOcrText: originalRawName, cleanText: newName);
+                    }
+
+                    // 3. Если товар уже привязан к карточке gusar.tj, запоминаем новое название в синонимы
+                    if (item.matchedProductId != null) {
+                      await _matcher.saveAlias(_doc.supplierName, newName, item.matchedProductId!);
+                    } else {
+                      // Если не привязан, пробуем сопоставить по выученным правилам
+                      _matcher.autoMatchDocument(_doc, _api.cachedProducts);
+                    }
+
+                    Navigator.pop(dlgCtx);
+                    await _saveAndRefresh();
+
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('✅ Товар обновлен! Приложение запомнило исправление.'),
+                          backgroundColor: Color(0xFF10B981),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  // 5. Удаление строки накладной (например, лишний распознанный мусор)
+  // 5. Отвязка товара от номенклатуры gusar.tj
+  void _unlinkItem(InvoiceItem item) async {
+    setState(() {
+      item.matchedProductId = null;
+      item.matchedProductName = null;
+      item.matchedBarcode = null;
+      item.currentRetailPrice = null;
+      item.lastBuyPrice = null;
+      item.matchConfidence = 0.0;
+      item.status = ItemStatus.unmatched;
+    });
+    await _saveAndRefresh();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Связка отменена. Позиция свободна для выбора.'),
+          backgroundColor: Color(0xFF334155),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  // 6. Удаление строки накладной (например, лишний распознанный мусор)
   void _deleteItem(InvoiceItem item, int index) {
     showDialog(
       context: context,
@@ -649,6 +804,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                           _chip('${_doc.matchedCount}/${_doc.items.length} привязано',
                               _doc.unmatchedCount == 0 ? const Color(0xFF10B981) : const Color(0xFFF59E0B)),
                           const SizedBox(width: 8),
+                          if (_matcher.rememberedAliasesCount > 0 || _matcher.rememberedCorrectionsCount > 0) ...[
+                            _chip('🧠 Память: ${_matcher.rememberedAliasesCount + _matcher.rememberedCorrectionsCount} правил', const Color(0xFF38BDF8)),
+                            const SizedBox(width: 8),
+                          ],
                           if (_doc.priceSpikeCount > 0) ...[
                             _chip('${_doc.priceSpikeCount} скачок цен', Colors.deepOrange),
                             const SizedBox(width: 8),
@@ -828,10 +987,25 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.edit_outlined, color: Colors.white54, size: 18),
+                  icon: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF38BDF8).withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.edit, size: 12, color: Color(0xFF38BDF8)),
+                        SizedBox(width: 4),
+                        Text('Изменить', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
-                  tooltip: 'Редактировать',
+                  tooltip: 'Редактировать товар',
                   onPressed: () => _editItem(item),
                 ),
                 const SizedBox(width: 8),
@@ -913,12 +1087,19 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     label: const Text('Пикнуть другой', style: TextStyle(color: Colors.white60, fontSize: 11)),
                     onPressed: () => _scanAndBindItem(item),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   TextButton.icon(
                     style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4)),
                     icon: const Icon(Icons.swap_horiz, size: 14, color: Color(0xFF38BDF8)),
                     label: const Text('Сменить', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
                     onPressed: () => _showCatalogPicker(item),
+                  ),
+                  const SizedBox(width: 6),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4)),
+                    icon: const Icon(Icons.link_off, size: 14, color: Colors.redAccent),
+                    label: const Text('Отвязать', style: TextStyle(color: Colors.redAccent, fontSize: 11)),
+                    onPressed: () => _unlinkItem(item),
                   ),
                 ],
               ),

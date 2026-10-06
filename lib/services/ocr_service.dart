@@ -42,27 +42,46 @@ class OcrService {
     try {
       final List<Map<String, dynamic>> parts = [];
 
-      // Системный промпт с учетом специфики торговли в РТ (русский + таджикский языки)
+      // Системный промпт с максимальной строгостью: ТОЛЬКО строки таблицы товаров, БЕЗ шапки, реквизитов и подвала
       final systemInstruction = '''
-Ты профессиональный финансовый парсер накладных (ТОРГ-12, счетов-фактур, кассовых и товарных чеков) розничной торговли в Таджикистане.
-Твоя задача — внимательно изучить изображение накладной/чека и извлечь структурированную таблицу товаров.
-Поддерживай названия товаров и поставщиков на русском и таджикском языках (ҳ, ҷ, ӣ, ӯ, ғ, қ).
-Если накладная на нескольких фото — объедини все позиции в один общий список без дублей.
+Ты профессиональный финансовый аудитор и парсер товарных накладных (ТОРГ-12, счетов-фактур, товарных и кассовых чеков) розничной торговли в Таджикистане.
+Твоя задача — извлечь СТРОГО данные строк ТАБЛИЦЫ ТОВАРОВ и ничего лишнего. Поддерживай русский и таджикский языки (ҳ, ҷ, ӣ, ӯ, ғ, қ).
 
-Обязательно верни СТРОГО валидный JSON следующей структуры, без лишних слов:
+КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА ИЗОЛЯЦИИ ТАБЛИЦЫ:
+1. ТОВАРЫ ВСЕГДА НАХОДЯТСЯ СТРОГО В ТАБЛИЦЕ ТОВАРОВ:
+   - Таблица начинается после строки заголовков: "№", "Наименование", "Кол-во", "Цена", "Сумма" (или таджикские аналоги: "Номи мол", "Миқдор", "Нарх", "Маблағ").
+   - Таблица заканчивается строкой "Итого" / "Всего к оплате" / "Ҳамагӣ" / "Ҷамъ".
+
+2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО извлекать в "items" данные ВНЕ таблицы товаров:
+   - ЗАПРЕЩЕНО извлекать реквизиты, названия магазинов, ИНН, расчетные счета, телефоны, адреса, ФИО экспедитора, водителя, коды документов (например: 'IPJWO87-001', 'VapnHa', 'TJS' и т.д.).
+   - ЗАПРЕЩЕНО превращать номера счетов, телефоны или артикулы в цены! (Никаких цен вроде 3104400.04 TJS!).
+   - ЗАПРЕЩЕНО извлекать текст подвала, подписи, штампы: "Отпустил", "Принял", "Сдал", "Бухгалтер", "Печать".
+
+3. ДЛЯ КАЖДОЙ ПОЗИЦИИ В "items":
+   - "name": Чистое название реального товара из строки таблицы.
+   - "quantity": Количество (число, например 5.0).
+   - "unit": Единица измерения (шт, кг, уп, л, кор и т.д., по умолчанию "шт").
+   - "buy_price": Реальная закупочная цена за 1 шт в сомони (TJS).
+   - "total_price": Сумма по строке (quantity * buy_price).
+   - "barcode": Штрихкод (если напечатан в таблице, иначе null).
+
+4. ИТОГ НАКЛАДНОЙ ("total_amount"):
+   - СТРОГО равен сумме строк товаров (значение из строки 'Итого' / 'Ҳамагӣ' в конце таблицы).
+
+Обязательно верни СТРОГО валидный JSON следующей структуры, без разметки и без лишних слов:
 {
-  "supplier_name": "Название поставщика или 'Неизвестный поставщик'",
+  "supplier_name": "Название поставщика или 'Поставщик'",
   "invoice_number": "Номер накладной или 'б/н'",
   "invoice_date": "YYYY-MM-DD",
   "total_amount": 1250.50,
   "items": [
     {
-      "name": "Точное наименование товара из накладной",
+      "name": "Наименование товара",
       "quantity": 10.0,
       "unit": "шт",
       "buy_price": 45.0,
       "total_price": 450.0,
-      "barcode": "4820000000000" // если указан в строке, иначе null
+      "barcode": null
     }
   ]
 }
@@ -155,7 +174,7 @@ class OcrService {
     );
   }
 
-  // Офлайн-парсинг с группировкой строк по Y-координатам (реконструкция таблицы) и умной фильтрацией мусора
+  // Офлайн-парсинг со СТРОГОЙ изоляцией границ таблицы товаров (только между шапкой и итого)
   Future<InvoiceDocument> _fallbackLocalParse(List<String> imagePaths) async {
     final List<InvoiceItem> items = [];
     double detectedTotal = 0.0;
@@ -163,16 +182,22 @@ class OcrService {
     String detectedInvoiceNum = 'б/н';
     DateTime detectedDate = DateTime.now();
 
-    final stopWords = [
+    final headerStopWords = [
       'инн', 'кпп', 'р/с', 'расчетный', 'бик', 'банк', 'огрн', 'мфо', 'корр', 
       'адрес', 'тел.', 'телефон', 'факс', 'email', 'www.', 'сайт',
       'поставщик', 'покупатель', 'грузополучатель', 'грузоотправитель', 
-      'накладная', 'счет-фактура', 'счёт-фактура', 'упд', 'товарный чек',
-      'итого', 'всего к оплате', 'всего наименований', 'сумма к оплате', 
-      'в том числе ндс', 'без ндс', 'ставка ндс',
-      'отпустил', 'получил', 'принял', 'сдал', 'бухгалтер', 'водитель', 
-      'доверенность', 'подпись', 'печать', 'м.п.', 'страница', 'стр.',
-      'наименование товара', 'ед.изм', 'ед. изм', 'кол-во', 'количество', 'цена с ндс'
+      'водитель', 'экспедитор', 'доверенность', 'страница', 'стр.'
+    ];
+
+    final footerKeywords = [
+      'итого', 'всего к оплате', 'всего:', 'всего наименований', 'сумма к оплате',
+      'ҳамагӣ', 'ҷамъ', 'отпустил', 'получил', 'принял', 'сдал', 'супорид', 'қабул',
+      'бухгалтер', 'подпись', 'печать', 'м.п.'
+    ];
+
+    final tableHeaderKeywords = [
+      'наименование', 'товар', 'номи мол', 'номгӯи', 'кол-во', 'количество',
+      'миқдор', 'цена', 'нарх', 'сумма', 'маблағ', 'ед.изм', 'ед. изм', '№ п/п'
     ];
 
     for (var path in imagePaths) {
@@ -224,45 +249,79 @@ class OcrService {
         for (var row in rows) {
           row.sort((a, b) => a.left.compareTo(b.left));
           final rowText = row.map((l) => l.text).join(' ').trim();
-          if (rowText.length >= 3) {
+          if (rowText.length >= 2) {
             unifiedRows.add(rowText);
           }
         }
 
-        // 5. Разбираем реконструированные строки таблицы
+        // 5. ОПРЕДЕЛЯЕМ ГРАНИЦЫ ТАБЛИЦЫ ТОВАРОВ:
+        // ТОВАРЫ НАХОДЯТСЯ СТРОГО МЕЖДУ tableStartIndex и tableEndIndex!
+        int tableStartIndex = 0;
+        int tableEndIndex = unifiedRows.length;
+
+        // Поиск начала таблицы (строка заголовков: Наименование, Кол-во, Цена, Сумма...)
+        for (int i = 0; i < unifiedRows.length; i++) {
+          final lower = unifiedRows[i].toLowerCase();
+          int headerHits = 0;
+          for (var keyword in tableHeaderKeywords) {
+            if (lower.contains(keyword)) headerHits++;
+          }
+          if (headerHits >= 2 || (headerHits >= 1 && (lower.contains('цена') || lower.contains('нарх') || lower.contains('кол-во') || lower.contains('миқдор')))) {
+            tableStartIndex = i + 1; // Товары начинаются со следующей строки
+            break;
+          }
+        }
+
+        // Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ / Отпустил...)
+        for (int i = tableStartIndex; i < unifiedRows.length; i++) {
+          final lower = unifiedRows[i].toLowerCase();
+          bool isFooter = false;
+          for (var footerKey in footerKeywords) {
+            if (lower.contains(footerKey)) {
+              isFooter = true;
+              break;
+            }
+          }
+
+          if (isFooter) {
+            // Извлекаем итоговую сумму из строки итого
+            final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(unifiedRows[i]);
+            if (totalMatch != null) {
+              final val = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
+              if (val > 0 && val < 500000) {
+                detectedTotal = val;
+              }
+            }
+            tableEndIndex = i; // Граница конца таблицы! Всё, что ниже — реквизиты, подписи, штампы
+            break;
+          }
+        }
+
+        // 6. Извлечение метаданных документа (поставщик, номер, дата) из всего текста
         for (var row in unifiedRows) {
           final lower = row.toLowerCase();
-
-          // Извлечение поставщика из шапки
           if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
             final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
             if (cleaned.length > 2 && detectedSupplier == 'Поставщик') {
               detectedSupplier = cleaned;
             }
-            continue;
           }
-
-          // Извлечение номера накладной
           if (lower.contains('накладная') || lower.contains('чек') || row.contains('№')) {
             final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(row);
             if (numMatch != null && detectedInvoiceNum == 'б/н') {
               detectedInvoiceNum = numMatch.group(1)!;
             }
-            if (lower.contains('накладная') || lower.contains('счет-фактура')) continue;
           }
+        }
 
-          // Извлечение итоговой суммы накладной
-          if (lower.contains('итого') || lower.contains('всего к оплате') || lower.contains('всего:')) {
-            final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(row);
-            if (totalMatch != null) {
-              detectedTotal = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? detectedTotal;
-            }
-            continue;
-          }
+        // 7. СТРОГИЙ РАЗБОР СТРОК ТОВАРОВ — ТОЛЬКО ВНУТРИ ТАБЛИЦЫ [tableStartIndex .. tableEndIndex]
+        for (int i = tableStartIndex; i < tableEndIndex; i++) {
+          final row = unifiedRows[i];
+          final lower = row.toLowerCase();
 
-          // Пропускаем служебный шум и шапки таблиц
+          // Исключаем шум и случайные служебные строки
           bool isNoise = false;
-          for (var stop in stopWords) {
+          for (var stop in headerStopWords) {
             if (lower.contains(stop)) {
               isNoise = true;
               break;
@@ -270,57 +329,76 @@ class OcrService {
           }
           if (isNoise) continue;
 
-          // Ищем числа в конце строки (Количество, Цена, Сумма)
-          // Поддерживаем форматы: "Кола 0.5 10 шт 5.00 50.00" или "Печенье 20 4.50 90.00"
-          final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
+          // Строка товара обязательно должна содержать текст (название), а не быть просто цифрами
+          if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
+            continue;
+          }
 
+          // Ищем числа в строке (Количество, Цена, Сумма)
+          final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
           if (numberMatches.length >= 2) {
-            // Берем последние 2 или 3 числа
+            // Выделяем название товара (текст до чисел)
             final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
             final firstNumIndex = lastNumbers.first.start;
             var rawName = row.substring(0, firstNumIndex).trim();
 
-            // Удаляем порядковый номер в начале (например "1.", "2 ", "1)")
+            // Очищаем от номера строки "1.", "2 ", "1)"
             rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
-
-            // Удаляем мусорные знаки
             rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
 
-            if (rawName.length >= 2) {
-              double qty = 1.0;
-              double price = 0.0;
-              double total = 0.0;
+            // Исключаем мусорные однобуквенные или системные названия
+            if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с')) {
+              continue;
+            }
 
-              if (lastNumbers.length == 3) {
-                qty = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-                price = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
-                total = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? (qty * price);
-              } else if (lastNumbers.length == 2) {
-                final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-                final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+            double qty = 1.0;
+            double price = 0.0;
+            double total = 0.0;
 
-                // Если первое число похоже на количество (не слишком дробное и <= 1000)
-                if (n1 > 0 && n1 <= 1000 && (n1 == n1.roundToDouble() || n1 * 10 == (n1 * 10).roundToDouble())) {
-                  qty = n1;
-                  price = n2;
-                  total = qty * price;
-                } else {
-                  price = n1;
-                  total = n2;
-                  qty = price > 0 ? (total / price) : 1.0;
-                }
+            if (lastNumbers.length == 3) {
+              final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+              final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+              final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+              // Математическая проверка (qty * price ≈ total)
+              if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
+                qty = n1;
+                price = n2;
+                total = n3;
+              } else if ((n1 * n3 - n2).abs() <= (n2 * 0.15 + 1.0)) {
+                qty = n1;
+                price = n3;
+                total = n2;
+              } else {
+                qty = n1;
+                price = n2;
+                total = (n3 > 0) ? n3 : (n1 * n2);
               }
+            } else if (lastNumbers.length == 2) {
+              final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+              final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
 
-              // Защита от мусора: отсекаем телефонные номера и ИНН (больше 100000)
-              if (price > 0 && price < 100000 && total < 1000000) {
-                items.add(InvoiceItem(
-                  id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
-                  rawName: rawName,
-                  quantity: qty > 0 ? qty : 1.0,
-                  buyPrice: price,
-                  totalPrice: total > 0 ? total : (qty * price),
-                ));
+              if (n1 > 0 && n1 <= 1000) {
+                qty = n1;
+                price = n2;
+                total = qty * price;
+              } else {
+                price = n1;
+                total = n2;
+                qty = (price > 0) ? (total / price) : 1.0;
               }
+            }
+
+            // ЖЕСТКИЙ ФИЛЬТР ЗДРАВОГО СМЫСЛА:
+            // Отсекаем телефонные номера, банковские счета и мусор (вроде 3104400.04 TJS)
+            if (price > 0.05 && price < 50000.0 && total > 0.05 && total < 500000.0 && qty > 0.001 && qty < 10000.0) {
+              items.add(InvoiceItem(
+                id: 'local_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
+                rawName: rawName,
+                quantity: qty,
+                buyPrice: price,
+                totalPrice: total > 0 ? total : (qty * price),
+              ));
             }
           }
         }
@@ -330,6 +408,9 @@ class OcrService {
     }
 
     final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
+    final double finalTotal = (detectedTotal > 0 && computedTotal > 0 && (detectedTotal - computedTotal).abs() / computedTotal < 0.25)
+        ? detectedTotal
+        : computedTotal;
 
     return InvoiceDocument(
       id: 'doc_local_${DateTime.now().millisecondsSinceEpoch}',
@@ -337,7 +418,7 @@ class OcrService {
       supplierName: detectedSupplier,
       invoiceNumber: detectedInvoiceNum,
       invoiceDate: detectedDate,
-      totalAmount: detectedTotal > 0 ? detectedTotal : computedTotal,
+      totalAmount: finalTotal,
       items: items,
       pagePhotos: imagePaths,
     );
