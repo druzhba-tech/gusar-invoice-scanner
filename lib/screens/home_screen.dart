@@ -172,7 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () async {
               Navigator.pop(ctx);
               await _updater.clearPostponedUpdate();
-              _updater.launchDownload(update.downloadUrl);
+              _updater.showDownloadAndInstallDialog(context, update);
             },
           ),
         ],
