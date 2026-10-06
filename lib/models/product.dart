@@ -36,16 +36,34 @@ class Product {
   }
 
   factory Product.fromJson(Map<String, dynamic> json) {
+    final name = json['name']?.toString() ??
+        json['title']?.toString() ??
+        json['product_name']?.toString() ??
+        'Товар';
+    final barcode = json['barcode']?.toString() ??
+        json['bar_code']?.toString() ??
+        json['code']?.toString() ??
+        json['ean']?.toString();
+    final price = (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0) is num
+        ? (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0).toDouble()
+        : double.tryParse((json['price'] ?? 0).toString()) ?? 0.0;
+    final costPrice = (json['cost_price'] ?? json['cost'] ?? json['purchase_price'] ?? 0) is num
+        ? (json['cost_price'] ?? json['cost'] ?? json['purchase_price'] ?? 0).toDouble()
+        : double.tryParse((json['cost_price'] ?? 0).toString()) ?? 0.0;
+    final stock = (json['stock_quantity'] ?? json['quantity'] ?? json['stock'] ?? json['qty'] ?? json['remainder'] ?? 0) is num
+        ? (json['stock_quantity'] ?? json['quantity'] ?? json['stock'] ?? json['qty'] ?? json['remainder'] ?? 0).toDouble()
+        : double.tryParse((json['stock_quantity'] ?? json['quantity'] ?? 0).toString()) ?? 0.0;
+
     return Product(
-      id: json['id'] is int ? json['id'] : int.tryParse(json['id'].toString()) ?? 0,
-      storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id'].toString()) ?? 1,
-      name: json['name'] ?? '',
-      barcode: json['barcode']?.toString(),
-      price: (json['price'] as num?)?.toDouble() ?? 0.0,
-      costPrice: (json['cost_price'] as num?)?.toDouble() ?? 0.0,
-      stockQuantity: (json['stock_quantity'] as num?)?.toDouble() ?? 0.0,
-      category: json['category'],
-      imageUrl: json['image_url'],
+      id: json['id'] is int ? json['id'] : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
+      storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
+      name: name,
+      barcode: barcode,
+      price: price,
+      costPrice: costPrice,
+      stockQuantity: stock,
+      category: json['category']?.toString(),
+      imageUrl: json['image_url']?.toString() ?? json['image']?.toString(),
     );
   }
 }
