@@ -544,7 +544,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       item.currentRetailPrice = null;
       item.lastBuyPrice = null;
       item.matchConfidence = 0.0;
-      item.status = ItemStatus.unmatched;
+      item.status = ItemStatus.pending;
     });
     await _saveAndRefresh();
     if (mounted) {
