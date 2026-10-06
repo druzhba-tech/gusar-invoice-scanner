@@ -22,6 +22,9 @@ class MatchingService {
   // Обучаемая память исправлений пользователя: "rawOcrText" -> "cleanText"
   Map<String, String> _correctionsDictionary = {};
 
+  // Память контрагентов: "rawSupplierOcr" -> { id: 1, name: "ООО Оби Зулол" }
+  Map<String, Map<String, dynamic>> _supplierAliases = {};
+
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     final rawDict = prefs.getString('supplier_aliases_dict');
@@ -39,6 +42,37 @@ class MatchingService {
         _correctionsDictionary = decoded.map((k, v) => MapEntry(k, v.toString()));
       } catch (_) {}
     }
+
+    final rawSuppliers = prefs.getString('counterparty_aliases_dict');
+    if (rawSuppliers != null) {
+      try {
+        final decoded = jsonDecode(rawSuppliers) as Map<String, dynamic>;
+        _supplierAliases = decoded.map((k, v) => MapEntry(k, v as Map<String, dynamic>));
+      } catch (_) {}
+    }
+  }
+
+  // Сохранение привязки контрагента из базы
+  Future<void> saveSupplierAlias(String rawOcrSupplier, int supplierId, String supplierName) async {
+    final norm = _normalizeText(rawOcrSupplier);
+    if (norm.isEmpty) return;
+    _supplierAliases[norm] = {'id': supplierId, 'name': supplierName};
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('counterparty_aliases_dict', jsonEncode(_supplierAliases));
+  }
+
+  Map<String, dynamic>? matchSupplier(String rawSupplier) {
+    final norm = _normalizeText(rawSupplier);
+    if (norm.isEmpty) return null;
+    if (_supplierAliases.containsKey(norm)) {
+      return _supplierAliases[norm];
+    }
+    for (var entry in _supplierAliases.entries) {
+      if (entry.key.length > 3 && (norm.contains(entry.key) || entry.key.contains(norm))) {
+        return entry.value;
+      }
+    }
+    return null;
   }
 
   String _buildKey(String supplier, String rawName) {
@@ -119,9 +153,19 @@ class MatchingService {
 
   int get rememberedAliasesCount => _aliasDictionary.length;
   int get rememberedCorrectionsCount => _correctionsDictionary.length;
+  int get rememberedSuppliersCount => _supplierAliases.length;
 
   // 4. Автоматическое сопоставление накладной с каталогом товаров gusar.tj с приоритетом памяти
   void autoMatchDocument(InvoiceDocument doc, List<Product> catalog) {
+    // Шаг -1: Проверяем память контрагентов
+    if (doc.supplierId == null) {
+      final matchedSup = matchSupplier(doc.supplierName);
+      if (matchedSup != null) {
+        doc.supplierId = matchedSup['id'] as int;
+        doc.supplierName = matchedSup['name'] as String;
+      }
+    }
+
     for (var item in doc.items) {
       // Шаг 0: Применяем ранее выученные исправления названия
       final correctedName = applyCorrection(item.rawName);

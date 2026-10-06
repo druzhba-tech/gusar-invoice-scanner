@@ -641,6 +641,288 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     );
   }
 
+  // 7. Выбор контрагента из базы магазина на gusar.tj
+  void _showCounterpartyPicker() {
+    final searchCtrl = TextEditingController();
+    bool isSyncing = false;
+    List<Supplier> suppliersList = List.from(_api.cachedSuppliers);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (modalCtx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          if (suppliersList.isEmpty && !isSyncing) {
+            isSyncing = true;
+            _api.getSuppliers().then((sups) {
+              if (modalCtx.mounted) {
+                setModalState(() {
+                  isSyncing = false;
+                  suppliersList = sups;
+                });
+              }
+            });
+          }
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.82,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Контрагенты базы gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                          Text('Склад: ${_api.currentStoreName}', style: const TextStyle(color: Color(0xFF10B981), fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: isSyncing
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)))
+                          : const Icon(Icons.sync_rounded, color: Color(0xFF10B981), size: 22),
+                      tooltip: 'Обновить контрагентов с сервера',
+                      onPressed: isSyncing
+                          ? null
+                          : () async {
+                              setModalState(() => isSyncing = true);
+                              final sups = await _api.getSuppliers(forceRefresh: true);
+                              if (modalCtx.mounted) {
+                                setModalState(() {
+                                  isSyncing = false;
+                                  suppliersList = sups;
+                                });
+                              }
+                            },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(modalCtx),
+                    ),
+                  ],
+                ),
+                Text(
+                  'Текущий по накладной: "${_doc.supplierName}"',
+                  style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: searchCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Поиск контрагента по названию или ИНН...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
+                    filled: true,
+                    fillColor: const Color(0xFF0F172A),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                  ),
+                  onChanged: (val) async {
+                    final results = await _api.searchSuppliers(val);
+                    setModalState(() {
+                      suppliersList = results;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: isSyncing
+                      ? const Center(
+                          child: CircularProgressIndicator(color: Color(0xFF10B981)),
+                        )
+                      : suppliersList.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.business_outlined, color: Colors.white38, size: 48),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    searchCtrl.text.isEmpty
+                                        ? 'Контрагенты не найдены'
+                                        : 'Контрагент "${searchCtrl.text}" не найден в базе магазина',
+                                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                                    icon: const Icon(Icons.add, color: Colors.white),
+                                    label: const Text('Создать контрагента в gusar.tj', style: TextStyle(color: Colors.white)),
+                                    onPressed: () {
+                                      Navigator.pop(modalCtx);
+                                      _showCreateSupplierDialog(initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : _doc.supplierName);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: suppliersList.length,
+                              separatorBuilder: (_, __) => const Divider(color: Colors.white10),
+                              itemBuilder: (ctx, i) {
+                                final s = suppliersList[i];
+                                final isCurrent = _doc.supplierId == s.id;
+                                return ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  leading: CircleAvatar(
+                                    backgroundColor: isCurrent ? const Color(0xFF10B981) : const Color(0xFF0F172A),
+                                    child: Icon(
+                                      isCurrent ? Icons.check : Icons.business_rounded,
+                                      color: isCurrent ? Colors.white : const Color(0xFF38BDF8),
+                                      size: 20,
+                                    ),
+                                  ),
+                                  title: Text(s.name, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                                  subtitle: Text(
+                                    '${s.inn != null ? 'ИНН: ${s.inn} • ' : ''}${s.contact ?? s.address ?? 'База gusar.tj'}',
+                                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                  ),
+                                  trailing: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: isCurrent ? const Color(0xFF10B981) : const Color(0xFF0284C7),
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                    ),
+                                    onPressed: () async {
+                                      final oldName = _doc.supplierName;
+                                      setState(() {
+                                        _doc.supplierId = s.id;
+                                        _doc.supplierName = s.name;
+                                      });
+                                      await _matcher.saveSupplierAlias(oldName, s.id, s.name);
+                                      Navigator.pop(modalCtx);
+                                      await _saveAndRefresh();
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('✅ Контрагент выбран: "${s.name}" (ID: ${s.id})'),
+                                            backgroundColor: const Color(0xFF10B981),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    child: Text(isCurrent ? 'Выбран' : 'Выбрать', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                  ),
+                                );
+                              },
+                            ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF10B981),
+                      side: const BorderSide(color: Color(0xFF10B981)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Создать нового контрагента в gusar.tj', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(modalCtx);
+                      _showCreateSupplierDialog(initialName: _doc.supplierName);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // 8. Диалог создания нового контрагента в gusar.tj
+  void _showCreateSupplierDialog({String? initialName}) {
+    final nameCtrl = TextEditingController(text: initialName ?? _doc.supplierName);
+    final phoneCtrl = TextEditingController();
+    final innCtrl = TextEditingController();
+    final addrCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (dlgCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Новый контрагент в gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Наименование организации / ИП', labelStyle: TextStyle(color: Colors.white60)),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: phoneCtrl,
+                keyboardType: TextInputType.phone,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Телефон / Контакт', labelStyle: TextStyle(color: Colors.white60)),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: innCtrl,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'ИНН организации', labelStyle: TextStyle(color: Colors.white60)),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: addrCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Адрес / Город', labelStyle: TextStyle(color: Colors.white60)),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dlgCtx), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            onPressed: () async {
+              final newName = nameCtrl.text.trim();
+              if (newName.isEmpty) return;
+              final created = await _api.createSupplier(
+                newName,
+                contact: phoneCtrl.text.trim(),
+                address: addrCtrl.text.trim(),
+                inn: innCtrl.text.trim(),
+              );
+              if (created != null) {
+                final oldName = _doc.supplierName;
+                setState(() {
+                  _doc.supplierId = created.id;
+                  _doc.supplierName = created.name;
+                });
+                await _matcher.saveSupplierAlias(oldName, created.id, created.name);
+                Navigator.pop(dlgCtx);
+                await _saveAndRefresh();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан!'),
+                      backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text('Создать и выбрать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _submitToInventory() async {
     if (_doc.unmatchedCount > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -652,13 +934,50 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       return;
     }
 
+    if (_doc.supplierId == null) {
+      final chooseSupplier = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.info_outline, color: Color(0xFFF59E0B)),
+              SizedBox(width: 8),
+              Expanded(child: Text('Контрагент не из базы', style: TextStyle(color: Colors.white, fontSize: 16))),
+            ],
+          ),
+          content: Text(
+            'Контрагент «${_doc.supplierName}» ещё не привязан к справочнику магазина. Рекомендуется выбрать контрагента из базы gusar.tj для точного учёта взаиморасчетов.',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Оприходовать как есть', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Выбрать контрагента', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+
+      if (chooseSupplier == true) {
+        _showCounterpartyPicker();
+        return;
+      }
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
         title: const Text('Оприходовать в остатки?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'Товары (${_doc.items.length} поз.) на сумму ${_doc.totalAmount.toStringAsFixed(2)} TJS будут зачислены на баланс ${_api.currentStoreName} в системе gusar.tj.',
+          'Товары (${_doc.items.length} поз.) на сумму ${_doc.totalAmount.toStringAsFixed(2)} TJS будут зачислены на баланс ${_api.currentStoreName} (Контрагент: ${_doc.supplierName}) в системе gusar.tj.',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [

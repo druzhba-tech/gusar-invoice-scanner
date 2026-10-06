@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'services/api_service.dart';
 import 'services/matching_service.dart';
 import 'screens/home_screen.dart';
+import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,11 +22,15 @@ void main() async {
     debugPrint('MatchingService init warning: $e');
   }
 
-  runApp(const GusarScannerApp());
+  final prefs = await SharedPreferences.getInstance();
+  final isAuth = prefs.getBool('is_authenticated') ?? false;
+
+  runApp(GusarScannerApp(isAuthenticated: isAuth));
 }
 
 class GusarScannerApp extends StatelessWidget {
-  const GusarScannerApp({super.key});
+  final bool isAuthenticated;
+  const GusarScannerApp({super.key, required this.isAuthenticated});
 
   @override
   Widget build(BuildContext context) {
@@ -53,7 +59,7 @@ class GusarScannerApp extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
-      home: const HomeScreen(),
+      home: isAuthenticated ? const HomeScreen() : const LoginScreen(),
     );
   }
 }

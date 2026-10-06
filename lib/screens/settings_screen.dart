@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../services/updater_service.dart';
+import 'login_screen.dart';
 
 class StoreOption {
   final int id;
@@ -31,19 +32,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final ApiService _api = ApiService();
   final UpdaterService _updater = UpdaterService();
 
-  List<StoreOption> _availableStores = [
-    const StoreOption(
-      id: 1,
-      name: 'База gusar.tj (Основной склад)',
-      address: 'Центральная база товаров gusar.tj',
-    ),
-    const StoreOption(
-      id: 2,
-      name: 'Склад приёмки товаров (gusar.tj)',
-      address: 'Склад оприходования накладных',
-    ),
-  ];
-
+  List<StoreOption> _availableStores = [];
   int _selectedStoreId = 1;
   String _selectedStoreName = 'База gusar.tj (Основной склад)';
   bool _isSyncingStores = false;
@@ -67,35 +56,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Восстановление ранее сохранённого или загруженного списка складов
-    final savedStoresJson = prefs.getString('cached_stores_list');
-    if (savedStoresJson != null) {
-      try {
-        final List<dynamic> decoded = jsonDecode(savedStoresJson);
-        final list = decoded.map((e) => StoreOption.fromJson(e as Map<String, dynamic>)).toList();
-        if (list.isNotEmpty) {
-          _availableStores = list;
-        }
-      } catch (_) {}
+    int savedId = prefs.getInt('store_id') ?? _api.currentStoreId;
+    String savedName = prefs.getString('store_name') ?? _api.currentStoreName;
+
+    // Строго изолируем только доступные магазины конкретного сотрудника
+    if (_api.accessibleStores.isNotEmpty) {
+      _availableStores = _api.accessibleStores.map((s) => StoreOption(
+        id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1,
+        name: s['name']?.toString() ?? 'Магазин gusar.tj',
+        address: s['address']?.toString() ?? 'Подразделение сотрудника',
+      )).toList();
+    } else {
+      _availableStores = [
+        StoreOption(id: savedId, name: savedName, address: 'Подразделение сотрудника'),
+      ];
     }
 
-    int savedId = prefs.getInt('store_id') ?? 1;
-    String savedName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
-
-    // Очистка старых фиктивных названий (с улицами и районами)
-    if (savedName.contains('Центральный') ||
-        savedName.contains('Сино') ||
-        savedName.contains('Фирдавси') ||
-        savedName.contains('Шохмансур')) {
-      savedName = 'База gusar.tj (Основной склад)';
-      savedId = 1;
-      await prefs.setString('store_name', savedName);
-      await prefs.setInt('store_id', 1);
-    }
-
-    // Убедимся, что выбранный ID есть в списке, иначе добавляем
     if (!_availableStores.any((s) => s.id == savedId)) {
-      _availableStores.insert(0, StoreOption(id: savedId, name: savedName, address: 'База gusar.tj'));
+      savedId = _availableStores.first.id;
+      savedName = _availableStores.first.name;
     }
 
     setState(() {
@@ -122,9 +101,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         address: s['address'] as String,
       )).toList();
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('cached_stores_list', jsonEncode(newOptions.map((e) => e.toJson()).toList()));
-
       setState(() {
         _availableStores = newOptions;
         if (!_availableStores.any((s) => s.id == _selectedStoreId)) {
@@ -137,109 +113,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ Загружено подразделений с сервера gusar.tj: ${newOptions.length}'),
+            content: Text('✅ Подтверждён доступ к магазину: $_selectedStoreName'),
             backgroundColor: const Color(0xFF10B981),
           ),
         );
       }
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Используется единая база gusar.tj. Для подгрузки закрытых филиалов выполните вход в систему ниже.'),
-            backgroundColor: Color(0xFF3B82F6),
-          ),
-        );
-      }
     }
-  }
-
-  void _showCustomStoreDialog() {
-    final idCtrl = TextEditingController(text: _selectedStoreId.toString());
-    final nameCtrl = TextEditingController(text: _selectedStoreName);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.edit_note_rounded, color: Color(0xFF10B981)),
-            SizedBox(width: 8),
-            Text('Указать склад gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Укажите ID и название подразделения в базе gusar.tj:',
-              style: TextStyle(color: Colors.white70, fontSize: 13),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: idCtrl,
-              keyboardType: TextInputType.number,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                labelText: 'ID склада / магазина',
-                labelStyle: const TextStyle(color: Colors.white60),
-                filled: true,
-                fillColor: const Color(0xFF0F172A),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                labelText: 'Название подразделения',
-                labelStyle: const TextStyle(color: Colors.white60),
-                filled: true,
-                fillColor: const Color(0xFF0F172A),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-            onPressed: () async {
-              final newId = int.tryParse(idCtrl.text.trim()) ?? 1;
-              final newName = nameCtrl.text.trim().isEmpty ? 'База gusar.tj' : nameCtrl.text.trim();
-              Navigator.pop(ctx);
-
-              final newOption = StoreOption(id: newId, name: newName, address: 'База gusar.tj');
-              setState(() {
-                if (!_availableStores.any((s) => s.id == newId)) {
-                  _availableStores.add(newOption);
-                }
-                _selectedStoreId = newId;
-                _selectedStoreName = newName;
-              });
-              await _api.updateStore(newId, newName);
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Выбрано: $newName (ID: $newId)'),
-                    backgroundColor: const Color(0xFF10B981),
-                  ),
-                );
-              }
-            },
-            child: const Text('Применить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
   }
 
   void _onStoreChanged(int? newId) {
@@ -263,21 +142,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    // Сохраняем логин и пароль навсегда
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_username', user);
-    await prefs.setString('saved_password', pass);
-    await prefs.setString('logged_username', user);
-
     setState(() {
       _isLoggingIn = true;
       _loginMessage = null;
     });
 
-    // Сохраняем выбранный магазин перед входом
-    await _api.updateStore(_selectedStoreId, _selectedStoreName);
-
-    final result = await _api.login(user, pass);
+    final result = await _api.login(user, pass, remember: true);
 
     setState(() {
       _isLoggingIn = false;
@@ -285,8 +155,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (_isAuthenticated) {
         _currentUsername = user;
         _loginMessage = '✅ ${result['message']}';
-        // Пробуем подгрузить список подразделений с сервера
-        _fetchStoresFromGusar();
+        _selectedStoreName = _api.currentStoreName;
+        _selectedStoreId = _api.currentStoreId;
+        _availableStores = _api.accessibleStores.map((s) => StoreOption(
+          id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1,
+          name: s['name']?.toString() ?? 'Магазин gusar.tj',
+          address: s['address']?.toString() ?? 'Подразделение сотрудника',
+        )).toList();
       } else {
         _loginMessage = '❌ ${result['message']}';
       }
@@ -295,7 +170,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_isAuthenticated && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Вход выполнен! Подразделение: $_selectedStoreName'),
+          content: Text('Вход выполнен! Доступ: $_selectedStoreName'),
           backgroundColor: const Color(0xFF10B981),
         ),
       );
@@ -303,15 +178,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _handleLogout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.logout_rounded, color: Colors.orangeAccent),
+            SizedBox(width: 8),
+            Text('Выход из системы', style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: const Text(
+          'Вы действительно хотите выйти из учетной записи магазина gusar.tj?',
+          style: TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Выйти', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
     await _api.logout();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('saved_password');
-    setState(() {
-      _isAuthenticated = false;
-      _currentUsername = null;
-      _passwordCtrl.clear();
-      _loginMessage = 'Вы вышли из учетной записи.';
-    });
+    if (mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+    }
   }
 
   Future<void> _saveAllSettings() async {
@@ -324,7 +230,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
 
-    // Сохраняем логин и пароль в SharedPreferences, чтобы больше не сбрасывались
     if (user.isNotEmpty) {
       await prefs.setString('saved_username', user);
       await prefs.setString('logged_username', user);
@@ -333,14 +238,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await prefs.setString('saved_password', pass);
     }
 
-    if (user.isNotEmpty && pass.isNotEmpty) {
-      await _api.login(user, pass);
+    if (user.isNotEmpty && pass.isNotEmpty && !_isAuthenticated) {
+      await _api.login(user, pass, remember: true);
     }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('✅ Настройки, логин и пароль успешно сохранены!'),
+          content: Text('✅ Настройки успешно сохранены!'),
           backgroundColor: Color(0xFF10B981),
         ),
       );
@@ -377,7 +282,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
-        title: const Text('Настройки и авторизация', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        title: const Text('Настройки и доступ', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -385,89 +290,120 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ==========================================
-            // ШАГ 1: ВЫБОР СКЛАДА / МАГАЗИНА GUSAR.TJ
+            // ШАГ 1: ВАШ МАГАЗИН GUSAR.TJ
             // ==========================================
             _sectionHeader(
               stepNumber: '1',
-              title: 'ВЫБЕРИТЕ СКЛАД / ТОЧКУ GUSAR.TJ',
-              subtitle: 'Куда будут оприходоваться принимаемые накладные в базе gusar.tj',
+              title: 'ВАШ МАГАЗИН GUSAR.TJ',
+              subtitle: 'Точка приёмки накладных, закреплённая за вашей учётной записью',
             ),
             const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5), width: 1.5),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<int>(
-                  value: _availableStores.any((s) => s.id == _selectedStoreId)
-                      ? _selectedStoreId
-                      : _availableStores.first.id,
-                  isExpanded: true,
-                  dropdownColor: const Color(0xFF1E293B),
-                  icon: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981)),
-                  items: _availableStores.map((store) {
-                    return DropdownMenuItem<int>(
-                      value: store.id,
+
+            if (_availableStores.length <= 1) ...[
+              // Закреплённый магазин пользователя (остальные магазины скрыты)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 28),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text(
-                            store.name,
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  _selectedStoreName,
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF10B981).withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  'ID: $_selectedStoreId',
+                                  style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
                           ),
-                          Text(
-                            store.address,
-                            style: const TextStyle(color: Color(0xFF10B981), fontSize: 11),
+                          const SizedBox(height: 4),
+                          const Row(
+                            children: [
+                              Icon(Icons.lock_rounded, size: 12, color: Color(0xFF34D399)),
+                              SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  'Доступ открыт только к вашему магазину',
+                                  style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.w500),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    );
-                  }).toList(),
-                  onChanged: _onStoreChanged,
+                    ),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _isSyncingStores ? null : _fetchStoresFromGusar,
-                    icon: _isSyncingStores
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
-                          )
-                        : const Icon(Icons.sync_rounded, size: 16, color: Color(0xFF10B981)),
-                    label: Text(
-                      _isSyncingStores ? 'Загрузка...' : 'Синхронизировать с gusar.tj',
-                      style: const TextStyle(color: Color(0xFF10B981), fontSize: 12),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFF10B981)),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                    ),
+            ] else ...[
+              // Выбор из списка РАЗРЕШЕННЫХ магазинов сотрудника
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5), width: 1.5),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<int>(
+                    value: _availableStores.any((s) => s.id == _selectedStoreId)
+                        ? _selectedStoreId
+                        : _availableStores.first.id,
+                    isExpanded: true,
+                    dropdownColor: const Color(0xFF1E293B),
+                    icon: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981)),
+                    items: _availableStores.map((store) {
+                      return DropdownMenuItem<int>(
+                        value: store.id,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              store.name,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                            ),
+                            Text(
+                              store.address,
+                              style: const TextStyle(color: Color(0xFF10B981), fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: _onStoreChanged,
                   ),
                 ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: _showCustomStoreDialog,
-                  icon: const Icon(Icons.edit_note_rounded, size: 16, color: Colors.white70),
-                  label: const Text('Свой склад/ID', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: Colors.white.withOpacity(0.2)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
 
             const SizedBox(height: 24),
 
@@ -476,8 +412,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             // ==========================================
             _sectionHeader(
               stepNumber: '2',
-              title: 'ВХОД СОТРУДНИКА В СИСТЕМУ',
-              subtitle: 'Введите учетные данные для доступа к складу gusar.tj',
+              title: 'УЧЕТНАЯ ЗАПИСЬ СОТРУДНИКА',
+              subtitle: 'Авторизация и привязка к базе gusar.tj',
             ),
             const SizedBox(height: 12),
 
@@ -506,21 +442,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             children: [
                               Text('Сотрудник: ${_currentUsername ?? "Товаровед"}',
                                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-                              Text('Привязан к: $_selectedStoreName',
+                              Text('Доступ: $_selectedStoreName',
                                   style: const TextStyle(color: Colors.white70, fontSize: 12)),
                             ],
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white30),
-                        minimumSize: const Size(double.infinity, 38),
+                    const SizedBox(height: 14),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent.withOpacity(0.85),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 40),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
-                      icon: const Icon(Icons.logout_rounded, color: Colors.white70, size: 18),
-                      label: const Text('Сменить пользователя / Выйти', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                      icon: const Icon(Icons.logout_rounded, size: 18),
+                      label: const Text('Сменить пользователя / Выйти из аккаунта', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                       onPressed: _handleLogout,
                     ),
                   ],
@@ -682,7 +620,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   FutureBuilder<String>(
                     future: _updater.getCurrentVersion(),
                     builder: (ctx, snapshot) {
-                      final ver = snapshot.data ?? '1.0.4';
+                      final ver = snapshot.data ?? '1.0.8';
                       return Column(
                         children: [
                           Row(

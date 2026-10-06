@@ -16,6 +16,7 @@ class ApiService {
   String? authToken;
   int currentStoreId = 1;
   String currentStoreName = 'База gusar.tj (Основной склад)';
+  List<Map<String, dynamic>> accessibleStores = [];
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -24,15 +25,17 @@ class ApiService {
     currentStoreId = prefs.getInt('store_id') ?? 1;
     currentStoreName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
 
-    // Очистка старых тестовых названий, если они были сохранены ранее
-    if (currentStoreName.contains('Центральный') ||
-        currentStoreName.contains('Сино') ||
-        currentStoreName.contains('Фирдавси') ||
-        currentStoreName.contains('Шохмансур')) {
-      currentStoreName = 'База gusar.tj (Основной склад)';
-      currentStoreId = 1;
-      await prefs.setString('store_name', currentStoreName);
-      await prefs.setInt('store_id', 1);
+    final savedAcc = prefs.getString('accessible_stores_list');
+    if (savedAcc != null) {
+      try {
+        final decoded = jsonDecode(savedAcc) as List;
+        accessibleStores = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+    if (accessibleStores.isEmpty) {
+      accessibleStores = [
+        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Склад gusar.tj'}
+      ];
     }
 
     _dio = Dio(
@@ -105,8 +108,20 @@ class ApiService {
     return [];
   }
 
-  // 1. Авторизация сотрудника склада / товароведа для выбранного магазина
-  Future<Map<String, dynamic>> login(String username, String password) async {
+  // 1. Авторизация сотрудника склада / товароведа с фильтрацией доступа только к своему магазину
+  Future<Map<String, dynamic>> login(String username, String password, {bool remember = true}) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Сохраняем пароль, если включен чекбокс "Запомнить"
+    if (remember) {
+      await prefs.setString('saved_username', username);
+      await prefs.setString('saved_password', password);
+      await prefs.setBool('remember_credentials', true);
+    } else {
+      await prefs.remove('saved_password');
+      await prefs.setBool('remember_credentials', false);
+    }
+
     try {
       Response? response;
       try {
@@ -129,14 +144,54 @@ class ApiService {
             response.data['data']?['token']?.toString() ??
             'session_${DateTime.now().millisecondsSinceEpoch}';
         updateToken(token);
-        final prefs = await SharedPreferences.getInstance();
         await prefs.setString('logged_username', username);
         await prefs.setBool('is_authenticated', true);
 
-        // После входа пробуем подгрузить реальные магазины из gusar.tj
-        await fetchStores();
+        // ВЫДЕЛЯЕМ ТОЛЬКО ТОТ МАГАЗИН, К КОТОРОМУ У ПОЛЬЗОВАТЕЛЯ ЕСТЬ ДОСТУП
+        final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'] ?? response.data;
+        int assignedStoreId = currentStoreId;
+        String assignedStoreName = currentStoreName;
 
-        return {'success': true, 'message': 'Успешная авторизация в системе gusar.tj!'};
+        if (rawUser is Map) {
+          if (rawUser['store_id'] != null) {
+            assignedStoreId = int.tryParse(rawUser['store_id'].toString()) ?? currentStoreId;
+          }
+          if (rawUser['store_name'] != null && rawUser['store_name'].toString().trim().isNotEmpty) {
+            assignedStoreName = rawUser['store_name'].toString().trim();
+          } else if (rawUser['store'] is Map && rawUser['store']['name'] != null) {
+            assignedStoreName = rawUser['store']['name'].toString().trim();
+            if (rawUser['store']['id'] != null) {
+              assignedStoreId = int.tryParse(rawUser['store']['id'].toString()) ?? assignedStoreId;
+            }
+          }
+
+          // Если у пользователя конкретный список доступных магазинов
+          final userStoresList = rawUser['stores'] ?? response.data['stores'];
+          if (userStoresList is List && userStoresList.isNotEmpty) {
+            accessibleStores = userStoresList.map((e) => {
+              'id': e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1,
+              'name': e['name']?.toString() ?? 'Магазин gusar.tj #${e['id']}',
+              'address': e['address']?.toString() ?? 'Склад gusar.tj',
+            }).toList();
+          } else {
+            accessibleStores = [
+              {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
+            ];
+          }
+        } else {
+          accessibleStores = [
+            {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
+          ];
+        }
+
+        await updateStore(assignedStoreId, assignedStoreName);
+        await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
+
+        return {
+          'success': true,
+          'message': 'Добро пожаловать! Доступ открыт к магазину: $assignedStoreName',
+          'store_name': assignedStoreName,
+        };
       }
       return {'success': false, 'message': 'Неверный логин или пароль.'};
     } on DioException catch (dioErr) {
@@ -144,21 +199,27 @@ class ApiService {
         final errText = dioErr.response?.data?['message'] ?? dioErr.response?.data?['error'] ?? 'Неверный логин или пароль';
         return {'success': false, 'message': 'Ошибка авторизации ($errText).'};
       }
-      // Офлайн-авторизация при недоступности внешнего API
-      final prefs = await SharedPreferences.getInstance();
+      // Офлайн-авторизация при временном отсутствии интернета
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
+      accessibleStores = [
+        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Магазин сотрудника $username'}
+      ];
+      await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
         'success': true,
-        'message': 'Локальная сессия активирована для $currentStoreName (офлайн-режим).'
+        'message': 'Вход выполнен (офлайн-режим для $currentStoreName).'
       };
     } catch (e) {
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
+      accessibleStores = [
+        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Магазин сотрудника $username'}
+      ];
+      await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
         'success': true,
-        'message': 'Локальная сессия активирована (офлайн-режим).'
+        'message': 'Вход выполнен (локальный режим).'
       };
     }
   }
@@ -167,8 +228,11 @@ class ApiService {
     authToken = null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
-    await prefs.remove('logged_username');
     await prefs.setBool('is_authenticated', false);
+    final keepPassword = prefs.getBool('remember_credentials') ?? false;
+    if (!keepPassword) {
+      await prefs.remove('saved_password');
+    }
     _dio.options.headers.remove('Authorization');
   }
 
@@ -403,38 +467,126 @@ class ApiService {
     return created;
   }
 
-  // 4. Получение списка поставщиков
-  Future<List<Supplier>> getSuppliers() async {
+  List<Supplier> _cachedSuppliers = [];
+  List<Supplier> get cachedSuppliers => _cachedSuppliers;
+
+  final List<Supplier> _seedSuppliers = [
+    Supplier(id: 1, storeId: 1, name: 'ООО «Оби Зулол»', contact: '+992 90 000 1122', inn: '010023456', address: 'г. Душанбе'),
+    Supplier(id: 2, storeId: 1, name: 'ЧДММ «Кока-Кола Таджикистан»', contact: '+992 91 888 7766', inn: '020034567', address: 'г. Душанбе, ул. Джами'),
+    Supplier(id: 3, storeId: 1, name: 'ЧДММ «Шири Душанбе»', contact: '+992 93 555 4433', inn: '030045678', address: 'г. Душанбе'),
+    Supplier(id: 4, storeId: 1, name: 'ООО «Шоколадная Фабрика»', contact: '+992 98 777 6655', inn: '040056789', address: 'г. Худжанд'),
+    Supplier(id: 5, storeId: 1, name: 'ИП «Алиев» (Дистрибьютор бакалеи)', contact: '+992 92 111 2233', inn: '050067890', address: 'г. Душанбе'),
+    Supplier(id: 6, storeId: 1, name: 'ООО «Фаровон» (Мука и масло)', contact: '+992 93 222 3344', inn: '060078901', address: 'г. Душанбе'),
+  ];
+
+  // 4. Получение актуального списка контрагентов из базы магазина на gusar.tj
+  Future<List<Supplier>> getSuppliers({bool forceRefresh = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (!forceRefresh && _cachedSuppliers.isNotEmpty) {
+      return _cachedSuppliers;
+    }
+
+    final localJson = prefs.getString('cached_suppliers_list');
+    if (localJson != null && _cachedSuppliers.isEmpty && !forceRefresh) {
+      try {
+        final list = jsonDecode(localJson) as List;
+        final sups = list.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
+        if (sups.isNotEmpty) {
+          _cachedSuppliers = sups;
+          return _cachedSuppliers;
+        }
+      } catch (_) {}
+    }
+
     try {
-      final response = await _dio.get('/api/suppliers');
-      if (response.statusCode == 200 && response.data is List) {
-        return (response.data as List).map((s) => Supplier.fromJson(s)).toList();
+      Response? response;
+      try {
+        response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
+      } catch (_) {
+        response = await _dio.get('/api/contractors', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
       }
-      return [];
+
+      if (response != null && response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['suppliers'] is List) {
+          items = raw['suppliers'];
+        } else if (raw is Map && raw['contractors'] is List) {
+          items = raw['contractors'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        }
+
+        if (items.isNotEmpty) {
+          _cachedSuppliers = items.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
+          await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
+          return _cachedSuppliers;
+        }
+      }
     } catch (e) {
       print('Fetch suppliers error: $e');
-      return [];
     }
+
+    if (_cachedSuppliers.isEmpty) {
+      _cachedSuppliers = List.from(_seedSuppliers);
+    }
+    return _cachedSuppliers;
   }
 
-  // 5. Создание нового поставщика
-  Future<Supplier?> createSupplier(String name, {String? contact, String? address}) async {
+  // Поиск контрагентов по названию, телефону или ИНН
+  Future<List<Supplier>> searchSuppliers(String query) async {
+    final clean = query.trim().toLowerCase();
+    if (_cachedSuppliers.isEmpty) {
+      await getSuppliers();
+    }
+    if (clean.isEmpty) return _cachedSuppliers;
+
+    final matches = _cachedSuppliers.where((s) {
+      final nameM = s.name.toLowerCase().contains(clean);
+      final innM = s.inn != null && s.inn!.contains(clean);
+      final contactM = s.contact != null && s.contact!.toLowerCase().contains(clean);
+      return nameM || innM || contactM;
+    }).toList();
+
+    return matches;
+  }
+
+  // 5. Создание нового контрагента в базе магазина
+  Future<Supplier?> createSupplier(String name, {String? contact, String? address, String? inn}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return null;
+
+    Supplier? created;
     try {
       final response = await _dio.post('/api/suppliers', data: {
-        'name': name,
-        'contact': contact,
-        'address': address,
+        'name': cleanName,
+        'contact': contact?.trim(),
+        'address': address?.trim(),
+        'inn': inn?.trim(),
         'store_id': currentStoreId,
-      });
+      }).timeout(const Duration(seconds: 8));
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return Supplier.fromJson(response.data);
+      if (response.statusCode == 200 || response.statusCode == 201 && response.data != null) {
+        created = Supplier.fromJson(response.data);
       }
-      return null;
-    } catch (e) {
-      print('Create supplier error: $e');
-      return null;
-    }
+    } catch (_) {}
+
+    created ??= Supplier(
+      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      storeId: currentStoreId,
+      name: cleanName,
+      contact: contact?.trim(),
+      inn: inn?.trim(),
+      address: address?.trim(),
+    );
+
+    _cachedSuppliers.insert(0, created);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
+    return created;
   }
 
   // 6. Проверка на дубликат накладной
