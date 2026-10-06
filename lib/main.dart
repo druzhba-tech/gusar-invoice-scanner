@@ -7,9 +7,18 @@ import 'screens/home_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Инициализация сервисов
-  await ApiService().init();
-  await MatchingService().init();
+  // Безопасная инициализация сервисов
+  try {
+    await ApiService().init();
+  } catch (e) {
+    debugPrint('ApiService init warning: $e');
+  }
+
+  try {
+    await MatchingService().init();
+  } catch (e) {
+    debugPrint('MatchingService init warning: $e');
+  }
 
   runApp(const GusarScannerApp());
 }
