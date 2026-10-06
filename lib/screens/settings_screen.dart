@@ -55,8 +55,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _selectedStoreId = prefs.getInt('store_id') ?? 1;
       _selectedStoreName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
-      _usernameCtrl.text = prefs.getString('logged_username') ?? '';
-      _currentUsername = prefs.getString('logged_username');
+      _usernameCtrl.text = prefs.getString('saved_username') ?? prefs.getString('logged_username') ?? '';
+      _passwordCtrl.text = prefs.getString('saved_password') ?? '';
+      _currentUsername = prefs.getString('logged_username') ?? prefs.getString('saved_username');
       _isAuthenticated = prefs.getBool('is_authenticated') ?? false;
       _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
@@ -83,6 +84,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
       return;
     }
+
+    // Сохраняем логин и пароль навсегда
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_username', user);
+    await prefs.setString('saved_password', pass);
+    await prefs.setString('logged_username', user);
 
     setState(() {
       _isLoggingIn = true;
@@ -117,6 +124,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _handleLogout() async {
     await _api.logout();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('saved_password');
     setState(() {
       _isAuthenticated = false;
       _currentUsername = null;
@@ -127,15 +136,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveAllSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    final user = _usernameCtrl.text.trim();
+    final pass = _passwordCtrl.text.trim();
+
     await _api.updateStore(_selectedStoreId, _selectedStoreName);
     await prefs.setString('gemini_api_key', _geminiKeyCtrl.text.trim());
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
 
+    // Сохраняем логин и пароль в SharedPreferences, чтобы больше не сбрасывались
+    if (user.isNotEmpty) {
+      await prefs.setString('saved_username', user);
+      await prefs.setString('logged_username', user);
+    }
+    if (pass.isNotEmpty) {
+      await prefs.setString('saved_password', pass);
+    }
+
+    if (user.isNotEmpty && pass.isNotEmpty) {
+      await _api.login(user, pass);
+    }
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Настройки успешно сохранены!'),
+          content: Text('✅ Настройки, логин и пароль успешно сохранены!'),
           backgroundColor: Color(0xFF10B981),
         ),
       );
