@@ -40,7 +40,14 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
     final localDocs = await _storage.getLocalInvoices();
-    final storeName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
+    String storeName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
+    if (storeName.contains('Центральный') ||
+        storeName.contains('Сино') ||
+        storeName.contains('Фирдавси') ||
+        storeName.contains('Шохмансур')) {
+      storeName = 'База gusar.tj (Основной склад)';
+      await prefs.setString('store_name', storeName);
+    }
     final loggedUser = prefs.getString('logged_username');
     final isAuth = prefs.getBool('is_authenticated') ?? false;
 
