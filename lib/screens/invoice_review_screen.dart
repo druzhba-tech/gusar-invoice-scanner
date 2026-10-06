@@ -61,7 +61,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         backgroundColor: const Color(0xFF1E293B),
         title: const Text('Оприходовать в остатки?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'Товары (${_doc.items.length} поз.) на сумму ${_doc.totalAmount.toStringAsFixed(2)} TJS будут зачислены на баланс магазина gusar.tj.',
+          'Товары (${_doc.items.length} поз.) на сумму ${_doc.totalAmount.toStringAsFixed(2)} TJS будут зачислены на баланс ${_api.currentStoreName} в системе gusar.tj.',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
