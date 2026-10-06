@@ -45,6 +45,31 @@ jobs:
           fi
           flutter pub get
 
+      - name: 🔑 Ensure Permanent Release Keystore
+        run: |
+          if [ -d "scanner-app" ]; then
+            cd scanner-app
+          fi
+          KEYSTORE="android/app/gusar_release.keystore"
+          if [ ! -f "$KEYSTORE" ]; then
+            echo "Generating permanent release keystore..."
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE" \
+              -alias gusarkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass gusar_pass_2026 \
+              -keypass gusar_pass_2026 \
+              -dname "CN=Gusar, OU=IT, O=Gusar TJ, L=Dushanbe, ST=Dushanbe, C=TJ"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "$KEYSTORE"
+            git commit -m "chore: add permanent release keystore [skip ci]" || true
+            git push origin HEAD:${{ github.ref_name }} || true
+          fi
+
       - name: 🛠️ Build Release APK
         run: |
           if [ -d "scanner-app" ]; then
