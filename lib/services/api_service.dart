@@ -15,14 +15,25 @@ class ApiService {
   String baseUrl = 'https://gusar.tj';
   String? authToken;
   int currentStoreId = 1;
-  String currentStoreName = 'Магазин Gusar #1 (Центральный)';
+  String currentStoreName = 'База gusar.tj (Основной склад)';
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     authToken = prefs.getString('auth_token');
     currentStoreId = prefs.getInt('store_id') ?? 1;
-    currentStoreName = prefs.getString('store_name') ?? 'Магазин Gusar #1 (Центральный)';
+    currentStoreName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
+
+    // Очистка старых тестовых названий, если они были сохранены ранее
+    if (currentStoreName.contains('Центральный') ||
+        currentStoreName.contains('Сино') ||
+        currentStoreName.contains('Фирдавси') ||
+        currentStoreName.contains('Шохмансур')) {
+      currentStoreName = 'База gusar.tj (Основной склад)';
+      currentStoreId = 1;
+      await prefs.setString('store_name', currentStoreName);
+      await prefs.setInt('store_id', 1);
+    }
 
     _dio = Dio(
       BaseOptions(
@@ -66,27 +77,72 @@ class ApiService {
     await prefs.setInt('store_id', id);
   }
 
+  // Загрузка подразделений/складов напрямую из базы gusar.tj
+  Future<List<Map<String, dynamic>>> fetchStores() async {
+    try {
+      final response = await _dio.get('/api/stores').timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200 && response.data != null) {
+        final dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['stores'] is List) {
+          items = raw['stores'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        }
+
+        if (items.isNotEmpty) {
+          return items.map((e) {
+            final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1;
+            final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
+            final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
+            return {'id': id, 'name': name, 'address': address};
+          }).toList();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
   // 1. Авторизация сотрудника склада / товароведа для выбранного магазина
   Future<Map<String, dynamic>> login(String username, String password) async {
     try {
-      final response = await _dio.post('/api/admin/login', data: {
-        'username': username,
-        'password': password,
-        'store_id': currentStoreId,
-      }).timeout(const Duration(seconds: 12));
+      Response? response;
+      try {
+        response = await _dio.post('/api/admin/login', data: {
+          'username': username,
+          'password': password,
+          'store_id': currentStoreId,
+        }).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        // Запасной эндпоинт авторизации gusar.tj
+        response = await _dio.post('/api/auth/login', data: {
+          'username': username,
+          'password': password,
+        }).timeout(const Duration(seconds: 10));
+      }
 
-      if (response.statusCode == 200 && response.data != null) {
-        final token = response.data['token']?.toString() ?? 'session_${DateTime.now().millisecondsSinceEpoch}';
+      if (response != null && (response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
+        final token = response.data['token']?.toString() ??
+            response.data['accessToken']?.toString() ??
+            response.data['data']?['token']?.toString() ??
+            'session_${DateTime.now().millisecondsSinceEpoch}';
         updateToken(token);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('logged_username', username);
         await prefs.setBool('is_authenticated', true);
+
+        // После входа пробуем подгрузить реальные магазины из gusar.tj
+        await fetchStores();
+
         return {'success': true, 'message': 'Успешная авторизация в системе gusar.tj!'};
       }
       return {'success': false, 'message': 'Неверный логин или пароль.'};
     } on DioException catch (dioErr) {
       if (dioErr.response?.statusCode == 401 || dioErr.response?.statusCode == 403) {
-        return {'success': false, 'message': 'Ошибка 401: Неверный логин или пароль сотрудника.'};
+        final errText = dioErr.response?.data?['message'] ?? dioErr.response?.data?['error'] ?? 'Неверный логин или пароль';
+        return {'success': false, 'message': 'Ошибка авторизации ($errText).'};
       }
       // Офлайн-авторизация при недоступности внешнего API
       final prefs = await SharedPreferences.getInstance();
@@ -102,7 +158,7 @@ class ApiService {
       await prefs.setBool('is_authenticated', true);
       return {
         'success': true,
-        'message': 'Вход выполнен локально (офлайн-режим).'
+        'message': 'Локальная сессия активирована (офлайн-режим).'
       };
     }
   }
