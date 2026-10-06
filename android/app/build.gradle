@@ -49,9 +49,18 @@ android {
         multiDexEnabled true
     }
 
+    signingConfigs {
+        release {
+            keyAlias 'gusarkey'
+            keyPassword 'gusar_pass_2026'
+            storeFile file('gusar_release.keystore')
+            storePassword 'gusar_pass_2026'
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
         }
