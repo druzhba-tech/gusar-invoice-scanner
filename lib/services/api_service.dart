@@ -47,6 +47,7 @@ class ApiService {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'X-Store-ID': currentStoreId.toString(),
           if (authToken != null) 'Authorization': 'Bearer $authToken',
         },
       ),
@@ -58,6 +59,7 @@ class ApiService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('auth_token', token);
     _dio.options.headers['Authorization'] = 'Bearer $token';
+    _dio.options.headers['X-Store-ID'] = currentStoreId.toString();
   }
 
   void updateBaseUrl(String url) async {
@@ -70,6 +72,7 @@ class ApiService {
   Future<void> updateStore(int id, String name) async {
     currentStoreId = id;
     currentStoreName = name;
+    _dio.options.headers['X-Store-ID'] = id.toString();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
     await prefs.setString('store_name', name);
@@ -129,7 +132,6 @@ class ApiService {
         response = await _dio.post('/api/admin/login', data: {
           'username': username,
           'password': password,
-          'store_id': currentStoreId,
         }).timeout(const Duration(seconds: 10));
       } catch (_) {
         // Запасной эндпоинт авторизации gusar.tj
@@ -148,25 +150,26 @@ class ApiService {
         await prefs.setString('logged_username', username);
         await prefs.setBool('is_authenticated', true);
 
-        // ВЫДЕЛЯЕМ ТОЛЬКО ТОТ МАГАЗИН, К КОТОРОМУ У ПОЛЬЗОВАТЕЛЯ ЕСТЬ ДОСТУП
+        // Получаем привязку магазина для авторизованного пользователя
         final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'] ?? response.data;
-        int assignedStoreId = currentStoreId;
-        String assignedStoreName = currentStoreName;
+        int? userStoreId;
+        String? userStoreName;
 
         if (rawUser is Map) {
           if (rawUser['store_id'] != null) {
-            assignedStoreId = int.tryParse(rawUser['store_id'].toString()) ?? currentStoreId;
+            userStoreId = int.tryParse(rawUser['store_id'].toString());
           }
           if (rawUser['store_name'] != null && rawUser['store_name'].toString().trim().isNotEmpty) {
-            assignedStoreName = rawUser['store_name'].toString().trim();
-          } else if (rawUser['store'] is Map && rawUser['store']['name'] != null) {
-            assignedStoreName = rawUser['store']['name'].toString().trim();
+            userStoreName = rawUser['store_name'].toString().trim();
+          } else if (rawUser['store'] is Map) {
+            if (rawUser['store']['name'] != null) {
+              userStoreName = rawUser['store']['name'].toString().trim();
+            }
             if (rawUser['store']['id'] != null) {
-              assignedStoreId = int.tryParse(rawUser['store']['id'].toString()) ?? assignedStoreId;
+              userStoreId = int.tryParse(rawUser['store']['id'].toString());
             }
           }
 
-          // Если у пользователя конкретный список доступных магазинов
           final userStoresList = rawUser['stores'] ?? response.data['stores'];
           if (userStoresList is List && userStoresList.isNotEmpty) {
             accessibleStores = userStoresList.map((e) => {
@@ -174,12 +177,21 @@ class ApiService {
               'name': e['name']?.toString() ?? 'Магазин gusar.tj #${e['id']}',
               'address': e['address']?.toString() ?? 'Склад gusar.tj',
             }).toList();
-          } else {
-            accessibleStores = [
-              {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
-            ];
           }
-        } else {
+        }
+
+        // Если список доступных магазинов не вернулся в ответе login, запрашиваем через /api/stores
+        if (accessibleStores.isEmpty) {
+          final fetched = await fetchStores();
+          if (fetched.isNotEmpty) {
+            accessibleStores = fetched;
+          }
+        }
+
+        int assignedStoreId = userStoreId ?? (accessibleStores.isNotEmpty ? (accessibleStores.first['id'] as int) : currentStoreId);
+        String assignedStoreName = userStoreName ?? (accessibleStores.isNotEmpty ? (accessibleStores.first['name'] as String) : currentStoreName);
+
+        if (accessibleStores.isEmpty) {
           accessibleStores = [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
@@ -441,6 +453,17 @@ class ApiService {
     final cleanBarcode = barcode.trim();
     Product? created;
 
+    String? base64Image;
+    if (localImagePath != null && localImagePath.isNotEmpty) {
+      try {
+        final f = File(localImagePath);
+        if (f.existsSync()) {
+          final bytes = await f.readAsBytes();
+          base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+        }
+      } catch (_) {}
+    }
+
     try {
       final response = await _dio.post('/api/products', data: {
         'name': name.trim(),
@@ -455,7 +478,8 @@ class ApiService {
         'unit': unit,
         'plu_code': pluCode,
         'image_url': imageUrl,
-      }).timeout(const Duration(seconds: 8));
+        if (base64Image != null) 'imageBase64': base64Image,
+      }).timeout(const Duration(seconds: 12));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         created = Product.fromJson(response.data);
@@ -485,36 +509,49 @@ class ApiService {
     return created;
   }
 
-  // 4. Загрузка фото товара на сервер gusar.tj с сохранением в локальный кэш
+  // 4. Загрузка фото товара на сервер gusar.tj в формате Base64 (как в админке сайта)
   Future<Product?> uploadProductImage(int productId, String imagePath) async {
     final idx = _cachedProducts.indexWhere((p) => p.id == productId);
     Product? updatedProd;
 
     try {
-      final fileName = imagePath.split(Platform.pathSeparator).last;
-      final formData = FormData.fromMap({
-        'image': await MultipartFile.fromFile(imagePath, filename: fileName),
-        'product_id': productId,
-        'store_id': currentStoreId,
-      });
+      final f = File(imagePath);
+      if (!f.existsSync()) return null;
 
-      final response = await _dio.post(
-        '/api/products/$productId/image',
-        data: formData,
-        options: Options(contentType: 'multipart/form-data'),
-      ).timeout(const Duration(seconds: 15));
+      final bytes = await f.readAsBytes();
+      final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
 
-      if (response.statusCode == 200 && response.data != null) {
-        final serverUrl = response.data['image_url'] ?? response.data['url'] ?? response.data['image'];
+      Response? response;
+      // 1. Быстрое обновление фото через метод админки gusar.tj
+      try {
+        response = await _dio.patch(
+          '/api/admin/products/$productId/quick-update',
+          data: {'imageBase64': base64Image},
+        ).timeout(const Duration(seconds: 15));
+      } catch (_) {
+        // 2. Метод через прямое обновление карточки товара
+        try {
+          response = await _dio.put(
+            '/api/products/$productId',
+            data: {'imageBase64': base64Image},
+          ).timeout(const Duration(seconds: 15));
+        } catch (_) {}
+      }
+
+      if (response != null && (response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
+        final serverUrl = response.data['image_url'] ??
+            response.data['url'] ??
+            response.data['image'] ??
+            response.data['product']?['image_url'];
         if (idx >= 0) {
           updatedProd = _cachedProducts[idx].copyWith(
-            imageUrl: serverUrl?.toString(),
+            imageUrl: serverUrl?.toString() ?? _cachedProducts[idx].imageUrl,
             localImagePath: imagePath,
           );
         }
       }
     } catch (e) {
-      print('Upload product photo to server error (saving locally): $e');
+      print('Upload product photo to server error: $e');
     }
 
     if (updatedProd == null && idx >= 0) {

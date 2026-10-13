@@ -417,14 +417,21 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
       setState(() => _isUploading = false);
 
       if (mounted) {
+        final bool onSite = updated?.imageUrl != null;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            backgroundColor: const Color(0xFF10B981),
+            backgroundColor: onSite ? const Color(0xFF10B981) : Colors.amber.shade800,
             content: Row(
               children: [
-                const Icon(Icons.check_circle_rounded, color: Colors.white),
+                Icon(onSite ? Icons.cloud_done_rounded : Icons.save_rounded, color: Colors.white),
                 const SizedBox(width: 8),
-                Expanded(child: Text('Фото товара "${widget.product.name}" успешно сохранено!')),
+                Expanded(
+                  child: Text(
+                    onSite
+                        ? 'Фото товара "${widget.product.name}" обновлено на сайте gusar.tj!'
+                        : 'Фото товара "${widget.product.name}" сохранено в приложении!',
+                  ),
+                ),
               ],
             ),
           ),
