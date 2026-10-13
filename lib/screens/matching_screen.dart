@@ -5,6 +5,7 @@ import '../models/invoice_item.dart';
 import '../models/product.dart';
 import '../services/matching_service.dart';
 import '../services/api_service.dart';
+import 'add_product_screen.dart';
 
 class MatchingScreen extends StatefulWidget {
   final InvoiceDocument document;
@@ -94,80 +95,28 @@ class _MatchingScreenState extends State<MatchingScreen> {
     });
   }
 
-  void _showCreateNewProductDialog(InvoiceItem item, [String? initialBarcode]) {
-    final nameCtrl = TextEditingController(text: item.rawName);
-    final barcodeCtrl = TextEditingController(text: initialBarcode ?? item.barcode ?? '');
-    final buyPriceCtrl = TextEditingController(text: item.buyPrice.toStringAsFixed(2));
-    final retailPriceCtrl = TextEditingController(text: (item.buyPrice * 1.25).toStringAsFixed(2));
+  void _showCreateNewProductDialog(InvoiceItem item, [String? initialBarcode]) async {
+    final ProductType suggestedType = (item.unit == 'кг' || item.rawName.toLowerCase().contains('весов'))
+        ? ProductType.weight
+        : ProductType.barcode;
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text('✨ Создать новинку в gusar.tj', style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: 'Наименование', labelStyle: TextStyle(color: Colors.white54)),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: barcodeCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: 'Штрихкод с коробки', labelStyle: TextStyle(color: Colors.white54)),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: buyPriceCtrl,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(labelText: 'Закупка (TJS)', labelStyle: TextStyle(color: Colors.white54)),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: retailPriceCtrl,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(color: Color(0xFF10B981)),
-                      decoration: const InputDecoration(labelText: 'Розница (TJS)', labelStyle: TextStyle(color: Colors.white54)),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+    final created = await Navigator.push<Product?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddProductScreen(
+          initialName: item.rawName,
+          initialCostPrice: item.buyPrice,
+          initialRetailPrice: item.buyPrice * 1.25,
+          initialBarcode: initialBarcode ?? item.matchedBarcode ?? item.barcode,
+          initialType: suggestedType,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-            onPressed: () async {
-              final newProd = await _api.createProduct(
-                name: nameCtrl.text.trim(),
-                barcode: barcodeCtrl.text.trim(),
-                price: double.tryParse(retailPriceCtrl.text) ?? item.buyPrice * 1.2,
-                costPrice: double.tryParse(buyPriceCtrl.text) ?? item.buyPrice,
-              );
-
-              if (newProd != null) {
-                _catalog.add(newProd);
-                _bindProduct(item, newProd);
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Создать и привязать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
       ),
     );
+
+    if (created != null) {
+      _catalog.add(created);
+      _bindProduct(item, created);
+    }
   }
 
   @override

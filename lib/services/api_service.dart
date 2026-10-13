@@ -423,13 +423,19 @@ class ApiService {
     await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
   }
 
-  // 3. Создание нового товара прямо из приёмки за 1 клик
+  // 3. Создание нового товара прямо из приёмки или экрана добавления товара
   Future<Product?> createProduct({
     required String name,
     required String barcode,
     required double price,
     required double costPrice,
     int? categoryId,
+    String? category,
+    ProductType productType = ProductType.barcode,
+    String unit = 'шт',
+    String? pluCode,
+    String? localImagePath,
+    String? imageUrl,
   }) async {
     final cleanBarcode = barcode.trim();
     Product? created;
@@ -441,8 +447,13 @@ class ApiService {
         'price': price,
         'cost_price': costPrice,
         'category_id': categoryId,
+        'category': category,
         'store_id': currentStoreId,
         'stock_quantity': 0,
+        'product_type': productType.idName,
+        'unit': unit,
+        'plu_code': pluCode,
+        'image_url': imageUrl,
       }).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
@@ -457,10 +468,16 @@ class ApiService {
       id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
       storeId: currentStoreId,
       name: name.trim(),
-      barcode: cleanBarcode,
+      barcode: cleanBarcode.isNotEmpty ? cleanBarcode : null,
       price: price > 0 ? price : (costPrice * 1.25),
       costPrice: costPrice,
       stockQuantity: 0,
+      category: category,
+      productType: productType,
+      unit: unit,
+      pluCode: pluCode,
+      localImagePath: localImagePath,
+      imageUrl: imageUrl,
     );
 
     _addOrUpdateCachedProduct(created);

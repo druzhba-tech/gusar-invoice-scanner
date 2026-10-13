@@ -126,7 +126,7 @@ class LocalStorageService {
     batch.delete('products_cache');
 
     for (var p in products) {
-      batch.insert('products_cache', p.toJson(), conflictAlgorithm: ConflictAlgorithm.replace);
+      batch.insert('products_cache', p.toDatabaseMap(), conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
