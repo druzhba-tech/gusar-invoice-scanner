@@ -59,7 +59,7 @@ class UpdaterService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final tag = data['tag_name']?.toString().replaceAll('v', '').replaceAll('V', '') ?? '1.0.0';
-        final body = data['body']?.toString() ?? 'Доступно плановое обновление приложения Gusar Scanner.';
+        final body = data['body']?.toString() ?? 'Доступно плановое обновление приложения GScan.';
         final publishedStr = data['published_at']?.toString();
         DateTime? publishedAt;
         if (publishedStr != null) {

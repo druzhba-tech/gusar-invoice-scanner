@@ -12,6 +12,7 @@ import '../services/matching_service.dart';
 import 'matching_screen.dart';
 import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
+import 'add_product_screen.dart';
 
 class InvoiceReviewScreen extends StatefulWidget {
   final InvoiceDocument document;
@@ -49,6 +50,63 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   Future<void> _saveAndRefresh() async {
     await _storage.saveInvoice(_doc);
     if (mounted) setState(() {});
+  }
+
+  // Привязка товара к строке накладной
+  Future<void> _bindProductToItem(InvoiceItem item, Product product) async {
+    setState(() {
+      item.matchedProductId = product.id;
+      item.matchedProductName = product.name;
+      item.matchedBarcode = product.barcode;
+      item.currentRetailPrice = product.price;
+      item.lastBuyPrice = product.costPrice;
+      item.matchConfidence = 1.0;
+      item.status = ItemStatus.verified;
+    });
+
+    await _matcher.saveAlias(_doc.supplierName, item.rawName, product.id);
+    await _saveAndRefresh();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Товар "${product.name}" успешно привязан к накладной!'),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF10B981),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  // Создание нового товара прямо из накладной
+  Future<void> _createNewProductForItem(InvoiceItem item, [String? initialBarcode]) async {
+    final ProductType suggestedType = (item.unit == 'кг' || item.rawName.toLowerCase().contains('весов'))
+        ? ProductType.weight
+        : ProductType.barcode;
+
+    final created = await Navigator.push<Product?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddProductScreen(
+          initialName: item.rawName,
+          initialCostPrice: item.buyPrice > 0 ? item.buyPrice : null,
+          initialBarcode: initialBarcode ?? item.barcode ?? item.matchedBarcode,
+          initialType: suggestedType,
+        ),
+      ),
+    );
+
+    if (created != null) {
+      await _bindProductToItem(item, created);
+    }
   }
 
   // 1. Привязка позиции по пику штрихкода (Scan to Bind)
@@ -131,6 +189,21 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                         ],
                       ),
                     ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Создать', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        Navigator.pop(modalCtx);
+                        _createNewProductForItem(item, item.barcode);
+                      },
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: isSyncing
                           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)))
@@ -209,12 +282,16 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                   ),
                                   const SizedBox(height: 12),
                                   ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-                                    icon: const Icon(Icons.add, color: Colors.white),
-                                    label: const Text('Создать такой товар в gusar.tj', style: TextStyle(color: Colors.white)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF10B981),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                    ),
+                                    icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+                                    label: const Text('Создать новый товар', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                                     onPressed: () {
                                       Navigator.pop(modalCtx);
-                                      _showCreateProductDialog(item, initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : item.rawName);
+                                      _createNewProductForItem(item, item.barcode);
                                     },
                                   ),
                                 ],
@@ -269,8 +346,9 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   void _showCreateProductDialog(InvoiceItem item, {String? initialName, String? initialBarcode}) {
     final nameCtrl = TextEditingController(text: initialName ?? item.rawName);
     final barcodeCtrl = TextEditingController(text: initialBarcode ?? item.barcode ?? '');
-    final costCtrl = TextEditingController(text: item.buyPrice.toStringAsFixed(2));
-    final retailCtrl = TextEditingController(text: (item.buyPrice * 1.25).toStringAsFixed(2));
+    final costCtrl = TextEditingController(text: item.buyPrice > 0 ? item.buyPrice.toStringAsFixed(2) : '');
+    final wholesaleCtrl = TextEditingController();
+    final retailCtrl = TextEditingController();
 
     showDialog(
       context: context,
@@ -301,10 +379,17 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
               ),
               const SizedBox(height: 8),
               TextField(
+                controller: wholesaleCtrl,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(color: Color(0xFF38BDF8)),
+                decoration: const InputDecoration(labelText: 'Оптовая цена, TJS', labelStyle: TextStyle(color: Colors.white60)),
+              ),
+              const SizedBox(height: 8),
+              TextField(
                 controller: retailCtrl,
                 keyboardType: TextInputType.number,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: 'Розничная цена (продажи), TJS', labelStyle: TextStyle(color: Colors.white60)),
+                style: const TextStyle(color: Color(0xFF10B981)),
+                decoration: const InputDecoration(labelText: 'Розничная цена (продажа), TJS', labelStyle: TextStyle(color: Colors.white60)),
               ),
             ],
           ),
@@ -317,7 +402,8 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
               final newName = nameCtrl.text.trim();
               final newBarcode = barcodeCtrl.text.trim();
               final cost = double.tryParse(costCtrl.text) ?? item.buyPrice;
-              final retail = double.tryParse(retailCtrl.text) ?? (cost * 1.25);
+              final wholesale = double.tryParse(wholesaleCtrl.text);
+              final retail = double.tryParse(retailCtrl.text) ?? 0.0;
 
               if (newName.isEmpty) return;
 
@@ -325,6 +411,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 name: newName,
                 barcode: newBarcode,
                 price: retail,
+                wholesalePrice: wholesale,
                 costPrice: cost,
               );
 
@@ -1470,18 +1557,32 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 ),
               ),
               const SizedBox(height: 10),
+              // Кнопка 1: СОЗДАТЬ НОВЫЙ ТОВАР (если товара ещё нет в базе)
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 42),
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  elevation: 2,
+                ),
+                icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                label: const Text('Создать новый товар', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                onPressed: () => _createNewProductForItem(item),
+              ),
+              const SizedBox(height: 8),
               Row(
                 children: [
-                  // Кнопка 1: ПИКНУТЬ ШТРИХКОД (Главная кнопка)
+                  // Кнопка 2: ПИКНУТЬ ШТРИХКОД
                   Expanded(
                     flex: 3,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0284C7),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        elevation: 2,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF38BDF8),
+                        side: const BorderSide(color: Color(0xFF38BDF8)),
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.qr_code_scanner, size: 16),
                       label: const Text('Пикнуть штрихкод', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
@@ -1489,18 +1590,18 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // Кнопка 2: ВЫБРАТЬ ИЗ БАЗЫ GUSAR.TJ
+                  // Кнопка 3: ВЫБРАТЬ ИЗ БАЗЫ
                   Expanded(
                     flex: 2,
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF38BDF8),
-                        side: const BorderSide(color: Color(0xFF38BDF8)),
-                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.search, size: 16),
-                      label: const Text('Из базы', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      label: const Text('Из базы', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                       onPressed: () => _showCatalogPicker(item),
                     ),
                   ),
@@ -1599,100 +1700,23 @@ class _ItemBarcodeScannerModalState extends State<_ItemBarcodeScannerModal> {
     }
   }
 
-  void _showNotFoundDialog(String barcode) {
-    final nameCtrl = TextEditingController(text: widget.item.rawName);
-    final costCtrl = TextEditingController(text: widget.item.buyPrice.toStringAsFixed(2));
-    final retailCtrl = TextEditingController(text: (widget.item.buyPrice * 1.25).toStringAsFixed(2));
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dlgCtx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Icon(Icons.info_outline, color: Color(0xFFF59E0B), size: 24),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('Товар не найден на gusar.tj', style: TextStyle(color: Colors.white, fontSize: 15))),
-          ],
+  void _showNotFoundDialog(String barcode) async {
+    final created = await Navigator.push<Product?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddProductScreen(
+          initialName: widget.item.rawName,
+          initialCostPrice: widget.item.buyPrice > 0 ? widget.item.buyPrice : null,
+          initialBarcode: barcode,
         ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Штрихкод: $barcode', style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13)),
-              const SizedBox(height: 6),
-              Text(
-                'Товар с таким штрихкодом отсутствует в каталоге ${widget.api.currentStoreName}. Создать его прямо сейчас?',
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: nameCtrl,
-                style: const TextStyle(color: Colors.white, fontSize: 13),
-                decoration: const InputDecoration(labelText: 'Название товара', labelStyle: TextStyle(color: Colors.white60)),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: costCtrl,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      decoration: const InputDecoration(labelText: 'Закупка, TJS', labelStyle: TextStyle(color: Colors.white60)),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextField(
-                      controller: retailCtrl,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      decoration: const InputDecoration(labelText: 'Розница, TJS', labelStyle: TextStyle(color: Colors.white60)),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dlgCtx),
-            child: const Text('Сканировать снова', style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-            onPressed: () async {
-              final newName = nameCtrl.text.trim();
-              final cost = double.tryParse(costCtrl.text) ?? widget.item.buyPrice;
-              final retail = double.tryParse(retailCtrl.text) ?? (cost * 1.25);
-
-              if (newName.isEmpty) return;
-
-              final created = await widget.api.createProduct(
-                name: newName,
-                barcode: barcode,
-                price: retail,
-                costPrice: cost,
-              );
-
-              if (created != null) {
-                widget.matcher.applyMatch(widget.item, created, confidence: 1.0);
-                await widget.matcher.saveAlias(widget.supplierName, widget.item.rawName, created.id);
-
-                Navigator.pop(dlgCtx);
-                widget.onBound(created);
-              }
-            },
-            child: const Text('Создать в gusar.tj', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
       ),
     );
+
+    if (created != null) {
+      widget.matcher.applyMatch(widget.item, created, confidence: 1.0);
+      await widget.matcher.saveAlias(widget.supplierName, widget.item.rawName, created.id);
+      widget.onBound(created);
+    }
   }
 
   @override

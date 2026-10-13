@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/product.dart';
 import '../services/api_service.dart';
+import '../utils/image_utils.dart';
 import '../widgets/barcode_scanner_dialog.dart';
 
 class ProductPhotoManagerScreen extends StatefulWidget {
@@ -19,6 +20,7 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
   final ImagePicker _picker = ImagePicker();
 
   final TextEditingController _searchCtrl = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   List<Product> _allProducts = [];
   List<Product> _filteredProducts = [];
   bool _isLoading = true;
@@ -30,11 +32,17 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
   void initState() {
     super.initState();
     _loadProducts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _searchFocusNode.requestFocus();
+      }
+    });
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -76,14 +84,17 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
 
       // Если найден ровно один товар — сразу открываем его для фото
       if (_filteredProducts.length == 1) {
-        _openPhotoEditorSheet(_filteredProducts.first);
+        await _openPhotoEditorSheet(_filteredProducts.first);
       }
+    }
+    if (mounted) {
+      _searchFocusNode.requestFocus();
     }
   }
 
   // Открытие модального окна добавления/редактирования фото товара
-  void _openPhotoEditorSheet(Product product) {
-    showModalBottomSheet(
+  Future<void> _openPhotoEditorSheet(Product product) async {
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1E293B),
@@ -103,6 +114,9 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
         },
       ),
     );
+    if (mounted) {
+      _searchFocusNode.requestFocus();
+    }
   }
 
   @override
@@ -140,6 +154,9 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
                 Expanded(
                   child: TextField(
                     controller: _searchCtrl,
+                    focusNode: _searchFocusNode,
+                    autofocus: true,
+                    textInputAction: TextInputAction.search,
                     style: const TextStyle(color: Colors.white, fontSize: 14),
                     decoration: InputDecoration(
                       hintText: 'Поиск по названию или штрихкоду...',
@@ -151,15 +168,30 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
                               onPressed: () {
                                 _searchCtrl.clear();
                                 _applyFilter();
+                                _searchFocusNode.requestFocus();
                               },
                             )
                           : null,
                       filled: true,
                       fillColor: const Color(0xFF0F172A),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFF10B981), width: 2),
+                      ),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     onChanged: (_) => _applyFilter(),
+                    onSubmitted: (_) {
+                      _applyFilter();
+                      if (_filteredProducts.length == 1) {
+                        _openPhotoEditorSheet(_filteredProducts.first);
+                      }
+                    },
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -233,6 +265,7 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
       onTap: () {
         setState(() => _photoFilter = index);
         _applyFilter();
+        _searchFocusNode.requestFocus();
         HapticFeedback.selectionClick();
       },
       child: Container(
@@ -350,14 +383,14 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
     }
   }
 
-  // Сжатие и сохранение фото
+  // Сжатие и сохранение фото в формате 1:1 (квадрат)
   Future<void> _pickAndCompressImage(ImageSource source) async {
     try {
       final picked = await _picker.pickImage(
         source: source,
-        maxWidth: 1200,
-        maxHeight: 1200,
-        imageQuality: 88,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 92,
       );
 
       if (picked != null) {
@@ -366,7 +399,15 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
 
         final appDir = await getApplicationDocumentsDirectory();
         final fileName = 'prod_${widget.product.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final savedFile = await originalFile.copy('${appDir.path}/$fileName');
+        final targetPath = '${appDir.path}/$fileName';
+
+        // Обрезаем до строгого квадрата 1:1 и сжимаем без потери качества
+        final savedFile = await ImageUtils.cropToSquareAndCompress(
+          originalFile,
+          targetPath,
+          maxSize: 1000,
+          quality: 85,
+        );
         final compressedSize = await savedFile.length();
 
         final origMb = (originalSize / (1024 * 1024)).toStringAsFixed(1);
@@ -375,7 +416,7 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
         setState(() {
           _currentImageFile = savedFile;
           _rotationTurns = 0;
-          _compressionInfo = 'Оптимизировано: ${origMb} МБ ➔ ${compKb} КБ (без потери резкости)';
+          _compressionInfo = 'Формат 1:1 (квадрат) • ${origMb} МБ ➔ ${compKb} КБ';
         });
 
         HapticFeedback.mediumImpact();
@@ -409,9 +450,21 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
     setState(() => _isUploading = true);
 
     try {
+      File fileToUpload = _currentImageFile!;
+      // Если фото было повернуто в интерфейсе, физически сохраняем повернутый 1:1 файл
+      if (_rotationTurns != 0) {
+        final appDir = await getApplicationDocumentsDirectory();
+        final rotName = 'rot_${widget.product.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        fileToUpload = await ImageUtils.cropToSquareAndCompress(
+          _currentImageFile!,
+          '${appDir.path}/$rotName',
+          quarterTurns: _rotationTurns,
+        );
+      }
+
       final updated = await _api.uploadProductImage(
         widget.product.id,
-        _currentImageFile!.path,
+        fileToUpload.path,
       );
 
       setState(() => _isUploading = false);

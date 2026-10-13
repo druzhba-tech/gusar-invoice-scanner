@@ -1,7 +1,7 @@
 name: gusar_invoice_scanner
 description: "Мобильный терминал приёмки товаров по накладным и чекам для сети Gusar (gusar.tj)"
 publish_to: "none"
-version: 1.4.2+16
+version: 1.4.3+17
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -18,12 +18,13 @@ dependencies:
   cached_network_image: ^3.3.1
   flutter_svg: ^2.0.10+1
 
-  # Camera & Scanning
+  # Camera & Scanning & Images
   camera: ^0.11.0+2
   mobile_scanner: ^5.1.1
   google_mlkit_text_recognition: ^0.13.0
   image_picker: ^1.1.2
   file_picker: ^8.0.7
+  image: ^4.2.0
 
   # Networking & API
   dio: ^5.5.0+1
@@ -50,4 +51,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icons/
 

@@ -106,7 +106,6 @@ class _MatchingScreenState extends State<MatchingScreen> {
         builder: (_) => AddProductScreen(
           initialName: item.rawName,
           initialCostPrice: item.buyPrice,
-          initialRetailPrice: item.buyPrice * 1.25,
           initialBarcode: initialBarcode ?? item.matchedBarcode ?? item.barcode,
           initialType: suggestedType,
         ),
@@ -217,15 +216,30 @@ class _MatchingScreenState extends State<MatchingScreen> {
 
         const SizedBox(height: 16),
 
-        // Кнопка быстрого "пика" штрихкода коробки
+        // Кнопка 1: Создать как новый товар (Главная)
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF0284C7),
+            backgroundColor: const Color(0xFF10B981),
             minimumSize: const Size(double.infinity, 46),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            elevation: 2,
           ),
-          icon: const Icon(Icons.qr_code_scanner, color: Colors.white),
-          label: const Text('«Пикнуть» штрихкод с коробки', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          icon: const Icon(Icons.add_circle_outline_rounded, color: Colors.white, size: 20),
+          label: const Text('Создать как новый товар в каталоге', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+          onPressed: () => _showCreateNewProductDialog(item),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Кнопка 2: "Пикнуть" штрихкод с коробки
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: Color(0xFF0284C7)),
+            minimumSize: const Size(double.infinity, 44),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          icon: const Icon(Icons.qr_code_scanner, color: Color(0xFF38BDF8)),
+          label: const Text('«Пикнуть» штрихкод с коробки', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold)),
           onPressed: () => setState(() => _isScannerOpen = true),
         ),
 
@@ -237,9 +251,35 @@ class _MatchingScreenState extends State<MatchingScreen> {
         const SizedBox(height: 10),
 
         if (candidates.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('Похожих товаров не найдено в базе', style: TextStyle(color: Colors.white38)),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              children: [
+                const Icon(Icons.inventory_2_outlined, color: Colors.white38, size: 40),
+                const SizedBox(height: 10),
+                const Text(
+                  'Этого товара нет в базе gusar.tj.\nСоздайте карточку товара прямо сейчас:',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                const SizedBox(height: 14),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.add, color: Colors.white),
+                  label: const Text('Создать карточку товара', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  onPressed: () => _showCreateNewProductDialog(item),
+                ),
+              ],
+            ),
           )
         else
           ...candidates.map((cand) {
@@ -264,20 +304,6 @@ class _MatchingScreenState extends State<MatchingScreen> {
               ),
             );
           }),
-
-        const SizedBox(height: 12),
-
-        // Кнопка создания новинки
-        OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            side: const BorderSide(color: Color(0xFF10B981)),
-            minimumSize: const Size(double.infinity, 44),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          icon: const Icon(Icons.add, color: Color(0xFF10B981)),
-          label: const Text('Создать как новый товар в gusar.tj', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
-          onPressed: () => _showCreateNewProductDialog(item),
-        ),
       ],
     );
   }

@@ -6,12 +6,14 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/product.dart';
 import '../services/api_service.dart';
+import '../utils/image_utils.dart';
 import '../widgets/barcode_scanner_dialog.dart';
 
 class AddProductScreen extends StatefulWidget {
   final String? initialName;
   final double? initialCostPrice;
   final double? initialRetailPrice;
+  final double? initialWholesalePrice;
   final String? initialBarcode;
   final ProductType? initialType;
 
@@ -20,6 +22,7 @@ class AddProductScreen extends StatefulWidget {
     this.initialName,
     this.initialCostPrice,
     this.initialRetailPrice,
+    this.initialWholesalePrice,
     this.initialBarcode,
     this.initialType,
   });
@@ -38,6 +41,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   late TextEditingController _pluCtrl;
   late TextEditingController _costPriceCtrl;
   late TextEditingController _retailPriceCtrl;
+  late TextEditingController _wholesalePriceCtrl;
   late TextEditingController _categoryCtrl;
 
   ProductType _selectedType = ProductType.barcode;
@@ -63,9 +67,12 @@ class _AddProductScreenState extends State<AddProductScreen> {
     _retailPriceCtrl = TextEditingController(
       text: widget.initialRetailPrice != null && widget.initialRetailPrice! > 0
           ? widget.initialRetailPrice!.toStringAsFixed(2)
-          : (widget.initialCostPrice != null && widget.initialCostPrice! > 0
-              ? (widget.initialCostPrice! * 1.25).toStringAsFixed(2)
-              : ''),
+          : '',
+    );
+    _wholesalePriceCtrl = TextEditingController(
+      text: widget.initialWholesalePrice != null && widget.initialWholesalePrice! > 0
+          ? widget.initialWholesalePrice!.toStringAsFixed(2)
+          : '',
     );
     _categoryCtrl = TextEditingController(text: 'Общая');
 
@@ -88,6 +95,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
     _pluCtrl.dispose();
     _costPriceCtrl.dispose();
     _retailPriceCtrl.dispose();
+    _wholesalePriceCtrl.dispose();
     _categoryCtrl.dispose();
     super.dispose();
   }
@@ -200,21 +208,28 @@ class _AddProductScreenState extends State<AddProductScreen> {
     });
   }
 
-  // Выбор фото (камера или галерея)
+  // Выбор фото (камера или галерея) с обрезкой до 1:1 (квадрат)
   Future<void> _pickImage(ImageSource source) async {
     try {
       final picked = await _picker.pickImage(
         source: source,
         maxWidth: 1600,
         maxHeight: 1600,
-        imageQuality: 88,
+        imageQuality: 92,
       );
 
       if (picked != null) {
-        // Сохраняем во внутреннее хранилище приложения
+        // Сохраняем во внутреннее хранилище приложения в строгом формате 1:1
         final appDir = await getApplicationDocumentsDirectory();
         final fileName = 'prod_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final savedImage = await File(picked.path).copy('${appDir.path}/$fileName');
+        final targetPath = '${appDir.path}/$fileName';
+
+        final savedImage = await ImageUtils.cropToSquareAndCompress(
+          File(picked.path),
+          targetPath,
+          maxSize: 1000,
+          quality: 85,
+        );
 
         setState(() {
           _imageFile = savedImage;
@@ -322,6 +337,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
     final name = _nameCtrl.text.trim();
     final costPrice = double.tryParse(_costPriceCtrl.text.replaceAll(',', '.')) ?? 0.0;
     final retailPrice = double.tryParse(_retailPriceCtrl.text.replaceAll(',', '.')) ?? 0.0;
+    final wholesalePrice = double.tryParse(_wholesalePriceCtrl.text.replaceAll(',', '.'));
 
     String finalBarcode = _barcodeCtrl.text.trim();
     if (_selectedType == ProductType.weight) {
@@ -337,16 +353,28 @@ class _AddProductScreenState extends State<AddProductScreen> {
     setState(() => _isSaving = true);
 
     try {
+      File? imageToSave = _imageFile;
+      if (imageToSave != null && _imageRotationTurns != 0) {
+        final appDir = await getApplicationDocumentsDirectory();
+        final rotName = 'rot_prod_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        imageToSave = await ImageUtils.cropToSquareAndCompress(
+          imageToSave,
+          '${appDir.path}/$rotName',
+          quarterTurns: _imageRotationTurns,
+        );
+      }
+
       final created = await _api.createProduct(
         name: name,
         barcode: finalBarcode,
-        price: retailPrice > 0 ? retailPrice : (costPrice * 1.25),
+        price: retailPrice,
+        wholesalePrice: wholesalePrice,
         costPrice: costPrice,
         category: _categoryCtrl.text.trim(),
         productType: _selectedType,
         unit: _selectedUnit,
         pluCode: _pluCtrl.text.trim().isNotEmpty ? _pluCtrl.text.trim() : null,
-        localImagePath: _imageFile?.path,
+        localImagePath: imageToSave?.path,
       );
 
       setState(() => _isSaving = false);
@@ -981,6 +1009,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
         const SizedBox(height: 8),
         Row(
           children: [
+            // Закупка (себестоимость)
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1001,47 +1030,67 @@ class _AddProductScreenState extends State<AddProductScreen> {
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
-                    onChanged: (val) {
-                      final cost = double.tryParse(val.replaceAll(',', '.')) ?? 0;
-                      if (cost > 0 && (_retailPriceCtrl.text.isEmpty || double.tryParse(_retailPriceCtrl.text) == 0)) {
-                        _retailPriceCtrl.text = (cost * 1.25).toStringAsFixed(2);
-                      }
-                      setState(() {});
-                    },
+                    onChanged: (_) => setState(() {}),
                   ),
                 ],
               ),
             ),
             const SizedBox(width: 12),
+            // Оптовая цена
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Розница (продажа) *', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  const Text('Оптовая цена', style: TextStyle(color: Colors.white54, fontSize: 11)),
                   const SizedBox(height: 4),
                   TextFormField(
-                    controller: _retailPriceCtrl,
+                    controller: _wholesalePriceCtrl,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(color: Color(0xFF10B981), fontSize: 15, fontWeight: FontWeight.bold),
+                    style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 15, fontWeight: FontWeight.w600),
                     decoration: InputDecoration(
                       hintText: '0.00',
                       hintStyle: const TextStyle(color: Colors.white38),
                       suffixText: 'TJS',
-                      suffixStyle: const TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.bold),
+                      suffixStyle: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
                       filled: true,
                       fillColor: const Color(0xFF1E293B),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
-                    validator: (val) {
-                      final price = double.tryParse((val ?? '').replaceAll(',', '.')) ?? 0;
-                      if (price <= 0) return 'Укажите розничную цену';
-                      return null;
-                    },
                     onChanged: (_) => setState(() {}),
                   ),
                 ],
               ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        // Розничная цена (продажа)
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Розничная цена (продажа) *', style: TextStyle(color: Colors.white54, fontSize: 11)),
+            const SizedBox(height: 4),
+            TextFormField(
+              controller: _retailPriceCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                hintText: '0.00',
+                hintStyle: const TextStyle(color: Colors.white38),
+                suffixText: 'TJS',
+                suffixStyle: const TextStyle(color: Color(0xFF10B981), fontSize: 13, fontWeight: FontWeight.bold),
+                filled: true,
+                fillColor: const Color(0xFF1E293B),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              ),
+              validator: (val) {
+                final price = double.tryParse((val ?? '').replaceAll(',', '.')) ?? 0;
+                if (price <= 0) return 'Укажите розничную цену';
+                return null;
+              },
+              onChanged: (_) => setState(() {}),
             ),
           ],
         ),

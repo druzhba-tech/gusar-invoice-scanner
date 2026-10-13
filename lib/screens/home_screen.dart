@@ -105,7 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Обновление v${update.version}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  const Text('Gusar Scanner (tj.gusar)', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  const Text('GScan (tj.gusar)', style: TextStyle(color: Colors.white54, fontSize: 12)),
                 ],
               ),
             ),
@@ -242,7 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     Row(
                       children: [
-                        const Text('GUSAR SCANNER', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                        const Text('GScan', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                         const SizedBox(width: 6),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),

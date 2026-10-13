@@ -46,6 +46,7 @@ class Product {
   final String name;
   final String? barcode;
   final double price; // Розничная цена продажи
+  final double? wholesalePrice; // Оптовая цена продажи
   final double costPrice; // Последняя себестоимость
   final double stockQuantity; // Текущий остаток
   final String? category;
@@ -61,6 +62,7 @@ class Product {
     required this.name,
     this.barcode,
     required this.price,
+    this.wholesalePrice,
     this.costPrice = 0.0,
     this.stockQuantity = 0.0,
     this.category,
@@ -82,6 +84,7 @@ class Product {
       'name': name,
       'barcode': barcode,
       'price': price,
+      'wholesale_price': wholesalePrice,
       'cost_price': costPrice,
       'stock_quantity': stockQuantity,
       'category': category,
@@ -101,6 +104,7 @@ class Product {
       'name': name,
       'barcode': barcode,
       'price': price,
+      'wholesale_price': wholesalePrice,
       'cost_price': costPrice,
       'stock_quantity': stockQuantity,
       'category': category,
@@ -119,6 +123,9 @@ class Product {
     final price = (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0) is num
         ? (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0).toDouble()
         : double.tryParse((json['price'] ?? 0).toString()) ?? 0.0;
+    final wholesalePrice = (json['wholesale_price'] ?? json['wholesale'] ?? json['opt_price'] ?? json['trade_price'] ?? json['optom_price']) is num
+        ? (json['wholesale_price'] ?? json['wholesale'] ?? json['opt_price'] ?? json['trade_price'] ?? json['optom_price']).toDouble()
+        : double.tryParse((json['wholesale_price'] ?? json['wholesale'] ?? json['opt_price'] ?? json['trade_price'] ?? json['optom_price'] ?? '').toString());
     final costPrice = (json['cost_price'] ?? json['cost'] ?? json['purchase_price'] ?? 0) is num
         ? (json['cost_price'] ?? json['cost'] ?? json['purchase_price'] ?? 0).toDouble()
         : double.tryParse((json['cost_price'] ?? 0).toString()) ?? 0.0;
@@ -144,6 +151,7 @@ class Product {
       name: name,
       barcode: barcode,
       price: price,
+      wholesalePrice: wholesalePrice,
       costPrice: costPrice,
       stockQuantity: stock,
       category: json['category']?.toString(),
@@ -161,6 +169,7 @@ class Product {
     String? name,
     String? barcode,
     double? price,
+    double? wholesalePrice,
     double? costPrice,
     double? stockQuantity,
     String? category,
@@ -176,6 +185,7 @@ class Product {
       name: name ?? this.name,
       barcode: barcode ?? this.barcode,
       price: price ?? this.price,
+      wholesalePrice: wholesalePrice ?? this.wholesalePrice,
       costPrice: costPrice ?? this.costPrice,
       stockQuantity: stockQuantity ?? this.stockQuantity,
       category: category ?? this.category,
