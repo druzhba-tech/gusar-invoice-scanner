@@ -71,6 +71,13 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     if (_selectedType == ProductType.weight) {
       _selectedUnit = 'кг';
+      final nextPlu = _calculateNextPlu();
+      _pluCtrl.text = nextPlu;
+      _barcodeCtrl.text = '20${int.parse(nextPlu).toString().padLeft(5, '0')}00000';
+    } else if (_selectedType == ProductType.internal) {
+      if (_barcodeCtrl.text.isEmpty) {
+        _barcodeCtrl.text = _calculateNextInternalCode();
+      }
     }
   }
 
@@ -128,11 +135,26 @@ class _AddProductScreenState extends State<AddProductScreen> {
     }
   }
 
-  // Генерация внутреннего артикула
+  // Автоматический расчёт следующего 6-значного внутреннего кода в последовательности
+  String _calculateNextInternalCode() {
+    int maxCode = 100000;
+    for (var p in _api.cachedProducts) {
+      final code = p.barcode ?? '';
+      if (RegExp(r'^\d{6}$').hasMatch(code)) {
+        final val = int.tryParse(code);
+        if (val != null && val >= 100000 && val < 999999) {
+          if (val > maxCode) maxCode = val;
+        }
+      }
+    }
+    return (maxCode + 1).toString().padLeft(6, '0');
+  }
+
+  // Генерация следующего 6-значного внутреннего кода
   void _generateInternalCode() {
-    final rand = Random().nextInt(900000) + 100000;
+    final next = _calculateNextInternalCode();
     setState(() {
-      _barcodeCtrl.text = 'INT-$rand';
+      _barcodeCtrl.text = next;
     });
   }
 
@@ -154,18 +176,27 @@ class _AddProductScreenState extends State<AddProductScreen> {
     });
   }
 
-  // Генерация следующего PLU для весов
-  void _generateNextPlu() {
-    int maxPlu = 100;
+  // Автоматический расчёт следующего номера PLU для весов (начиная от 1)
+  String _calculateNextPlu() {
+    int maxPlu = 0;
     for (var p in _api.cachedProducts) {
-      if (p.pluCode != null) {
+      if (p.pluCode != null && p.pluCode!.isNotEmpty) {
         final parsed = int.tryParse(p.pluCode!);
         if (parsed != null && parsed > maxPlu) maxPlu = parsed;
+      } else if (p.productType == ProductType.weight && p.barcode != null && p.barcode!.startsWith('20') && p.barcode!.length == 13) {
+        final pluPart = int.tryParse(p.barcode!.substring(2, 7));
+        if (pluPart != null && pluPart > maxPlu) maxPlu = pluPart;
       }
     }
+    return (maxPlu + 1).toString(); // Последовательность начинается строго от 1
+  }
+
+  // Генерация следующего номера для весов
+  void _generateNextPlu() {
+    final nextPlu = _calculateNextPlu();
     setState(() {
-      _pluCtrl.text = (maxPlu + 1).toString();
-      _barcodeCtrl.text = '20${(maxPlu + 1).toString().padLeft(5, '0')}00000';
+      _pluCtrl.text = nextPlu;
+      _barcodeCtrl.text = '20${int.parse(nextPlu).toString().padLeft(5, '0')}00000';
     });
   }
 
@@ -295,11 +326,12 @@ class _AddProductScreenState extends State<AddProductScreen> {
     String finalBarcode = _barcodeCtrl.text.trim();
     if (_selectedType == ProductType.weight) {
       final plu = _pluCtrl.text.trim();
-      if (plu.isNotEmpty && finalBarcode.isEmpty) {
-        finalBarcode = '20${plu.padLeft(5, '0')}00000';
+      final pluNum = int.tryParse(plu) ?? int.parse(_calculateNextPlu());
+      finalBarcode = '20${pluNum.toString().padLeft(5, '0')}00000';
+    } else if (_selectedType == ProductType.internal) {
+      if (finalBarcode.isEmpty || !RegExp(r'^\d{6}$').hasMatch(finalBarcode)) {
+        finalBarcode = _calculateNextInternalCode();
       }
-    } else if (_selectedType == ProductType.internal && finalBarcode.isEmpty) {
-      finalBarcode = 'INT-${DateTime.now().millisecondsSinceEpoch % 1000000}';
     }
 
     setState(() => _isSaving = true);
@@ -528,6 +560,11 @@ class _AddProductScreenState extends State<AddProductScreen> {
           if (type == ProductType.weight) {
             _selectedUnit = 'кг';
             if (_pluCtrl.text.isEmpty) _generateNextPlu();
+          } else if (type == ProductType.internal) {
+            if (_selectedUnit == 'кг') _selectedUnit = 'шт';
+            if (_barcodeCtrl.text.isEmpty || !RegExp(r'^\d{6}$').hasMatch(_barcodeCtrl.text)) {
+              _generateInternalCode();
+            }
           } else if (_selectedUnit == 'кг') {
             _selectedUnit = 'шт';
           }
@@ -786,29 +823,43 @@ class _AddProductScreenState extends State<AddProductScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'Внутренний артикул / Код',
+                  'Внутренний код (6 цифр) *',
                   style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                 ),
                 TextButton.icon(
                   onPressed: _generateInternalCode,
                   icon: const Icon(Icons.auto_awesome, color: Color(0xFF34D399), size: 14),
-                  label: const Text('Сгенерировать код', style: TextStyle(color: Color(0xFF34D399), fontSize: 11)),
+                  label: const Text('Следующий код', style: TextStyle(color: Color(0xFF34D399), fontSize: 11)),
                 ),
               ],
             ),
             const SizedBox(height: 6),
             TextFormField(
               controller: _barcodeCtrl,
-              style: const TextStyle(color: Colors.white, fontSize: 14, fontFamily: 'monospace'),
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(6),
+              ],
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontFamily: 'monospace', fontWeight: FontWeight.bold, letterSpacing: 2.0),
               decoration: InputDecoration(
-                hintText: 'Например: INT-104529 или ТОВ-001',
-                hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                hintText: '100001',
+                hintStyle: const TextStyle(color: Colors.white38, fontSize: 14),
+                helperText: 'Ровно 6 цифр (система определяет следующий код автоматически)',
+                helperStyle: const TextStyle(color: Color(0xFF34D399), fontSize: 11),
                 filled: true,
                 fillColor: const Color(0xFF1E293B),
                 prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF10B981), size: 20),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               ),
+              validator: (val) {
+                if (_selectedType == ProductType.internal) {
+                  if (val == null || val.trim().isEmpty) return 'Введите 6-значный внутренний код';
+                  if (!RegExp(r'^\d{6}$').hasMatch(val.trim())) return 'Внутренний код должен состоять ровно из 6 цифр';
+                }
+                return null;
+              },
             ),
           ],
         );
@@ -821,7 +872,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'Код товара на весах (PLU)',
+                  'Код товара на весах (PLU) *',
                   style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                 ),
                 TextButton.icon(
@@ -839,19 +890,33 @@ class _AddProductScreenState extends State<AddProductScreen> {
                   child: TextFormField(
                     controller: _pluCtrl,
                     keyboardType: TextInputType.number,
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(5),
+                    ],
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                     decoration: InputDecoration(
-                      hintText: 'PLU (напр. 105)',
+                      hintText: '1, 2, 3...',
                       hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                      helperText: 'Начиная от 1',
+                      helperStyle: const TextStyle(color: Color(0xFF34D399), fontSize: 11),
                       filled: true,
                       fillColor: const Color(0xFF1E293B),
                       prefixIcon: const Icon(Icons.scale_rounded, color: Color(0xFF10B981), size: 20),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
+                    validator: (val) {
+                      if (_selectedType == ProductType.weight) {
+                        if (val == null || val.trim().isEmpty) return 'Укажите номер PLU';
+                        final num = int.tryParse(val.trim());
+                        if (num == null || num < 1) return 'PLU должен быть от 1 и выше';
+                      }
+                      return null;
+                    },
                     onChanged: (val) {
-                      final parsed = int.tryParse(val);
-                      if (parsed != null) {
+                      final parsed = int.tryParse(val.trim());
+                      if (parsed != null && parsed >= 1) {
                         setState(() {
                           _barcodeCtrl.text = '20${parsed.toString().padLeft(5, '0')}00000';
                         });
