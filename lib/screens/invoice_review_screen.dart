@@ -1030,9 +1030,38 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         );
       }
     } else {
+      // Офлайн-обработка: сохраняем в очередь отложенной отправки
+      _doc.isSynchronized = false;
+      _doc.status = DocumentStatus.approved;
+      await _storage.saveInvoice(_doc);
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ошибка отправки в gusar.tj. Проверьте интернет или настройки токена.'), backgroundColor: Colors.red),
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: const Row(
+              children: [
+                Icon(Icons.cloud_off_rounded, color: Colors.orangeAccent, size: 28),
+                SizedBox(width: 10),
+                Text('Сохранено в офлайн-очередь', style: TextStyle(color: Colors.white, fontSize: 16)),
+              ],
+            ),
+            content: const Text(
+              'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.pop(context);
+                },
+                child: const Text('Понятно, в журнал', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         );
       }
     }

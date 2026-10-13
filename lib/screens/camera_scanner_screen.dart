@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:intl/intl.dart';
 import '../models/invoice_document.dart';
 import '../services/ocr_service.dart';
 import '../services/matching_service.dart';
@@ -49,12 +50,14 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     }
   }
 
-  // 1. Съёмка штатной системной камерой телефона
+  // 1. Съёмка штатной системной камерой телефона с аппаратной 2K-оптимизацией
   Future<void> _takePhotoWithNativeCamera() async {
     try {
       final XFile? photo = await _picker.pickImage(
         source: ImageSource.camera,
-        imageQuality: 100, // Максимальное качество для точного OCR
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 90, // Оптимальный баланс: 600-800 КБ, без потери резкости букв и цифр
       );
 
       if (photo != null && mounted) {
@@ -77,7 +80,11 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   // 2. Выбор нескольких фото из галереи телефона
   Future<void> _pickFromGallery() async {
     try {
-      final List<XFile> images = await _picker.pickMultiImage(imageQuality: 100);
+      final List<XFile> images = await _picker.pickMultiImage(
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 90,
+      );
       if (images.isNotEmpty && mounted) {
         setState(() {
           _capturedPages.addAll(images.map((e) => e.path));
@@ -145,6 +152,40 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
           );
         }
         return;
+      }
+
+      // Проверка на повторное сканирование (дубликат накладной)
+      final duplicate = await _storage.findDuplicateInvoice(doc.supplierName, doc.invoiceNumber);
+      if (duplicate != null && mounted) {
+        final proceed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 28),
+                SizedBox(width: 8),
+                Text('Возможный дубликат!', style: TextStyle(color: Colors.white, fontSize: 16)),
+              ],
+            ),
+            content: Text(
+              'Накладная №${doc.invoiceNumber} от "${doc.supplierName}" уже была сохранена ранее (${DateFormat("dd.MM.yyyy").format(duplicate.invoiceDate)} на сумму ${duplicate.totalAmount.toStringAsFixed(2)} TJS).\n\nВы уверены, что хотите продолжить оприходование?',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Всё равно открыть', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+        if (proceed != true) {
+          setState(() => _isProcessing = false);
+          return;
+        }
       }
 
       setState(() => _processingStatus = 'Сопоставление товаров с базой gusar.tj...');

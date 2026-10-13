@@ -185,43 +185,43 @@ class OcrService {
       final List<Map<String, dynamic>> parts = [];
 
       final systemInstruction = '''
-Ты профессиональный финансовый аудитор и парсер товарных накладных (ТОРГ-12, счетов-фактур, товарных и кассовых чеков) розничной торговли в Таджикистане.
+Ты профессиональный финансовый аудитор и высокоточный парсер товарных накладных (ТОРГ-12, счетов-фактур, товарных и кассовых чеков) розничной торговли в Таджикистане.
 Твоя задача — извлечь СТРОГО данные строк ТАБЛИЦЫ ТОВАРОВ и ничего лишнего. Поддерживай русский и таджикский языки (ҳ, ҷ, ӣ, ӯ, ғ, қ).
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА ИЗОЛЯЦИИ ТАБЛИЦЫ:
+КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА РАЗБОРА СТОЛБЦОВ И ТАБЛИЦЫ:
 1. ТОВАРЫ ВСЕГДА НАХОДЯТСЯ СТРОГО В ТАБЛИЦЕ ТОВАРОВ:
-   - Таблица начинается после строки заголовков: "№", "Наименование", "Кол-во", "Цена", "Сумма" (или таджикские аналоги: "Номи мол", "Миқдор", "Нарх", "Маблағ").
+   - Таблица начинается после строки заголовков: "№", "Наименование", "Кол-во", "Цена", "Сумма" (или аналоги: "Номи мол", "Миқдор", "Нарх", "Маблағ").
    - Таблица заканчивается строкой "Итого" / "Всего к оплате" / "Ҳамагӣ" / "Ҷамъ".
 
-2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО извлекать в "items" данные ВНЕ таблицы товаров:
-   - ЗАПРЕЩЕНО извлекать реквизиты, названия магазинов, ИНН, расчетные счета, телефоны, адреса, ФИО экспедитора, водителя, коды документов.
-   - ЗАПРЕЩЕНО превращать номера счетов, телефоны или артикулы в цены!
-   - ЗАПРЕЩЕНО извлекать текст подвала, подписи, штампы: "Отпустил", "Принял", "Сдал", "Бухгалтер", "Печать".
+2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО извлекать в "items" строки подвала или шапки:
+   - ЗАПРЕЩЕНО добавлять строки: "Итого", "Всего", "В том числе НДС", "Ҳамагӣ", "Ҷамъ", "Отпустил", "Принял", "Сдал", "Бухгалтер", "Печать", "MToro", "wT.".
+   - ЗАПРЕЩЕНО превращать номера счетов, телефоны, артикулы или ИНН в товары или цены!
 
-3. ДЛЯ КАЖДОЙ ПОЗИЦИИ В "items":
-   - "name": Чистое название реального товара из строки таблицы.
-   - "quantity": Количество (число, например 5.0).
-   - "unit": Единица измерения (шт, кг, уп, л, кор и т.д., по умолчанию "шт").
-   - "buy_price": Реальная закупочная цена за 1 шт в сомони (TJS).
-   - "total_price": Сумма по строке (quantity * buy_price).
-   - "barcode": Штрихкод (если напечатан в таблице, иначе null).
+3. ПРАВИЛА ДЛЯ СТОЛБЦОВ ЦЕН И СКИДОК:
+   - Если в таблице есть столбцы "Цена без скидки", "Скидка %" и "Цена со скидкой" (или "Отпускная цена") -> в "buy_price" СТРОГО извлекай ФАКТИЧЕСКУЮ ЦЕНУ ЗА 1 ШТ ПОСЛЕ СКИДКИ (цену к оплате)!
+   - Никогда не путай цену за единицу и общую сумму по строке!
 
-4. ИТОГ НАКЛАДНОЙ ("total_amount"):
-   - СТРОГО равен сумме строк товаров (значение из строки 'Итого' / 'Ҳамагӣ' в конце таблицы).
+4. ПРАВИЛА ДЛЯ СТОЛБЦОВ КОЛИЧЕСТВА И УПАКОВОК:
+   - Если в накладной есть "Кол-во мест" (коробок) и "В одном месте" (штук в коробке) или "Итого шт." -> в "quantity" СТРОГО извлекай ИТОГОВОЕ КОЛИЧЕСТВО В БАЗОВЫХ ЕДИНИЦАХ (штуки, килограммы, литры)!
+   - Не путай числа из названий товаров (например "17", "710N", "2448", "450г") с количеством!
+
+5. СТРОГОЕ МАТЕМАТИЧЕСКОЕ РАВЕНСТВО:
+   - Для КАЖДОЙ позиции ОБЯЗАТЕЛЬНО должно выполняться: "total_price" = "quantity" * "buy_price" (с учетом округлений до 2 знаков).
+   - "total_amount" документа СТРОГО равен сумме всех "total_price" (значение из строки "Итого" / "Ҳамагӣ").
 
 Верни СТРОГО валидный JSON:
 {
   "supplier_name": "Название поставщика или 'Поставщик'",
   "invoice_number": "Номер накладной или 'б/н'",
   "invoice_date": "YYYY-MM-DD",
-  "total_amount": 1250.50,
+  "total_amount": 37516.18,
   "items": [
     {
-      "name": "Наименование товара",
-      "quantity": 10.0,
+      "name": "Монитор 17\" Samsung 710N (SKN) TFT",
+      "quantity": 5.0,
       "unit": "шт",
-      "buy_price": 45.0,
-      "total_price": 450.0,
+      "buy_price": 5465.24,
+      "total_price": 27326.20,
       "barcode": null
     }
   ]
@@ -287,25 +287,82 @@ class OcrService {
     final List<InvoiceItem> items = [];
     final rawItems = data['items'] as List<dynamic>? ?? [];
 
+    final stopKeywords = [
+      'итого', 'всего', 'ҳамагӣ', 'ҷамъ', 'ндс', 'mtoro', 'wt.', 
+      'отпустил', 'принял', 'сдал', 'бухгалтер', 'подпись', 'печать', 'м.п.'
+    ];
+
+    double extractedTotalFromFooter = (data['total_amount'] as num?)?.toDouble() ?? 0.0;
+
     for (var i = 0; i < rawItems.length; i++) {
       final it = rawItems[i];
-      final qty = (it['quantity'] as num?)?.toDouble() ?? 1.0;
-      final price = (it['buy_price'] as num?)?.toDouble() ?? 0.0;
-      final total = (it['total_price'] as num?)?.toDouble() ?? (qty * price);
+      var rawName = it['name']?.toString().trim() ?? '';
+      final lowerName = rawName.toLowerCase();
 
-      items.add(InvoiceItem(
-        id: 'item_${DateTime.now().millisecondsSinceEpoch}_$i',
-        rawName: it['name']?.toString() ?? 'Позиция #${i + 1}',
-        quantity: qty,
-        unit: it['unit']?.toString() ?? 'шт',
-        buyPrice: price,
-        totalPrice: total,
-        barcode: it['barcode']?.toString(),
-      ));
+      // 1. Отсеиваем служебные строки подвала и мусор
+      bool isStopword = false;
+      for (var stop in stopKeywords) {
+        if (lowerName == stop || lowerName.startsWith('$stop:') || lowerName.startsWith('$stop ') || lowerName.contains('в том числе ндс')) {
+          isStopword = true;
+          final rowTotal = (it['total_price'] as num?)?.toDouble() ?? (it['buy_price'] as num?)?.toDouble() ?? 0.0;
+          if (rowTotal > 0 && extractedTotalFromFooter <= 0) {
+            extractedTotalFromFooter = rowTotal;
+          }
+          break;
+        }
+      }
+      if (isStopword) continue;
+
+      // 2. Очистка от лидирующих номеров строк: "1. Монитор" -> "Монитор"
+      rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
+      rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+
+      // 3. Проверка на минимальную длину и валидность
+      if (rawName.length < 2 || lowerName == 'wt.' || lowerName == 'mtoro:' || lowerName == 'mtoro') {
+        continue;
+      }
+
+      var qty = (it['quantity'] as num?)?.toDouble() ?? 1.0;
+      var price = (it['buy_price'] as num?)?.toDouble() ?? 0.0;
+      var total = (it['total_price'] as num?)?.toDouble() ?? 0.0;
+
+      // 4. Математическая нормализация и защита от перепутывания колонок
+      if (total <= 0 && qty > 0 && price > 0) {
+        total = double.parse((qty * price).toStringAsFixed(2));
+      } else if (price <= 0 && qty > 0 && total > 0) {
+        price = double.parse((total / qty).toStringAsFixed(2));
+      } else if (qty <= 0 && price > 0 && total > 0) {
+        qty = double.parse((total / price).toStringAsFixed(2));
+      } else if (qty > 100 && price > 0 && price <= 50 && total > 0 && (qty - total).abs() <= 1.0) {
+        final temp = qty;
+        qty = price;
+        price = temp;
+      } else if (qty > 0 && price > 0 && total > 0 && (qty * price - total).abs() > 0.50) {
+        final calcTotal = qty * price;
+        if ((calcTotal - total).abs() / total < 0.05) {
+          total = double.parse(calcTotal.toStringAsFixed(2));
+        } else if ((total / qty - price).abs() < (total / price - qty).abs()) {
+          price = double.parse((total / qty).toStringAsFixed(2));
+        }
+      }
+
+      if (qty > 0 && (price > 0 || total > 0)) {
+        items.add(InvoiceItem(
+          id: 'item_${DateTime.now().millisecondsSinceEpoch}_$i',
+          rawName: rawName,
+          quantity: qty,
+          unit: it['unit']?.toString() ?? 'шт',
+          buyPrice: price,
+          totalPrice: total > 0 ? total : double.parse((qty * price).toStringAsFixed(2)),
+          barcode: it['barcode']?.toString(),
+        ));
+      }
     }
 
-    final double totalAmount = (data['total_amount'] as num?)?.toDouble() ?? 
-        items.fold<double>(0.0, (double sum, i) => sum + i.totalPrice);
+    final double computedTotal = items.fold<double>(0.0, (double sum, i) => sum + i.totalPrice);
+    final double totalAmount = (extractedTotalFromFooter > 0 && (extractedTotalFromFooter - computedTotal).abs() <= 1.0)
+        ? extractedTotalFromFooter
+        : (computedTotal > 0 ? computedTotal : extractedTotalFromFooter);
 
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
@@ -315,7 +372,7 @@ class OcrService {
       invoiceDate: data['invoice_date'] != null 
           ? DateTime.tryParse(data['invoice_date']) ?? DateTime.now() 
           : DateTime.now(),
-      totalAmount: totalAmount,
+      totalAmount: double.parse(totalAmount.toStringAsFixed(2)),
       items: items,
       pagePhotos: imagePaths,
     );
@@ -341,7 +398,7 @@ class OcrService {
     final footerKeywords = [
       'итого', 'всего к оплате', 'всего:', 'всего наименований', 'сумма к оплате',
       'ҳамагӣ', 'ҷамъ', 'отпустил', 'получил', 'принял', 'сдал', 'супорид', 'қабул',
-      'бухгалтер', 'подпись', 'печать', 'м.п.'
+      'бухгалтер', 'подпись', 'печать', 'м.п.', 'mtoro', 'в том числе ндс'
     ];
 
     final tableHeaderKeywords = [
@@ -352,7 +409,7 @@ class OcrService {
     int tableStartIndex = 0;
     int tableEndIndex = unifiedRows.length;
 
-    // Поиск начала таблицы (строка заголовков)
+    // 1. Поиск начала таблицы (строка заголовков)
     for (int i = 0; i < unifiedRows.length; i++) {
       final lower = unifiedRows[i].toLowerCase();
       int headerHits = 0;
@@ -365,7 +422,7 @@ class OcrService {
       }
     }
 
-    // Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ)
+    // 2. Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ)
     for (int i = tableStartIndex; i < unifiedRows.length; i++) {
       final lower = unifiedRows[i].toLowerCase();
       bool isFooter = false;
@@ -377,10 +434,12 @@ class OcrService {
       }
 
       if (isFooter) {
-        final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(unifiedRows[i]);
+        // Нормализация разделителей тысяч в строке итогов: "37 516.18" -> "37516.18"
+        final cleanRow = unifiedRows[i].replaceAllMapped(RegExp(r'(\d)\s+(\d{3})'), (m) => '${m[1]}${m[2]}');
+        final totalMatch = RegExp(r'([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:tjs|сомони|руб)?$', caseSensitive: false).firstMatch(cleanRow);
         if (totalMatch != null) {
           final val = double.tryParse(totalMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
-          if (val > 0 && val < 500000) {
+          if (val > 0 && val < 5000000) {
             detectedTotal = val;
           }
         }
@@ -389,7 +448,7 @@ class OcrService {
       }
     }
 
-    // Извлечение метаданных документа (поставщик, номер, дата)
+    // 3. Извлечение метаданных документа (поставщик, номер, дата)
     for (var row in unifiedRows) {
       final lower = row.toLowerCase();
       if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
@@ -406,11 +465,12 @@ class OcrService {
       }
     }
 
-    // Разбор строк товаров строго внутри границ таблицы
+    // 4. Разбор строк товаров строго внутри границ таблицы
     for (int i = tableStartIndex; i < tableEndIndex; i++) {
-      final row = unifiedRows[i];
+      var row = unifiedRows[i];
       final lower = row.toLowerCase();
 
+      // Исключаем стоп-строки подвала и мусор
       bool isNoise = false;
       for (var stop in headerStopWords) {
         if (lower.contains(stop)) {
@@ -418,10 +478,26 @@ class OcrService {
           break;
         }
       }
-      if (isNoise) continue;
+      for (var footer in footerKeywords) {
+        if (lower.contains(footer)) {
+          isNoise = true;
+          break;
+        }
+      }
+      if (isNoise || lower.contains('mtoro') || lower.contains('wt.')) continue;
 
       if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
         continue;
+      }
+
+      // Нормализуем пробелы в тысячах: "27 326,20" -> "27326,20"
+      row = row.replaceAllMapped(RegExp(r'(\d)\s+(\d{3})'), (m) => '${m[1]}${m[2]}');
+
+      // Поиск явного количества с единицей измерения: "5 шт."
+      double? explicitQty;
+      final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(row);
+      if (unitMatch != null) {
+        explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
       }
 
       final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
@@ -437,7 +513,7 @@ class OcrService {
           continue;
         }
 
-        double qty = 1.0;
+        double qty = explicitQty ?? 1.0;
         double price = 0.0;
         double total = 0.0;
 
@@ -446,7 +522,11 @@ class OcrService {
           final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
           final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
 
-          if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
+          if (explicitQty != null) {
+            qty = explicitQty;
+            price = (n2 > 0 && n2 < n3) ? n2 : ((n1 > 0 && n1 != qty) ? n1 : n2);
+            total = (n3 > price) ? n3 : (qty * price);
+          } else if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
             qty = n1;
             price = n2;
             total = n3;
@@ -463,7 +543,11 @@ class OcrService {
           final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
           final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
 
-          if (n1 > 0 && n1 <= 1000) {
+          if (explicitQty != null) {
+            qty = explicitQty;
+            price = n1 != qty ? n1 : n2;
+            total = qty * price;
+          } else if (n1 > 0 && n1 <= 1000) {
             qty = n1;
             price = n2;
             total = qty * price;
@@ -474,7 +558,12 @@ class OcrService {
           }
         }
 
-        if (price > 0.05 && price < 50000.0 && total > 0.05 && total < 500000.0 && qty > 0.001 && qty < 10000.0) {
+        // Финальная математическая проверка
+        if (qty > 0 && price > 0 && (total <= 0 || (qty * price - total).abs() > total * 0.1)) {
+          total = double.parse((qty * price).toStringAsFixed(2));
+        }
+
+        if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
           items.add(InvoiceItem(
             id: 'item_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
             rawName: rawName,
@@ -482,7 +571,6 @@ class OcrService {
             buyPrice: price,
             totalPrice: total > 0 ? total : (qty * price),
           ));
-        }
       }
     }
 

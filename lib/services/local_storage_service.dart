@@ -158,4 +158,81 @@ class LocalStorageService {
     final db = await database;
     await db.delete('invoices');
   }
+
+  // 7. Проверка на дубликат накладной
+  Future<InvoiceDocument?> findDuplicateInvoice(String supplierName, String invoiceNumber) async {
+    final trimmedNum = invoiceNumber.trim();
+    if (trimmedNum.isEmpty || trimmedNum.toLowerCase() == 'б/н' || trimmedNum == '0') {
+      return null;
+    }
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'invoices',
+        where: 'LOWER(invoice_number) = ?',
+        whereArgs: [trimmedNum.toLowerCase()],
+        limit: 5,
+      );
+
+      for (var r in rows) {
+        final existingSupplier = (r['supplier_name'] as String? ?? '').toLowerCase();
+        final querySupplier = supplierName.trim().toLowerCase();
+        if (querySupplier.isEmpty || existingSupplier.contains(querySupplier) || querySupplier.contains(existingSupplier)) {
+          final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
+              .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
+              .toList();
+          final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
+          return InvoiceDocument(
+            id: r['id'] as String,
+            storeId: r['store_id'] as int? ?? 1,
+            supplierId: r['supplier_id'] as int?,
+            supplierName: r['supplier_name'] as String? ?? 'Поставщик',
+            invoiceNumber: r['invoice_number'] as String? ?? 'б/н',
+            invoiceDate: DateTime.tryParse(r['invoice_date'] as String? ?? '') ?? DateTime.now(),
+            totalAmount: (r['total_amount'] as num?)?.toDouble() ?? 0.0,
+            paidAmount: (r['paid_amount'] as num?)?.toDouble() ?? 0.0,
+            items: itemsList,
+            pagePhotos: photosList,
+            status: DocumentStatus.values.firstWhere(
+              (s) => s.name == (r['status'] as String? ?? 'draft'),
+              orElse: () => DocumentStatus.draft,
+            ),
+            isSynchronized: (r['is_synchronized'] as int? ?? 0) == 1,
+            createdAt: DateTime.tryParse(r['created_at'] as String? ?? '') ?? DateTime.now(),
+          );
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 8. Получение неотправленных накладных для офлайн-очереди
+  Future<List<InvoiceDocument>> getUnsynchronizedInvoices() async {
+    final db = await database;
+    final rows = await db.query('invoices', where: 'is_synchronized = 0', orderBy: 'created_at ASC');
+    return rows.map((r) {
+      final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
+          .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
+          .toList();
+      final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
+      return InvoiceDocument(
+        id: r['id'] as String,
+        storeId: r['store_id'] as int? ?? 1,
+        supplierId: r['supplier_id'] as int?,
+        supplierName: r['supplier_name'] as String? ?? 'Поставщик',
+        invoiceNumber: r['invoice_number'] as String? ?? 'б/н',
+        invoiceDate: DateTime.tryParse(r['invoice_date'] as String? ?? '') ?? DateTime.now(),
+        totalAmount: (r['total_amount'] as num?)?.toDouble() ?? 0.0,
+        paidAmount: (r['paid_amount'] as num?)?.toDouble() ?? 0.0,
+        items: itemsList,
+        pagePhotos: photosList,
+        status: DocumentStatus.values.firstWhere(
+          (s) => s.name == (r['status'] as String? ?? 'draft'),
+          orElse: () => DocumentStatus.draft,
+        ),
+        isSynchronized: false,
+        createdAt: DateTime.tryParse(r['created_at'] as String? ?? '') ?? DateTime.now(),
+      );
+    }).toList();
+  }
 }

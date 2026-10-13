@@ -52,8 +52,10 @@ class InvoiceItem {
   });
 
   bool get isMathValid {
+    if (quantity <= 0 || buyPrice <= 0 || totalPrice <= 0) return false;
     final expectedTotal = quantity * buyPrice;
-    return (expectedTotal - totalPrice).abs() < 0.1;
+    // Допуск расхождения до 0.50 TJS для компенсации бухгалтерских округлений в 1С
+    return (expectedTotal - totalPrice).abs() <= 0.50 || (expectedTotal > 0 && (expectedTotal - totalPrice).abs() / expectedTotal < 0.015);
   }
 
   double? get priceChangePercent {
@@ -63,7 +65,7 @@ class InvoiceItem {
 
   bool get hasPriceSpike {
     final change = priceChangePercent;
-    return change != null && change > 5.0; // Подорожание больше 5%
+    return change != null && change.abs() > 15.0; // Значимый скачок цены более 15%
   }
 
   bool get isMarginNegative {
