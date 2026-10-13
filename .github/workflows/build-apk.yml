@@ -76,36 +76,43 @@ jobs:
             cd scanner-app
           fi
           flutter build apk --release --no-tree-shake-icons
-          cp build/app/outputs/flutter-apk/app-release.apk ../Gusar-Scanner-${{ github.ref_name || 'latest' }}.apk 2>/dev/null || cp build/app/outputs/flutter-apk/app-release.apk Gusar-Scanner-${{ github.ref_name || 'latest' }}.apk
+          cp build/app/outputs/flutter-apk/app-release.apk Gusar-Scanner.apk
+          RAW_VER=$(grep '^version:' pubspec.yaml | head -n 1 | awk '{print $2}' | cut -d'+' -f1)
+          echo "APP_VER=v$RAW_VER" >> $GITHUB_ENV
+          echo "Detected version: v$RAW_VER"
 
       - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: gusar-scanner-apk
-          path: '**/build/app/outputs/flutter-apk/app-release.apk'
+          path: Gusar-Scanner.apk
 
-      - name: 🚀 Create GitHub Release (on Tag or Dispatch or Main)
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+      - name: 🚀 Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: '**/Gusar-Scanner-*.apk'
-          tag_name: ${{ github.ref_name == 'main' && 'V1.0.0' || github.ref_name || format('v{0}', inputs.version_name) }}
-          name: Gusar Scanner ${{ github.ref_name == 'main' && '1.0.0' || github.ref_name || format('v{0}', inputs.version_name) }}
+          files: Gusar-Scanner.apk
+          tag_name: ${{ env.APP_VER }}
+          name: Gusar Scanner ${{ env.APP_VER }}
           draft: false
           prerelease: false
           body: |
-            ## 📱 Gusar Scanner APK — Релиз
+            ## 📱 Gusar Scanner APK — Релиз ${{ env.APP_VER }}
             
             Обновление мобильного приложения приёмки товаров для сети **Gusar (gusar.tj)**.
             
-            ### ✨ Возможности:
-            - 📷 Сканирование накладных (ТОРГ-12) и кассовых чеков.
-            - 🧠 Интеллектуальный OCR с распознаванием таджикского и русского языков.
-            - ⚡ Мгновенная привязка товаров: «Один пик с коробки» + обучаемый словарь сети.
-            - 🔍 Сверка штрихкодов коробок (EAN-13, DataMatrix, весовые штрихкоды 20-29).
-            - 💰 Автоконтроль скачка закупочных цен и отрицательной маржи.
-            - 📑 Акт расхождений с цифровой росписью водителя на экране.
-            - 🔄 Прямое пополнение остатков в системе `gusar.tj`.
-            - 📲 Встроенное самообновление APK.
+            ### ✨ Новые возможности:
+            - ➕ **Добавление новых товаров прямо из приложения:**
+              - 🏷️ Штрихкод (штучный товар) со встроенным сканером камеры и автогенерацией EAN-13
+              - 🔢 Внутренний артикул / код без заводского штрихкода
+              - ⚖️ Весы (весовой товар в кг, код PLU и расчёт весового штрихкода)
+            - 📸 **Привязка и интеллектуальное сжатие фотографий товаров:**
+              - Поиск товаров по названию и по штрихкоду
+              - Фотографирование на камеру или выбор из галереи
+              - Автоматическое сжатие без потери качества и резкости текста
+              - Редактирование: поворот на 90 градусов, замена, удаление, полноэкранный зум
+            - 🧠 Интеллектуальный OCR с распознаванием таджикского и русского языков
+            - ⚡ Мгновенная привязка товаров к накладной
+            - 🔍 Сверка штрихкодов коробок (EAN-13, DataMatrix, весовые 20-29)
+            - 📲 Встроенное самообновление APK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

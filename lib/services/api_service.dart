@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/product.dart';
@@ -482,6 +483,49 @@ class ApiService {
 
     _addOrUpdateCachedProduct(created);
     return created;
+  }
+
+  // 4. Загрузка фото товара на сервер gusar.tj с сохранением в локальный кэш
+  Future<Product?> uploadProductImage(int productId, String imagePath) async {
+    final idx = _cachedProducts.indexWhere((p) => p.id == productId);
+    Product? updatedProd;
+
+    try {
+      final fileName = imagePath.split(Platform.pathSeparator).last;
+      final formData = FormData.fromMap({
+        'image': await MultipartFile.fromFile(imagePath, filename: fileName),
+        'product_id': productId,
+        'store_id': currentStoreId,
+      });
+
+      final response = await _dio.post(
+        '/api/products/$productId/image',
+        data: formData,
+        options: Options(contentType: 'multipart/form-data'),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200 && response.data != null) {
+        final serverUrl = response.data['image_url'] ?? response.data['url'] ?? response.data['image'];
+        if (idx >= 0) {
+          updatedProd = _cachedProducts[idx].copyWith(
+            imageUrl: serverUrl?.toString(),
+            localImagePath: imagePath,
+          );
+        }
+      }
+    } catch (e) {
+      print('Upload product photo to server error (saving locally): $e');
+    }
+
+    if (updatedProd == null && idx >= 0) {
+      updatedProd = _cachedProducts[idx].copyWith(localImagePath: imagePath);
+    }
+
+    if (updatedProd != null) {
+      _addOrUpdateCachedProduct(updatedProd);
+    }
+
+    return updatedProd;
   }
 
   List<Supplier> _cachedSuppliers = [];

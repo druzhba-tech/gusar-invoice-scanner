@@ -10,6 +10,7 @@ import 'camera_scanner_screen.dart';
 import 'invoice_review_screen.dart';
 import 'settings_screen.dart';
 import 'add_product_screen.dart';
+import 'product_photo_manager_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -461,6 +462,62 @@ class _HomeScreenState extends State<HomeScreen> {
                           SizedBox(height: 2),
                           Text(
                             'Штрихкод, весовой (кг) или внутренний артикул с фото',
+                            style: TextStyle(color: Colors.white54, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white38, size: 14),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            // Кнопка быстрого добавления и сжатия фото к товарам
+            InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProductPhotoManagerScreen()),
+                ).then((_) => _loadData());
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFF1E293B),
+                      const Color(0xFF0F172A).withOpacity(0.9),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.4)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0284C7).withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.add_a_photo_rounded, color: Color(0xFF38BDF8), size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '📸 Добавить фото к товарам',
+                            style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Поиск по штрихкоду/названию, авто-сжатие без потери качества',
                             style: TextStyle(color: Colors.white54, fontSize: 11),
                           ),
                         ],
