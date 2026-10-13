@@ -571,6 +571,7 @@ class OcrService {
             buyPrice: price,
             totalPrice: total > 0 ? total : (qty * price),
           ));
+        }
       }
     }
 
@@ -636,9 +637,9 @@ class OcrService {
           }
         }
 
-        for (var row in rows) {
-          row.sort((a, b) => a.left.compareTo(b.left));
-          final rowText = row.map((l) => l.text).join(' ').trim();
+        for (final List<_OcrLineBox> row in rows) {
+          row.sort((_OcrLineBox a, _OcrLineBox b) => a.left.compareTo(b.left));
+          final rowText = row.map((_OcrLineBox l) => l.text).join(' ').trim();
           if (rowText.length >= 2) {
             unifiedRows.add(rowText);
           }
