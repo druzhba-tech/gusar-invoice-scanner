@@ -5,6 +5,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
+import '../utils/image_utils.dart';
 
 class OcrService {
   static final OcrService _instance = OcrService._internal();
@@ -46,8 +47,25 @@ class OcrService {
     }
   }
 
-  // 2. Интеллектуальный разбор накладных через Vision AI (Google Gemini или Yandex Vision)
+  // 2. Интеллектуальный разбор накладных через Vision AI (с предварительным авто-выравниванием)
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
+    // ШАГ 0: АВТО-ВЫРАВНИВАНИЕ И ПОВОРОТ СТРАНИЦ
+    // Сначала физически поворачиваем накладную в правильное положение (EXIF + угол текста), а затем считываем!
+    final List<String> preparedPaths = [];
+    for (var path in imagePaths) {
+      if (path.toLowerCase().endsWith('.pdf')) {
+        preparedPaths.add(path);
+      } else {
+        try {
+          final straightened = await ImageUtils.autoStraightenInvoiceImage(File(path), recognizer: _mlKitRecognizer);
+          preparedPaths.add(straightened.path);
+        } catch (e) {
+          print('Auto-straighten page error: $e');
+          preparedPaths.add(path);
+        }
+      }
+    }
+
     final config = await _getAiConfig();
     final provider = config['provider'] ?? 'gemini';
     final yandexKey = config['yandex_key'] ?? '';
@@ -56,7 +74,7 @@ class OcrService {
 
     // 1. По умолчанию или при выборе Gemini — вызываем Google Gemini Vision AI
     if ((provider == 'gemini' || yandexKey.isEmpty) && geminiKey.isNotEmpty) {
-      final geminiDoc = await _parseWithGemini(imagePaths, geminiKey);
+      final geminiDoc = await _parseWithGemini(preparedPaths, geminiKey);
       if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
         return geminiDoc;
       }
@@ -64,7 +82,7 @@ class OcrService {
 
     // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
     if (provider == 'yandex' && yandexKey.isNotEmpty) {
-      final yandexDoc = await parseInvoiceWithYandexVision(imagePaths, yandexKey, yandexFolderId);
+      final yandexDoc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, yandexFolderId);
       if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
         return yandexDoc;
       }
@@ -72,22 +90,22 @@ class OcrService {
 
     // 3. Fallback к Gemini, если Яндекс не сработал
     if (geminiKey.isNotEmpty) {
-      final geminiDoc = await _parseWithGemini(imagePaths, geminiKey);
+      final geminiDoc = await _parseWithGemini(preparedPaths, geminiKey);
       if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
         return geminiDoc;
       }
     }
 
-    // 3. Если есть ключ Яндекс, но был выбран другой провайдер
+    // 4. Если есть ключ Яндекс, но был выбран другой провайдер
     if (yandexKey.isNotEmpty) {
-      final yandexDoc = await parseInvoiceWithYandexVision(imagePaths, yandexKey, yandexFolderId);
+      final yandexDoc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, yandexFolderId);
       if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
         return yandexDoc;
       }
     }
 
-    // 4. Если ключ не задан, используем эвристический локальный парсер
-    return _fallbackLocalParse(imagePaths);
+    // 5. Если облачные нейросети не ответили, используем эвристический локальный парсер
+    return _fallbackLocalParse(preparedPaths);
   }
 
   // =========================================================================
@@ -209,6 +227,11 @@ class OcrService {
    - Для КАЖДОЙ позиции ОБЯЗАТЕЛЬНО должно выполняться: "total_price" = "quantity" * "buy_price" (с учетом округлений до 2 знаков).
    - "total_amount" документа СТРОГО равен сумме всех "total_price" (значение из строки "Итого" / "Ҳамагӣ").
 
+6. СТОЛБЕЦ ЕДИНИЦ ИЗМЕРЕНИЯ И НАИМЕНОВАНИЕ:
+   - Значения "шт", "шт.", "wT.", "wT", "дона", "компл", "кг", "литр", "упак" — это СТРОГО "unit" (единица измерения)!
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО помещать "wT.", "шт", "дона" в название товара "name"!
+   - Название товара ("name") — это ВСЕГДА полное текстовое наименование из графы Товар/Наименование (например: "Принтер HP LaserJet 1020 C5911A A4", "Сканер Bear Paw 2448 TA Pro").
+
 Верни СТРОГО валидный JSON:
 {
   "supplier_name": "Название поставщика или 'Поставщик'",
@@ -241,7 +264,15 @@ class OcrService {
         });
       }
 
-      final candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
+      // Используем стабильные и скоростные модели с высоким лимитом
+      final candidateModels = [
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+      ];
+
       for (var modelName in candidateModels) {
         try {
           final url = Uri.parse(
@@ -257,18 +288,25 @@ class OcrService {
               ],
               'generationConfig': {
                 'response_mime_type': 'application/json',
+                'maxOutputTokens': 8192,
                 'temperature': 0.1,
               }
             }),
-          ).timeout(const Duration(seconds: 35));
+          ).timeout(const Duration(seconds: 40));
 
           if (response.statusCode == 200) {
             final resJson = jsonDecode(response.body);
             final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
-            final cleanJson = _cleanJsonString(rawText);
+            final cleanJson = _cleanAndRepairJson(rawText);
             final data = jsonDecode(cleanJson);
 
-            return _buildDocumentFromJson(data, imagePaths);
+            final doc = _buildDocumentFromJson(data, imagePaths);
+            if (doc.items.isNotEmpty) {
+              return doc;
+            }
+          } else if (response.statusCode == 503 || response.statusCode == 429) {
+            print('Gemini $modelName temporary busy (${response.statusCode}), switching to next model...');
+            await Future.delayed(const Duration(milliseconds: 1000));
           } else {
             print('Gemini $modelName Error: ${response.statusCode} - ${response.body}');
           }
@@ -509,6 +547,12 @@ class OcrService {
         rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
         rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
 
+        // Автокоррекция частых ошибок латинского сканера ML Kit
+        rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
+            .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
+            .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
+            .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
+
         if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с')) {
           continue;
         }
@@ -652,7 +696,7 @@ class OcrService {
     return _parseUnifiedLines(unifiedRows, imagePaths);
   }
 
-  String _cleanJsonString(String text) {
+  String _cleanAndRepairJson(String text) {
     var cleaned = text.trim();
     if (cleaned.startsWith('```json')) {
       cleaned = cleaned.substring(7);
@@ -663,7 +707,22 @@ class OcrService {
     if (cleaned.endsWith('```')) {
       cleaned = cleaned.substring(0, cleaned.length - 3);
     }
-    return cleaned.trim();
+    cleaned = cleaned.trim();
+
+    // Если JSON закрыт корректно
+    if (cleaned.endsWith('}')) {
+      return cleaned;
+    }
+
+    // Если JSON оборвался на середине генерации из-за лимита токенов
+    // Ищем последний полностью закрытый элемент массива товаров '}'
+    final lastItemClose = cleaned.lastIndexOf('}');
+    if (lastItemClose != -1) {
+      final truncated = cleaned.substring(0, lastItemClose + 1);
+      // Закрываем массив и корневой JSON-объект
+      return '$truncated\n  ]\n}';
+    }
+    return cleaned;
   }
 
   void dispose() {

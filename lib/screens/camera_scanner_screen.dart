@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
@@ -8,6 +9,7 @@ import '../services/ocr_service.dart';
 import '../services/matching_service.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
+import '../utils/image_utils.dart';
 import 'invoice_review_screen.dart';
 
 class CameraScannerScreen extends StatefulWidget {
@@ -134,20 +136,42 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
     setState(() {
       _isProcessing = true;
-      _processingStatus = 'Нейросеть читает накладную (OCR + Vision AI)...';
+      _processingStatus = 'Авто-выравнивание, поворот и оцифровка накладной...';
     });
 
     try {
-      // 1. Распознавание накладной / чека
+      // 1. Авто-выравнивание и распознавание накладной / чека через ИИ
       final doc = await _ocr.parseInvoiceWithVisionAi(_capturedPages);
 
       if (doc == null || doc.items.isEmpty) {
         setState(() => _isProcessing = false);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Не удалось разобрать позиции. Убедитесь, что текст четкий, или сфотографируйте ближе.'),
-              backgroundColor: Colors.orangeAccent,
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1E293B),
+              title: const Row(
+                children: [
+                  Icon(Icons.auto_fix_high_rounded, color: Colors.amber, size: 24),
+                  SizedBox(width: 8),
+                  Text('Повторить распознавание?', style: TextStyle(color: Colors.white, fontSize: 16)),
+                ],
+              ),
+              content: const Text(
+                'Не удалось разобрать позиции таблицы. Проверьте правильность поворота листов (кнопка 🔄) или нажмите «Повторить через ИИ».',
+                style: TextStyle(color: Colors.white70),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _processInvoice();
+                  },
+                  child: const Text('Повторить через ИИ', style: TextStyle(color: Colors.white)),
+                ),
+              ],
             ),
           );
         }
@@ -494,6 +518,20 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                         ],
                       ),
                     ),
+                    // Кнопка ручного поворота листа на 90°
+                    if (!path.toLowerCase().endsWith('.pdf'))
+                      IconButton(
+                        icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8)),
+                        tooltip: 'Повернуть на 90°',
+                        onPressed: () async {
+                          final rotated = await ImageUtils.rotateImage90Degrees(File(path));
+                          await FileImage(File(path)).evict();
+                          setState(() {
+                            _capturedPages[index] = rotated.path;
+                          });
+                          HapticFeedback.selectionClick();
+                        },
+                      ),
                     // Кнопка удаления листа
                     IconButton(
                       icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
