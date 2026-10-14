@@ -100,8 +100,12 @@ class MainActivity: FlutterActivity() {
         }
 
         val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED)
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                registerReceiver(downloadReceiver, filter, 2) // Context.RECEIVER_EXPORTED
+            } catch (e: Exception) {
+                registerReceiver(downloadReceiver, filter)
+            }
         } else {
             registerReceiver(downloadReceiver, filter)
         }
@@ -115,7 +119,7 @@ class MainActivity: FlutterActivity() {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             startActivity(intent)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
     }
 
     private fun installApkFile(file: File) {
@@ -140,7 +144,7 @@ class MainActivity: FlutterActivity() {
         downloadReceiver?.let {
             try {
                 unregisterReceiver(it)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
             downloadReceiver = null
         }
     }
