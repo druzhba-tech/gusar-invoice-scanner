@@ -123,7 +123,7 @@ class ApiService {
         }
       }
     } catch (e) {
-      debugPrint('fetchStores warning: $e');
+      print('fetchStores warning: $e');
     }
     return [];
   }
