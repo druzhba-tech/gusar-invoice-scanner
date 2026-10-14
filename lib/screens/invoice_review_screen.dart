@@ -1026,7 +1026,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 address: addrCtrl.text.trim(),
                 inn: innCtrl.text.trim(),
               );
-              if (created != null) {
+              if (created != null && created.id > 0 && created.id < 1000000) {
                 final oldName = _doc.supplierName;
                 setState(() {
                   _doc.supplierId = created.id;
@@ -1038,8 +1038,23 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан!'),
+                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан (ID: ${created.id})!'),
                       backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                }
+              } else {
+                setState(() {
+                  _doc.supplierId = null;
+                  _doc.supplierName = newName;
+                });
+                Navigator.pop(dlgCtx);
+                await _saveAndRefresh();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ Поставщик сохранён: "$newName" (будет синхронизирован при оприходовании).'),
+                      backgroundColor: const Color(0xFF0284C7),
                     ),
                   );
                 }
@@ -1121,6 +1136,11 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     );
 
     if (confirm != true) return;
+
+    // Гарантированная санитаризация: сбрасываем старые псевдо-ID перед отправкой
+    if (_doc.supplierId != null && (_doc.supplierId! <= 0 || _doc.supplierId! >= 1000000)) {
+      _doc.supplierId = null;
+    }
 
     setState(() => _isSubmitting = true);
     final success = await _api.submitPurchase(_doc);
@@ -1307,17 +1327,25 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                                           decoration: BoxDecoration(
-                                            color: _doc.supplierId != null
+                                            color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
                                                 ? const Color(0xFF10B981).withOpacity(0.2)
-                                                : const Color(0xFFF59E0B).withOpacity(0.2),
+                                                : (_doc.supplierName.trim().isNotEmpty)
+                                                    ? const Color(0xFF38BDF8).withOpacity(0.2)
+                                                    : const Color(0xFFF59E0B).withOpacity(0.2),
                                             borderRadius: BorderRadius.circular(4),
                                           ),
                                           child: Text(
-                                            _doc.supplierId != null
+                                            (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
                                                 ? 'В БАЗЕ GUSAR.TJ (ID: ${_doc.supplierId})'
-                                                : 'НЕ ПРИВЯЗАН К БАЗЕ',
+                                                : (_doc.supplierName.trim().isNotEmpty)
+                                                    ? 'АВТО-ПРИВЯЗКА В GUSAR.TJ'
+                                                    : 'НЕ ПРИВЯЗАН К БАЗЕ',
                                             style: TextStyle(
-                                              color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                                              color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
+                                                  ? const Color(0xFF10B981)
+                                                  : (_doc.supplierName.trim().isNotEmpty)
+                                                      ? const Color(0xFF38BDF8)
+                                                      : const Color(0xFFF59E0B),
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
                                             ),

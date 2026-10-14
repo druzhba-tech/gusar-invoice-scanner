@@ -48,12 +48,19 @@ class MatchingService {
       try {
         final decoded = jsonDecode(rawSuppliers) as Map<String, dynamic>;
         _supplierAliases = decoded.map((k, v) => MapEntry(k, v as Map<String, dynamic>));
+        // Очищаем любые поврежденные псевдо-ID (таймстампы >= 1,000,000)
+        _supplierAliases.removeWhere((k, v) {
+          final id = v['id'] is int ? v['id'] as int : int.tryParse(v['id']?.toString() ?? '0') ?? 0;
+          return id <= 0 || id >= 1000000;
+        });
       } catch (_) {}
     }
   }
 
   // Сохранение привязки контрагента из базы
   Future<void> saveSupplierAlias(String rawOcrSupplier, int supplierId, String supplierName) async {
+    // Никогда не сохраняем клиентские псевдо-ID (таймстампы)
+    if (supplierId <= 0 || supplierId >= 1000000) return;
     final norm = _normalizeText(rawOcrSupplier);
     if (norm.isEmpty) return;
     _supplierAliases[norm] = {'id': supplierId, 'name': supplierName};
@@ -64,15 +71,22 @@ class MatchingService {
   Map<String, dynamic>? matchSupplier(String rawSupplier) {
     final norm = _normalizeText(rawSupplier);
     if (norm.isEmpty) return null;
+    Map<String, dynamic>? res;
     if (_supplierAliases.containsKey(norm)) {
-      return _supplierAliases[norm];
-    }
-    for (var entry in _supplierAliases.entries) {
-      if (entry.key.length > 3 && (norm.contains(entry.key) || entry.key.contains(norm))) {
-        return entry.value;
+      res = _supplierAliases[norm];
+    } else {
+      for (var entry in _supplierAliases.entries) {
+        if (entry.key.length > 3 && (norm.contains(entry.key) || entry.key.contains(norm))) {
+          res = entry.value;
+          break;
+        }
       }
     }
-    return null;
+    if (res != null) {
+      final id = res['id'] is int ? res['id'] as int : int.tryParse(res['id']?.toString() ?? '0') ?? 0;
+      if (id <= 0 || id >= 1000000) return null;
+    }
+    return res;
   }
 
   String _buildKey(String supplier, String rawName) {

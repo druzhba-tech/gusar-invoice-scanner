@@ -732,7 +732,10 @@ class ApiService {
     if (localJson != null && _cachedSuppliers.isEmpty && !forceRefresh) {
       try {
         final list = jsonDecode(localJson) as List;
-        final sups = list.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
+        final sups = list
+            .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
+            .where((s) => s.id > 0 && s.id < 1000000)
+            .toList();
         if (sups.isNotEmpty) {
           _cachedSuppliers = sups;
           return _cachedSuppliers;
@@ -744,6 +747,13 @@ class ApiService {
       Response? response;
       try {
         response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
+      } on DioException catch (e) {
+        if (e.response?.statusCode == 401) {
+          await _trySilentReLogin();
+          response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
+        } else {
+          rethrow;
+        }
       } catch (_) {
         response = await _dio.get('/api/contractors', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
       }
@@ -762,7 +772,10 @@ class ApiService {
         }
 
         if (items.isNotEmpty) {
-          _cachedSuppliers = items.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
+          _cachedSuppliers = items
+              .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
+              .where((s) => s.id > 0 && s.id < 1000000)
+              .toList();
           await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
           return _cachedSuppliers;
         }
@@ -795,7 +808,7 @@ class ApiService {
     return matches;
   }
 
-  // 5. Создание нового контрагента в базе магазина
+  // 5. Создание нового контрагента в базе магазина на gusar.tj
   Future<Supplier?> createSupplier(String name, {String? contact, String? address, String? inn}) async {
     final cleanName = name.trim();
     if (cleanName.isEmpty) return null;
@@ -810,23 +823,31 @@ class ApiService {
         'store_id': currentStoreId,
       }).timeout(const Duration(seconds: 8));
 
-      if (response.statusCode == 200 || response.statusCode == 201 && response.data != null) {
-        created = Supplier.fromJson(response.data);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        if (response.data is Map<String, dynamic>) {
+          final parsed = Supplier.fromJson(response.data as Map<String, dynamic>);
+          if (parsed.id > 0 && parsed.id < 1000000) {
+            created = parsed;
+          }
+        }
+      }
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        final relogOk = await _trySilentReLogin();
+        if (relogOk) {
+          return createSupplier(name, contact: contact, address: address, inn: inn);
+        }
       }
     } catch (_) {}
 
-    created ??= Supplier(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      storeId: currentStoreId,
-      name: cleanName,
-      contact: contact?.trim(),
-      inn: inn?.trim(),
-      address: address?.trim(),
-    );
+    // Кэшируем только реальные валидные серверные ID
+    if (created != null && created.id > 0 && created.id < 1000000) {
+      _cachedSuppliers.removeWhere((s) => s.id == created!.id || s.name.trim().toLowerCase() == cleanName.toLowerCase());
+      _cachedSuppliers.insert(0, created);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.where((s) => s.id > 0 && s.id < 1000000).map((s) => s.toJson()).toList()));
+    }
 
-    _cachedSuppliers.insert(0, created);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
     return created;
   }
 
@@ -856,29 +877,63 @@ class ApiService {
     lastSubmitError = null;
     try {
       // 1. Проверяем и валидируем контрагента:
-      int? verifiedSupplierId = document.supplierId;
-      if (document.supplierName.trim().isNotEmpty && (verifiedSupplierId == null || verifiedSupplierId <= 0 || verifiedSupplierId > 1000000)) {
-        // Если поставщик новый или офлайн-ид, пробуем найти или создать его на сервере
-        try {
-          final serverSuppliers = await getSuppliers();
-          final existing = serverSuppliers.firstWhere(
-            (s) => s.name.trim().toLowerCase() == document.supplierName.trim().toLowerCase(),
-            orElse: () => Supplier(id: -1, storeId: currentStoreId, name: ''),
-          );
-          if (existing.id > 0) {
-            verifiedSupplierId = existing.id;
-          } else {
-            final createdSup = await createSupplier(document.supplierName.trim());
-            if (createdSup != null && createdSup.id > 0 && createdSup.id < 10000000) {
-              verifiedSupplierId = createdSup.id;
-            } else {
-              verifiedSupplierId = null; // Передаем null, чтобы не ломать транзакцию чужим ID
-            }
-          }
-        } catch (_) {
-          verifiedSupplierId = null;
+      int? verifiedSupplierId;
+      final rawSupName = document.supplierName.trim();
+
+      // Санитизация: если в документе локальный псевдо-ID (>= 1,000,000 или <= 0), обнуляем
+      if (document.supplierId != null && (document.supplierId! <= 0 || document.supplierId! >= 1000000)) {
+        document.supplierId = null;
+      }
+
+      // Всегда опрашиваем сервер для получения актуального и достоверного списка контрагентов
+      List<Supplier> serverSuppliers = [];
+      try {
+        serverSuppliers = await getSuppliers(forceRefresh: true);
+      } catch (_) {
+        serverSuppliers = _cachedSuppliers.where((s) => s.id > 0 && s.id < 1000000).toList();
+      }
+
+      // Функция нормализации для надёжного сопоставления (без кавычек, скобок, пробелов)
+      String norm(String s) => s.toLowerCase().replaceAll(RegExp(r'["«»„“\s\-\.\,\(\)]+'), '');
+
+      // А) Если в документе уже был ID, проверяем его реальное наличие в базе магазина
+      if (document.supplierId != null && document.supplierId! > 0 && document.supplierId! < 1000000) {
+        final exists = serverSuppliers.any((s) => s.id == document.supplierId);
+        if (exists) {
+          verifiedSupplierId = document.supplierId;
         }
       }
+
+      // Б) Если ID не подтвержден, ищем по нормализованному названию среди контрагентов базы
+      if (verifiedSupplierId == null && rawSupName.isNotEmpty) {
+        final targetNorm = norm(rawSupName);
+        for (final s in serverSuppliers) {
+          if (s.id > 0 && s.id < 1000000) {
+            final sNorm = norm(s.name);
+            if (sNorm == targetNorm || (targetNorm.length > 3 && (sNorm.contains(targetNorm) || targetNorm.contains(sNorm)))) {
+              verifiedSupplierId = s.id;
+              document.supplierId = s.id;
+              break;
+            }
+          }
+        }
+
+        // В) Если контрагента еще нет в базе gusar.tj, создаем его на сервере прямо сейчас
+        if (verifiedSupplierId == null) {
+          try {
+            final newSup = await createSupplier(rawSupName);
+            if (newSup != null && newSup.id > 0 && newSup.id < 1000000) {
+              verifiedSupplierId = newSup.id;
+              document.supplierId = newSup.id;
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Г) ЖЕЛЕЗНОЕ ПРАВИЛО: если контрагент не подтвержден в PostgreSQL, передаем null!
+      // В схеме createPurchaseSchema поле supplier_id опционально и nullable,
+      // транзакция пройдет 100% без ошибки purchases_supplier_id_fkey, остатки зачислятся,
+      // а имя поставщика будет зафиксировано в поле notes.
 
       // 2. Гарантируем, что каждый товар привязан к реальному ID в базе магазина
       final List<Map<String, dynamic>> itemsPayload = [];
@@ -951,6 +1006,12 @@ class ApiService {
         return false;
       }
     } on DioException catch (dioErr) {
+      if (dioErr.response?.statusCode == 401) {
+        final relogOk = await _trySilentReLogin();
+        if (relogOk) {
+          return submitPurchase(document);
+        }
+      }
       final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
       lastSubmitError = serverMsg?.toString() ?? dioErr.message ?? 'Ошибка сети при отправке накладной';
       print('Submit purchase dio error: $lastSubmitError');
