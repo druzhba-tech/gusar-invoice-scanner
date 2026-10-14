@@ -1175,9 +1175,11 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Text('Сохранено в офлайн-очередь', style: TextStyle(color: Colors.white, fontSize: 16)),
               ],
             ),
-            content: const Text(
-              'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
-              style: TextStyle(color: Colors.white70),
+            content: Text(
+              _api.lastSubmitError != null
+                  ? '${_api.lastSubmitError}\n\nНакладная сохранена локально и будет отправлена автоматически, как только появится связь.'
+                  : 'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
+              style: const TextStyle(color: Colors.white70),
             ),
             actions: [
               ElevatedButton(

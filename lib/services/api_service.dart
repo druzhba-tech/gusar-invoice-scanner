@@ -20,6 +20,9 @@ class ApiService {
   String currentStoreName = 'База gusar.tj (Основной склад)';
   List<Map<String, dynamic>> accessibleStores = [];
 
+  String? lastSubmitError;
+  bool _isRefreshingToken = false;
+
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('api_base_url') ?? 'https://gusar.tj';
@@ -53,6 +56,97 @@ class ApiService {
         },
       ),
     );
+
+    // Перехватчик для автоматического обновления токена при 401 (Session Expired Shield)
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          if (authToken != null && authToken!.isNotEmpty) {
+            options.headers['Authorization'] = 'Bearer $authToken';
+          }
+          options.headers['X-Store-ID'] = currentStoreId.toString();
+          return handler.next(options);
+        },
+        onError: (DioException error, handler) async {
+          // Если токен протух (401), пробуем тихий вход с сохранёнными логином и паролем
+          if (error.response?.statusCode == 401 && !error.requestOptions.path.contains('/login')) {
+            final refreshed = await _trySilentReLogin();
+            if (refreshed) {
+              final opts = error.requestOptions;
+              opts.headers['Authorization'] = 'Bearer $authToken';
+              opts.headers['X-Store-ID'] = currentStoreId.toString();
+              try {
+                final retryResponse = await _dio.fetch(opts);
+                return handler.resolve(retryResponse);
+              } catch (retryErr) {
+                return handler.next(error);
+              }
+            }
+          }
+          return handler.next(error);
+        },
+      ),
+    );
+
+    // Фоновая синхронизация списка магазинов gusar.tj на старте
+    fetchStores().then((stores) {
+      if (stores.isNotEmpty) {
+        accessibleStores = stores;
+        SharedPreferences.getInstance().then((p) {
+          p.setString('accessible_stores_list', jsonEncode(stores));
+        });
+      }
+    }).catchError((_) {});
+  }
+
+  // Тихий перезапуск сессии при истечении срока JWT-токена
+  Future<bool> _trySilentReLogin() async {
+    if (_isRefreshingToken) return false;
+    _isRefreshingToken = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username');
+      final savedPass = prefs.getString('saved_password');
+
+      if (savedUser == null || savedPass == null || savedUser.isEmpty || savedPass.isEmpty) {
+        _isRefreshingToken = false;
+        return false;
+      }
+
+      final isolatedDio = Dio(BaseOptions(
+        baseUrl: baseUrl,
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 10),
+      ));
+
+      Response? response;
+      try {
+        response = await isolatedDio.post('/api/admin/login', data: {
+          'username': savedUser,
+          'password': savedPass,
+        });
+      } catch (_) {
+        response = await isolatedDio.post('/api/auth/login', data: {
+          'username': savedUser,
+          'password': savedPass,
+        });
+      }
+
+      if (response != null && (response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
+        final token = response.data['token']?.toString() ??
+            response.data['accessToken']?.toString() ??
+            response.data['data']?['token']?.toString();
+        if (token != null && token.isNotEmpty) {
+          updateToken(token);
+          _isRefreshingToken = false;
+          return true;
+        }
+      }
+    } catch (e) {
+      print('Silent re-login failed: $e');
+    }
+    _isRefreshingToken = false;
+    return false;
   }
 
   void updateToken(String token) async {
@@ -84,6 +178,7 @@ class ApiService {
   void updateStoreId(int id) async {
     currentStoreId = id;
     _cachedProducts = [];
+    _dio.options.headers['X-Store-ID'] = id.toString();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
     await prefs.remove('cached_products_list');
@@ -737,11 +832,15 @@ class ApiService {
 
   // 6. Проверка на дубликат накладной
   Future<bool> checkInvoiceExists(String invoiceNumber, int? supplierId) async {
+    final clean = invoiceNumber.trim().toLowerCase();
+    if (clean.isEmpty) return false;
     try {
-      final response = await _dio.get('/api/purchases');
+      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': currentStoreId});
       if (response.statusCode == 200 && response.data is List) {
         for (var p in response.data) {
-          if (p['notes'] != null && p['notes'].toString().contains(invoiceNumber)) {
+          final invNum = p['invoice_number']?.toString().trim().toLowerCase() ?? '';
+          final notes = p['notes']?.toString().trim().toLowerCase() ?? '';
+          if (invNum == clean || (notes.isNotEmpty && notes.contains(clean))) {
             return true;
           }
         }
@@ -752,28 +851,112 @@ class ApiService {
     }
   }
 
-  // 7. Отправка приходной накладной и прямое зачисление в остатки
+  // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj
   Future<bool> submitPurchase(InvoiceDocument document) async {
+    lastSubmitError = null;
     try {
+      // 1. Проверяем и валидируем контрагента:
+      int? verifiedSupplierId = document.supplierId;
+      if (document.supplierName.trim().isNotEmpty && (verifiedSupplierId == null || verifiedSupplierId <= 0 || verifiedSupplierId > 1000000)) {
+        // Если поставщик новый или офлайн-ид, пробуем найти или создать его на сервере
+        try {
+          final serverSuppliers = await getSuppliers();
+          final existing = serverSuppliers.firstWhere(
+            (s) => s.name.trim().toLowerCase() == document.supplierName.trim().toLowerCase(),
+            orElse: () => Supplier(id: -1, storeId: currentStoreId, name: ''),
+          );
+          if (existing.id > 0) {
+            verifiedSupplierId = existing.id;
+          } else {
+            final createdSup = await createSupplier(document.supplierName.trim());
+            if (createdSup != null && createdSup.id > 0 && createdSup.id < 10000000) {
+              verifiedSupplierId = createdSup.id;
+            } else {
+              verifiedSupplierId = null; // Передаем null, чтобы не ломать транзакцию чужим ID
+            }
+          }
+        } catch (_) {
+          verifiedSupplierId = null;
+        }
+      }
+
+      // 2. Гарантируем, что каждый товар привязан к реальному ID в базе магазина
+      final List<Map<String, dynamic>> itemsPayload = [];
+      for (var item in document.items) {
+        int? productId = item.matchedProductId;
+
+        // Если товар не привязан к базе gusar.tj, создаем его карточку прямо в базе!
+        if (productId == null || productId <= 0) {
+          try {
+            final newProd = await createProduct(
+              name: item.rawName.trim(),
+              barcode: item.barcode ?? item.matchedBarcode ?? '',
+              price: item.currentRetailPrice ?? (item.buyPrice > 0 ? (item.buyPrice * 1.25) : 10.0),
+              costPrice: item.buyPrice > 0 ? item.buyPrice : 1.0,
+              unit: item.unit.isNotEmpty ? item.unit : 'шт',
+            );
+            if (newProd != null && newProd.id > 0) {
+              productId = newProd.id;
+              item.matchedProductId = newProd.id;
+            }
+          } catch (createErr) {
+            print('Auto-create product error: $createErr');
+          }
+        }
+
+        if (productId != null && productId > 0) {
+          final rawQty = item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity;
+          final double cleanQty = double.tryParse(rawQty.toStringAsFixed(3)) ?? rawQty;
+          final double cleanBuy = item.buyPrice > 0 ? double.tryParse(item.buyPrice.toStringAsFixed(2)) ?? item.buyPrice : 0.01;
+          final double? cleanRetail = item.currentRetailPrice != null && item.currentRetailPrice! > 0
+              ? double.tryParse(item.currentRetailPrice!.toStringAsFixed(2))
+              : null;
+
+          itemsPayload.add({
+            'product_id': productId,
+            'quantity': cleanQty > 0 ? cleanQty : 1.0,
+            'buy_price': cleanBuy,
+            if (cleanRetail != null) 'retail_price': cleanRetail,
+            if (cleanRetail != null) 'sell_price': cleanRetail,
+          });
+        }
+      }
+
+      if (itemsPayload.isEmpty) {
+        lastSubmitError = 'Нет привязанных товаров для оприходования.';
+        return false;
+      }
+
+      final cleanInvNum = document.invoiceNumber.trim().isNotEmpty
+          ? document.invoiceNumber.trim()
+          : 'НАК-${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+
       final purchasePayload = {
         'store_id': currentStoreId,
-        'supplier_id': document.supplierId,
+        'supplier_id': verifiedSupplierId,
+        'invoice_number': cleanInvNum,
+        'date': document.invoiceDate.toIso8601String(),
         'total_amount': document.totalAmount > 0 ? document.totalAmount : document.calculatedTotal,
         'paid_amount': document.paidAmount,
-        'notes': 'Накладная №${document.invoiceNumber} от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName})',
-        'items': document.items.map((item) {
-          return {
-            'product_id': item.matchedProductId,
-            'quantity': (item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity).toInt(),
-            'buy_price': item.buyPrice,
-          };
-        }).toList(),
+        'notes': 'Накладная №$cleanInvNum от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName})',
+        'items': itemsPayload,
       };
 
       final response = await _dio.post('/api/purchases', data: purchasePayload);
 
-      return response.statusCode == 200 || response.statusCode == 201;
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return true;
+      } else {
+        lastSubmitError = response.data?['error']?.toString() ?? response.data?['message']?.toString() ?? 'Ошибка сервера ${response.statusCode}';
+        return false;
+      }
+    } on DioException catch (dioErr) {
+      final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
+      lastSubmitError = serverMsg?.toString() ?? dioErr.message ?? 'Ошибка сети при отправке накладной';
+      print('Submit purchase dio error: $lastSubmitError');
+      return false;
     } catch (e) {
+      lastSubmitError = e.toString();
       print('Submit purchase error: $e');
       return false;
     }
