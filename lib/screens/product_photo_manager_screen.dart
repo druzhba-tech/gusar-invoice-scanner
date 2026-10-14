@@ -401,12 +401,13 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
         final fileName = 'prod_${widget.product.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final targetPath = '${appDir.path}/$fileName';
 
-        // Обрезаем до строгого квадрата 1:1 и сжимаем без потери качества
+        // Обрезаем до строгого квадрата 1:1 и сжимаем строго до 40 КБ
         final savedFile = await ImageUtils.cropToSquareAndCompress(
           originalFile,
           targetPath,
-          maxSize: 1000,
-          quality: 85,
+          maxSize: 550,
+          quality: 80,
+          maxKb: 40,
         );
         final compressedSize = await savedFile.length();
 
@@ -416,7 +417,7 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
         setState(() {
           _currentImageFile = savedFile;
           _rotationTurns = 0;
-          _compressionInfo = 'Формат 1:1 (квадрат) • ${origMb} МБ ➔ ${compKb} КБ';
+          _compressionInfo = 'Формат 1:1 (квадрат) • ${origMb} МБ ➔ ${compKb} КБ (≤ 40 КБ)';
         });
 
         HapticFeedback.mediumImpact();
@@ -459,6 +460,9 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
           _currentImageFile!,
           '${appDir.path}/$rotName',
           quarterTurns: _rotationTurns,
+          maxSize: 550,
+          quality: 80,
+          maxKb: 40,
         );
       }
 

@@ -227,8 +227,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
         final savedImage = await ImageUtils.cropToSquareAndCompress(
           File(picked.path),
           targetPath,
-          maxSize: 1000,
-          quality: 85,
+          maxSize: 550,
+          quality: 80,
+          maxKb: 40,
         );
 
         setState(() {
@@ -361,6 +362,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
           imageToSave,
           '${appDir.path}/$rotName',
           quarterTurns: _imageRotationTurns,
+          maxSize: 550,
+          quality: 80,
+          maxKb: 40,
         );
       }
 

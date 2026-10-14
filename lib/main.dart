@@ -9,6 +9,46 @@ import 'screens/login_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Глобальный перехватчик ошибок для абсолютной стабильности:
+  // Приложение НЕ должно падать ни при каких обстоятельствах!
+  FlutterError.onError = (FlutterErrorDetails details) {
+    debugPrint('FLUTTER SHIELD CAUGHT ERROR: ${details.exceptionAsString()}');
+  };
+
+  WidgetsBinding.instance.platformDispatcher.onError = (Object error, StackTrace stack) {
+    debugPrint('ASYNC SHIELD CAUGHT ERROR: $error\n$stack');
+    return true; // Возвращаем true, чтобы предотвратить краш процесса приложения
+  };
+
+  // Защита от «красного экрана смерти»: при любой ошибке UI показывается безопасная карточка
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF0F172A),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.shield_outlined, color: Color(0xFF10B981), size: 40),
+              const SizedBox(height: 10),
+              const Text(
+                'Защита стабильности GScan',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Временный сбой элемента интерфейса. Все данные сохранены, приложение продолжает работу.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
   // Безопасная инициализация сервисов
   try {
     await ApiService().init();

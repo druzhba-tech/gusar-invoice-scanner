@@ -100,9 +100,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? defaultGeminiKey;
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
+
+    _fetchStoresFromGusar(silent: true);
   }
 
-  Future<void> _fetchStoresFromGusar() async {
+  Future<void> _fetchStoresFromGusar({bool silent = false}) async {
     setState(() => _isSyncingStores = true);
     final stores = await _api.fetchStores();
     setState(() => _isSyncingStores = false);
@@ -117,16 +119,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _availableStores = newOptions;
         if (!_availableStores.any((s) => s.id == _selectedStoreId)) {
-          _selectedStoreId = _availableStores.first.id;
-          _selectedStoreName = _availableStores.first.name;
+          // Если текущий ID найден в списке - сохраняем его правильное имя
+          final found = _availableStores.firstWhere((s) => s.id == _selectedStoreId, orElse: () => _availableStores.first);
+          _selectedStoreId = found.id;
+          _selectedStoreName = found.name;
+        } else {
+          final found = _availableStores.firstWhere((s) => s.id == _selectedStoreId);
+          _selectedStoreName = found.name;
         }
       });
       await _api.updateStore(_selectedStoreId, _selectedStoreName);
 
-      if (mounted) {
+      if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ Подтверждён доступ к магазину: $_selectedStoreName'),
+            content: Text('✅ Доступные магазины gusar.tj обновлены (${_availableStores.length} точек)'),
             backgroundColor: const Color(0xFF10B981),
           ),
         );
@@ -134,15 +141,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  void _onStoreChanged(int? newId) {
-    if (newId == null) return;
-    final store = _availableStores.firstWhere((s) => s.id == newId, orElse: () => _availableStores.first);
-    setState(() {
-      _selectedStoreId = store.id;
-      _selectedStoreName = store.name;
-    });
-    _api.updateStore(store.id, store.name);
-  }
+
 
   Future<void> _handleLogin() async {
     final user = _usernameCtrl.text.trim();
@@ -319,109 +318,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 10),
 
-            if (_availableStores.length <= 1) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF10B981).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 28),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  _selectedStoreName,
-                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF10B981).withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  'ID: $_selectedStoreId',
-                                  style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          const Row(
-                            children: [
-                              Icon(Icons.lock_rounded, size: 12, color: Color(0xFF34D399)),
-                              SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  'Доступ открыт только к вашему магазину',
-                                  style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.w500),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
               ),
-            ] else ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5), width: 1.5),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<int>(
-                    value: _availableStores.any((s) => s.id == _selectedStoreId)
-                        ? _selectedStoreId
-                        : _availableStores.first.id,
-                    isExpanded: true,
-                    dropdownColor: const Color(0xFF1E293B),
-                    icon: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981)),
-                    items: _availableStores.map((store) {
-                      return DropdownMenuItem<int>(
-                        value: store.id,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 28),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
                           children: [
-                            Text(
-                              store.name,
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                            Expanded(
+                              child: Text(
+                                _selectedStoreName,
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                              ),
                             ),
-                            Text(
-                              store.address,
-                              style: const TextStyle(color: Color(0xFF10B981), fontSize: 11),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981).withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                'ID: $_selectedStoreId',
+                                style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                              ),
                             ),
                           ],
                         ),
-                      );
-                    }).toList(),
-                    onChanged: _onStoreChanged,
+                        const SizedBox(height: 4),
+                        const Row(
+                          children: [
+                            Icon(Icons.lock_rounded, size: 12, color: Color(0xFF34D399)),
+                            SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                'Доступ открыт только к вашему магазину',
+                                style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
 
             const SizedBox(height: 24),
 

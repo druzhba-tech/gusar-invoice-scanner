@@ -6,6 +6,7 @@ import '../models/product.dart';
 import '../models/supplier.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
+import '../utils/image_utils.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -72,23 +73,35 @@ class ApiService {
   Future<void> updateStore(int id, String name) async {
     currentStoreId = id;
     currentStoreName = name;
+    _cachedProducts = []; // ВАЖНО: очищаем память от товаров старого магазина!
     _dio.options.headers['X-Store-ID'] = id.toString();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
     await prefs.setString('store_name', name);
+    await prefs.remove('cached_products_list'); // Очищаем кэш старого магазина
   }
 
   void updateStoreId(int id) async {
     currentStoreId = id;
+    _cachedProducts = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
+    await prefs.remove('cached_products_list');
   }
 
-  // Загрузка подразделений/складов напрямую из базы gusar.tj
+  // Загрузка подразделений/складов напрямую из базы gusar.tj (публичный + супер-админский эндпоинты)
   Future<List<Map<String, dynamic>>> fetchStores() async {
     try {
-      final response = await _dio.get('/api/stores').timeout(const Duration(seconds: 8));
-      if (response.statusCode == 200 && response.data != null) {
+      Response? response;
+      // 1. Сначала запрашиваем публичный каталог всех магазинов (всегда открыт, не требует прав суперадмина)
+      try {
+        response = await _dio.get('/api/public-stores').timeout(const Duration(seconds: 6));
+      } catch (_) {
+        // 2. Если публичный эндпоинт недоступен, пробуем админский эндпоинт
+        response = await _dio.get('/api/stores').timeout(const Duration(seconds: 6));
+      }
+
+      if (response != null && response.statusCode == 200 && response.data != null) {
         final dynamic raw = response.data;
         List<dynamic> items = [];
         if (raw is List) {
@@ -100,15 +113,18 @@ class ApiService {
         }
 
         if (items.isNotEmpty) {
-          return items.map((e) {
+          final list = items.map((e) {
             final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1;
             final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
             final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
             return {'id': id, 'name': name, 'address': address};
           }).toList();
+          return list;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('fetchStores warning: $e');
+    }
     return [];
   }
 
@@ -150,11 +166,19 @@ class ApiService {
         await prefs.setString('logged_username', username);
         await prefs.setBool('is_authenticated', true);
 
-        // Получаем привязку магазина для авторизованного пользователя
-        final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'] ?? response.data;
+        // 1. Сначала подгружаем актуальный список всех магазинов базы gusar.tj
+        final allStores = await fetchStores();
+
+        // 2. Извлекаем точный store_id пользователя
         int? userStoreId;
         String? userStoreName;
 
+        // В ответе /api/admin/login store_id находится в корне: response.data['store_id']
+        if (response.data['store_id'] != null) {
+          userStoreId = int.tryParse(response.data['store_id'].toString());
+        }
+
+        final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'];
         if (rawUser is Map) {
           if (rawUser['store_id'] != null) {
             userStoreId = int.tryParse(rawUser['store_id'].toString());
@@ -169,34 +193,48 @@ class ApiService {
               userStoreId = int.tryParse(rawUser['store']['id'].toString());
             }
           }
+        }
 
-          final userStoresList = rawUser['stores'] ?? response.data['stores'];
-          if (userStoresList is List && userStoresList.isNotEmpty) {
-            accessibleStores = userStoresList.map((e) => {
-              'id': e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1,
-              'name': e['name']?.toString() ?? 'Магазин gusar.tj #${e['id']}',
-              'address': e['address']?.toString() ?? 'Склад gusar.tj',
-            }).toList();
+        // 3. Ищем правильное название магазина в общем справочнике магазинов
+        if (userStoreId != null && allStores.isNotEmpty) {
+          final matched = allStores.firstWhere(
+            (s) => (s['id'] as int) == userStoreId,
+            orElse: () => {},
+          );
+          if (matched.isNotEmpty && matched['name'] != null) {
+            userStoreName = matched['name'] as String;
           }
         }
 
-        // Если список доступных магазинов не вернулся в ответе login, запрашиваем через /api/stores
-        if (accessibleStores.isEmpty) {
-          final fetched = await fetchStores();
-          if (fetched.isNotEmpty) {
-            accessibleStores = fetched;
-          }
-        }
+        final role = response.data['role']?.toString().toUpperCase();
+        final isSuperAdmin = role == 'SUPERADMIN' || role == 'OWNER' || (userStoreId == null && role != 'COURIER');
 
-        int assignedStoreId = userStoreId ?? (accessibleStores.isNotEmpty ? (accessibleStores.first['id'] as int) : currentStoreId);
-        String assignedStoreName = userStoreName ?? (accessibleStores.isNotEmpty ? (accessibleStores.first['name'] as String) : currentStoreName);
+        int assignedStoreId;
+        String assignedStoreName;
 
-        if (accessibleStores.isEmpty) {
+        if (isSuperAdmin) {
+          // Для суперадмина доступны ВСЕ магазины сети gusar.tj
+          accessibleStores = allStores.isNotEmpty ? allStores : [
+            {'id': 1, 'name': 'Ашам Маркет', 'address': 'Основной склад'}
+          ];
+          assignedStoreId = accessibleStores.first['id'] as int;
+          assignedStoreName = accessibleStores.first['name'] as String;
+        } else if (userStoreId != null) {
+          // Для сотрудника закрепляем строго ЕГО магазин
+          assignedStoreId = userStoreId;
+          assignedStoreName = userStoreName ?? 'Магазин gusar.tj #$userStoreId';
           accessibleStores = [
+            {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
+          ];
+        } else {
+          assignedStoreId = allStores.isNotEmpty ? (allStores.first['id'] as int) : currentStoreId;
+          assignedStoreName = allStores.isNotEmpty ? (allStores.first['name'] as String) : currentStoreName;
+          accessibleStores = allStores.isNotEmpty ? allStores : [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
         }
 
+        // Обновляем текущий магазин и сбрасываем кэш товаров старого магазина!
         await updateStore(assignedStoreId, assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
@@ -239,9 +277,12 @@ class ApiService {
 
   Future<void> logout() async {
     authToken = null;
+    _cachedProducts = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
     await prefs.setBool('is_authenticated', false);
+    await prefs.remove('cached_products_list');
+    await prefs.remove('accessible_stores_list');
     final keepPassword = prefs.getBool('remember_credentials') ?? false;
     if (!keepPassword) {
       await prefs.remove('saved_password');
@@ -459,7 +500,9 @@ class ApiService {
       try {
         final f = File(localImagePath);
         if (f.existsSync()) {
-          final bytes = await f.readAsBytes();
+          // Гарантируем сжатие до <= 40 КБ перед конвертацией в base64 и отправкой на сервер
+          final compressedFile = await ImageUtils.compressFileToMaxKb(f, maxKb: 40);
+          final bytes = await compressedFile.readAsBytes();
           base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
         }
       } catch (_) {}
@@ -521,7 +564,9 @@ class ApiService {
       final f = File(imagePath);
       if (!f.existsSync()) return null;
 
-      final bytes = await f.readAsBytes();
+      // Гарантируем сжатие до <= 40 КБ перед отправкой на сервер
+      final compressedFile = await ImageUtils.compressFileToMaxKb(f, maxKb: 40);
+      final bytes = await compressedFile.readAsBytes();
       final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
 
       Response? response;

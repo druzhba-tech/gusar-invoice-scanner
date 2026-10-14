@@ -796,11 +796,48 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     ),
                   ],
                 ),
-                Text(
-                  'Текущий по накладной: "${_doc.supplierName}"',
-                  style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _doc.supplierId != null
+                            ? 'Привязан к базе: "${_doc.supplierName}" (ID: ${_doc.supplierId})'
+                            : 'Текущий по накладной: "${_doc.supplierName}" (Не привязан)',
+                        style: TextStyle(
+                          color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (_doc.supplierId != null)
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.link_off_rounded, color: Colors.redAccent, size: 16),
+                        label: const Text('Отвязать', style: TextStyle(color: Colors.redAccent, fontSize: 11)),
+                        onPressed: () async {
+                          setState(() {
+                            _doc.supplierId = null;
+                          });
+                          Navigator.pop(modalCtx);
+                          await _saveAndRefresh();
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Связка с контрагентом базы удалена.'),
+                                backgroundColor: Color(0xFF334155),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -886,18 +923,22 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                         _doc.supplierName = s.name;
                                       });
                                       await _matcher.saveSupplierAlias(oldName, s.id, s.name);
+                                      try {
+                                        _matcher.autoMatchDocument(_doc, _api.cachedProducts);
+                                      } catch (_) {}
                                       Navigator.pop(modalCtx);
                                       await _saveAndRefresh();
                                       if (mounted) {
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           SnackBar(
-                                            content: Text('✅ Контрагент выбран: "${s.name}" (ID: ${s.id})'),
+                                            content: Text('✅ Поставщик привязан: "${s.name}" (ID: ${s.id})!'),
                                             backgroundColor: const Color(0xFF10B981),
                                           ),
                                         );
                                       }
                                     },
-                                    child: Text(isCurrent ? 'Выбран' : 'Выбрать', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                    child: Text(isCurrent ? 'Привязан' : 'Связать',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                                   ),
                                 );
                               },
@@ -1208,16 +1249,127 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 // Сводка накладной
                 Container(
                   color: const Color(0xFF1E293B),
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(14),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Интерактивная карточка поставщика с привязкой к базе gusar.tj
+                      InkWell(
+                        onTap: _showCounterpartyPicker,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: _doc.supplierId != null
+                                  ? const Color(0xFF10B981).withOpacity(0.4)
+                                  : const Color(0xFFF59E0B).withOpacity(0.4),
+                              width: 1.2,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: _doc.supplierId != null
+                                      ? const Color(0xFF10B981).withOpacity(0.15)
+                                      : const Color(0xFFF59E0B).withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(
+                                  _doc.supplierId != null ? Icons.verified_rounded : Icons.business_rounded,
+                                  color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                                  size: 22,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Text(
+                                          'ПОСТАВЩИК',
+                                          style: TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                          decoration: BoxDecoration(
+                                            color: _doc.supplierId != null
+                                                ? const Color(0xFF10B981).withOpacity(0.2)
+                                                : const Color(0xFFF59E0B).withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            _doc.supplierId != null
+                                                ? 'В БАЗЕ GUSAR.TJ (ID: ${_doc.supplierId})'
+                                                : 'НЕ ПРИВЯЗАН К БАЗЕ',
+                                            style: TextStyle(
+                                              color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _doc.supplierName,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _doc.supplierId != null ? const Color(0xFF334155) : const Color(0xFF0284C7),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  elevation: 0,
+                                ),
+                                icon: Icon(
+                                  _doc.supplierId != null ? Icons.swap_horiz_rounded : Icons.link_rounded,
+                                  size: 16,
+                                  color: Colors.white,
+                                ),
+                                label: Text(
+                                  _doc.supplierId != null ? 'Сменить' : 'Связать',
+                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                                onPressed: _showCounterpartyPicker,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(_doc.supplierName, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                              Text('Накладная №${_doc.invoiceNumber}',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
                               const SizedBox(height: 2),
                               Text('Дата: ${dateFormat.format(_doc.invoiceDate)} • ${_api.currentStoreName}',
                                   style: const TextStyle(color: Colors.white54, fontSize: 11)),

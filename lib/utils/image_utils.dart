@@ -102,13 +102,74 @@ class ImageUtils {
     }
   }
 
-  /// Обрезает фото до строгого квадрата 1:1 по центру, применяет ориентацию и сжимает
+  /// Сжимает изображение до строго заданного максимального размера в килобайтах (по умолчанию 40 КБ)
+  /// с сохранением отличной детализации и чёткости этикетки/товара.
+  static Uint8List compressImageToMaxKb(
+    img.Image sourceImage, {
+    int maxKb = 40,
+    int initialQuality = 80,
+  }) {
+    final maxBytes = maxKb * 1024;
+    var currentImg = sourceImage;
+    int currentQuality = initialQuality;
+
+    // Шаг 1: если изображение слишком большое по разрешению (> 600x600),
+    // уменьшаем его до 550x550, что даёт высокую чёткость и минимальный вес
+    if (currentImg.width > 600 || currentImg.height > 600) {
+      final targetSide = min(currentImg.width, 550);
+      currentImg = img.copyResize(
+        currentImg,
+        width: targetSide,
+        height: targetSide,
+        interpolation: img.Interpolation.linear,
+      );
+    }
+
+    Uint8List jpgBytes = Uint8List.fromList(img.encodeJpg(currentImg, quality: currentQuality));
+    if (jpgBytes.length <= maxBytes) {
+      return jpgBytes;
+    }
+
+    // Шаг 2: постепенная регулировка качества JPEG
+    final qualitySteps = [74, 66, 58, 50, 42, 35];
+    for (final q in qualitySteps) {
+      currentQuality = q;
+      jpgBytes = Uint8List.fromList(img.encodeJpg(currentImg, quality: currentQuality));
+      if (jpgBytes.length <= maxBytes) {
+        return jpgBytes;
+      }
+    }
+
+    // Шаг 3: если всё ещё больше 40 КБ (сложные текстуры), масштабируем разрешение:
+    final resizeSteps = [450, 380, 320, 260];
+    for (final side in resizeSteps) {
+      if (currentImg.width > side) {
+        currentImg = img.copyResize(
+          currentImg,
+          width: side,
+          height: side,
+          interpolation: img.Interpolation.linear,
+        );
+      }
+      for (final q in [65, 52, 40, 30]) {
+        jpgBytes = Uint8List.fromList(img.encodeJpg(currentImg, quality: q));
+        if (jpgBytes.length <= maxBytes) {
+          return jpgBytes;
+        }
+      }
+    }
+
+    return jpgBytes;
+  }
+
+  /// Обрезает фото до строгого квадрата 1:1 по центру, применяет ориентацию и сжимает строго до maxKb (по умолчанию 40 КБ)
   static Future<File> cropToSquareAndCompress(
     File sourceFile,
     String targetPath, {
-    int maxSize = 1000,
-    int quality = 85,
+    int maxSize = 600,
+    int quality = 80,
     int quarterTurns = 0,
+    int maxKb = 40,
   }) async {
     try {
       final bytes = await sourceFile.readAsBytes();
@@ -139,7 +200,7 @@ class ImageUtils {
         height: side,
       );
 
-      // 4. Масштабируем до разумного максимума (по умолчанию 1000x1000 пикселей)
+      // 4. Масштабируем до разумного максимума (по умолчанию 550x550)
       if (side > maxSize) {
         squareImage = img.copyResize(
           squareImage,
@@ -149,15 +210,50 @@ class ImageUtils {
         );
       }
 
-      // 5. Кодируем в оптимизированный JPEG
-      final Uint8List jpgBytes = Uint8List.fromList(img.encodeJpg(squareImage, quality: quality));
+      // 5. Кодируем строго до лимита maxKb (по умолчанию 40 КБ)
+      final Uint8List jpgBytes = compressImageToMaxKb(
+        squareImage,
+        maxKb: maxKb,
+        initialQuality: quality,
+      );
 
       final targetFile = File(targetPath);
       await targetFile.writeAsBytes(jpgBytes);
       return targetFile;
     } catch (e) {
-      // При любой непредвиденной ошибке обработки отдаем копию файла
+      // При любой ошибке отдаем копию файла
       return await sourceFile.copy(targetPath);
+    }
+  }
+
+  /// Утилита для сжатия любого файла изображения строго до maxKb (по умолчанию 40 КБ)
+  static Future<File> compressFileToMaxKb(
+    File sourceFile, {
+    String? targetPath,
+    int maxKb = 40,
+  }) async {
+    try {
+      final bytes = await sourceFile.readAsBytes();
+      if (bytes.length <= maxKb * 1024) {
+        if (targetPath != null && targetPath != sourceFile.path) {
+          return await sourceFile.copy(targetPath);
+        }
+        return sourceFile;
+      }
+
+      img.Image? image = img.decodeImage(bytes);
+      if (image == null) return sourceFile;
+
+      image = img.bakeOrientation(image);
+      final compressedBytes = compressImageToMaxKb(image, maxKb: maxKb);
+
+      final outPath = targetPath ?? sourceFile.path;
+      final outFile = File(outPath);
+      await outFile.writeAsBytes(compressedBytes);
+      return outFile;
+    } catch (e) {
+      print('compressFileToMaxKb error: $e');
+      return sourceFile;
     }
   }
 }

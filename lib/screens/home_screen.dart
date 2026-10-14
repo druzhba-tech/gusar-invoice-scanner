@@ -830,11 +830,21 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: Icon(Icons.description_outlined, color: statusColor),
           ),
-          title: Text(
-            doc.supplierName,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          title: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  doc.supplierName,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (doc.supplierId != null) ...[
+                const SizedBox(width: 4),
+                const Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 14),
+              ],
+            ],
           ),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
