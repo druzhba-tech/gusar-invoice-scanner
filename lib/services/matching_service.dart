@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_item.dart';
 import '../models/invoice_document.dart';
 import '../models/product.dart';
+import 'invoice_template_service.dart';
 
 class MatchCandidate {
   final Product product;
@@ -178,6 +179,12 @@ class MatchingService {
         doc.supplierId = matchedSup['id'] as int;
         doc.supplierName = matchedSup['name'] as String;
       }
+    }
+
+    // Шаг -0.5: Применяем запомненный шаблон поставщика (повторные закупки матчатся мгновенно)
+    final template = InvoiceTemplateService().findTemplateForSupplier(doc.supplierName);
+    if (template != null) {
+      InvoiceTemplateService().applyTemplateToDocument(doc, template);
     }
 
     for (var item in doc.items) {

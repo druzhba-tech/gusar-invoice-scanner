@@ -9,6 +9,7 @@ import '../models/supplier.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
 import '../services/matching_service.dart';
+import '../services/invoice_template_service.dart';
 import 'matching_screen.dart';
 import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
@@ -1261,6 +1262,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       _doc.isSynchronized = true;
       _doc.status = DocumentStatus.synced;
       await _storage.saveInvoice(_doc);
+      // Обучаем память шаблона формата накладной этого поставщика для ускорения повторных закупок
+      try {
+        await InvoiceTemplateService().learnFromInvoice(_doc);
+      } catch (_) {}
 
       if (mounted) {
         showDialog(
@@ -1327,6 +1332,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       _doc.isSynchronized = false;
       _doc.status = DocumentStatus.approved;
       await _storage.saveInvoice(_doc);
+      // Обучаем память шаблона поставщика и при офлайн-сохранении
+      try {
+        await InvoiceTemplateService().learnFromInvoice(_doc);
+      } catch (_) {}
 
       if (mounted) {
         showDialog(

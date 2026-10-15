@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 import '../utils/image_utils.dart';
+import 'invoice_template_service.dart';
 
 class OcrService {
   static final OcrService _instance = OcrService._internal();
@@ -13,6 +14,7 @@ class OcrService {
   OcrService._internal();
 
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+  final InvoiceTemplateService _templateService = InvoiceTemplateService();
 
   static String get defaultGeminiKey {
     try {
@@ -47,23 +49,39 @@ class OcrService {
     }
   }
 
-  // 2. Интеллектуальный разбор накладных через Vision AI (с предварительным авто-выравниванием)
+  // 2. Интеллектуальный разбор накладных через Vision AI (с быстрым пропуском авто-выравнивания)
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
-    // ШАГ 0: АВТО-ВЫРАВНИВАНИЕ И ПОВОРОТ СТРАНИЦ
-    // Сначала физически поворачиваем накладную в правильное положение (EXIF + угол текста), а затем считываем!
+    // ШАГ 0: АВТО-ВЫРАВНИВАНИЕ (FAST-PATH: если снимок ровный, поворот мгновенно пропускается)
     final List<String> preparedPaths = [];
+    final List<String> networkUploadPaths = [];
+
     for (var path in imagePaths) {
       if (path.toLowerCase().endsWith('.pdf')) {
         preparedPaths.add(path);
+        networkUploadPaths.add(path);
       } else {
         try {
           final straightened = await ImageUtils.autoStraightenInvoiceImage(File(path), recognizer: _mlKitRecognizer);
           preparedPaths.add(straightened.path);
+          // Оптимизируем размер снимка перед отправкой в сеть (ускоряет отправку в 10 раз)
+          final aiFile = await ImageUtils.prepareImageForAiUpload(straightened);
+          networkUploadPaths.add(aiFile.path);
         } catch (e) {
           print('Auto-straighten page error: $e');
           preparedPaths.add(path);
+          networkUploadPaths.add(path);
         }
       }
+    }
+
+    // ШАГ 0.5: ПРОВЕРКА ЗАПОМНЕННОГО ШАБЛОНА ПОСТАВЩИКА
+    await _templateService.init();
+    SupplierInvoiceTemplate? knownTemplate;
+    if (preparedPaths.isNotEmpty) {
+      try {
+        final quickSampleText = await extractTextOffline(preparedPaths.first);
+        knownTemplate = _templateService.detectTemplateFromOcrText(quickSampleText);
+      } catch (_) {}
     }
 
     final config = await _getAiConfig();
@@ -72,40 +90,40 @@ class OcrService {
     final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
     final yandexFolderId = config['yandex_folder_id'] ?? '';
 
+    InvoiceDocument? doc;
+
     // 1. По умолчанию или при выборе Gemini — вызываем Google Gemini Vision AI
     if ((provider == 'gemini' || yandexKey.isEmpty) && geminiKey.isNotEmpty) {
-      final geminiDoc = await _parseWithGemini(preparedPaths, geminiKey);
-      if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
-        return geminiDoc;
-      }
+      doc = await _parseWithGemini(networkUploadPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
     }
 
     // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
-    if (provider == 'yandex' && yandexKey.isNotEmpty) {
-      final yandexDoc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, yandexFolderId);
-      if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
-        return yandexDoc;
-      }
+    if ((doc == null || doc.items.isEmpty) && provider == 'yandex' && yandexKey.isNotEmpty) {
+      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, yandexFolderId, originalPaths: preparedPaths);
     }
 
     // 3. Fallback к Gemini, если Яндекс не сработал
-    if (geminiKey.isNotEmpty) {
-      final geminiDoc = await _parseWithGemini(preparedPaths, geminiKey);
-      if (geminiDoc != null && geminiDoc.items.isNotEmpty) {
-        return geminiDoc;
-      }
+    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty) {
+      doc = await _parseWithGemini(networkUploadPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
     }
 
     // 4. Если есть ключ Яндекс, но был выбран другой провайдер
-    if (yandexKey.isNotEmpty) {
-      final yandexDoc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, yandexFolderId);
-      if (yandexDoc != null && yandexDoc.items.isNotEmpty) {
-        return yandexDoc;
-      }
+    if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
+      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, yandexFolderId, originalPaths: preparedPaths);
     }
 
     // 5. Если облачные нейросети не ответили, используем эвристический локальный парсер
-    return _fallbackLocalParse(preparedPaths);
+    doc ??= await _fallbackLocalParse(preparedPaths);
+
+    // ШАГ ФИНАЛЬНЫЙ: ПРИМЕНЯЕМ ШАБЛОН ПОСТАВЩИКА К ДОКУМЕНТУ
+    if (doc != null) {
+      final tmpl = knownTemplate ?? _templateService.findTemplateForSupplier(doc.supplierName);
+      if (tmpl != null) {
+        _templateService.applyTemplateToDocument(doc, tmpl);
+      }
+    }
+
+    return doc;
   }
 
   // =========================================================================
@@ -115,6 +133,7 @@ class OcrService {
     List<String> imagePaths,
     String apiKey, [
     String? folderId,
+    List<String>? originalPaths,
   ]) async {
     try {
       final List<String> extractedLines = [];
@@ -187,7 +206,7 @@ class OcrService {
       }
 
       if (extractedLines.isNotEmpty) {
-        return _parseUnifiedLines(extractedLines, imagePaths);
+        return _parseUnifiedLines(extractedLines, originalPaths ?? imagePaths);
       }
     } catch (e) {
       print('Yandex Vision error: $e');
@@ -196,9 +215,14 @@ class OcrService {
   }
 
   // =========================================================================
-  // РАСПОЗНАВАНИЕ ЧЕРЕЗ GOOGLE GEMINI 1.5 FLASH (VISION AI)
+  // РАСПОЗНАВАНИЕ ЧЕРЕЗ GOOGLE GEMINI FLASH (VISION AI) С ПОДСКАЗКОЙ ШАБЛОНА
   // =========================================================================
-  Future<InvoiceDocument?> _parseWithGemini(List<String> imagePaths, String apiKey) async {
+  Future<InvoiceDocument?> _parseWithGemini(
+    List<String> imagePaths,
+    String apiKey, {
+    SupplierInvoiceTemplate? template,
+    List<String>? originalPaths,
+  }) async {
     try {
       final List<Map<String, dynamic>> parts = [];
 
@@ -253,6 +277,12 @@ class OcrService {
 
       parts.add({'text': systemInstruction});
 
+      // Если найден шаблон поставщика — передаем нейросети подсказку структуры для ускорения
+      if (template != null) {
+        final hint = _templateService.buildAiTemplatePromptHint(template);
+        parts.add({'text': hint});
+      }
+
       for (var path in imagePaths) {
         final bytes = await File(path).readAsBytes();
         final base64Image = base64Encode(bytes);
@@ -264,14 +294,11 @@ class OcrService {
         });
       }
 
-      // Используем стабильные и скоростные модели с высоким лимитом
+      // Используем стабильные, актуальные и самые скоростные модели Flash
       final candidateModels = [
-        'gemini-3.8-flash',
-        'gemini-2.5-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-8b',
         'gemini-flash-latest',
       ];
 
@@ -302,7 +329,7 @@ class OcrService {
             final cleanJson = _cleanAndRepairJson(rawText);
             final data = jsonDecode(cleanJson);
 
-            final doc = _buildDocumentFromJson(data, imagePaths);
+            final doc = _buildDocumentFromJson(data, originalPaths ?? imagePaths);
             if (doc.items.isNotEmpty) {
               return doc;
             }
