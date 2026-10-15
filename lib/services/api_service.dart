@@ -359,7 +359,6 @@ class ApiService {
     _dio.options.headers.remove('Authorization');
     _dio.options.headers.remove('X-Store-ID');
   }
-  }
 
   List<Product> _cachedProducts = [];
   List<Product> get cachedProducts => _cachedProducts;
