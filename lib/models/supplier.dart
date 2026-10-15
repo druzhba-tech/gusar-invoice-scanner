@@ -30,18 +30,44 @@ class Supplier {
   }
 
   factory Supplier.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id'] ?? json['supplier_id'] ?? json['contractor_id'];
+    final id = rawId is int ? rawId : int.tryParse(rawId?.toString() ?? '0') ?? 0;
+
+    final rawStoreId = json['store_id'] ?? json['storeId'];
+    final storeId = rawStoreId is int ? rawStoreId : int.tryParse(rawStoreId?.toString() ?? '0') ?? 0;
+
+    final name = json['name']?.toString() ??
+        json['supplier_name']?.toString() ??
+        json['title']?.toString() ??
+        json['company_name']?.toString() ??
+        json['contractor']?.toString() ??
+        json['company']?.toString() ??
+        json['fullname']?.toString() ??
+        json['full_name']?.toString() ??
+        json['legal_name']?.toString() ??
+        'Контрагент #$id';
+
+    final contact = json['contact']?.toString() ??
+        json['phone']?.toString() ??
+        json['mobile']?.toString() ??
+        json['tel']?.toString() ??
+        json['phone_number']?.toString();
+
+    final inn = json['inn']?.toString() ?? json['tin']?.toString() ?? json['tax_id']?.toString();
+
+    final address = json['address']?.toString() ?? json['city']?.toString() ?? json['legal_address']?.toString();
+
+    final rawBalance = json['balance'] ?? json['debt'] ?? 0.0;
+    final balance = (rawBalance is num) ? rawBalance.toDouble() : double.tryParse(rawBalance.toString()) ?? 0.0;
+
     return Supplier(
-      id: json['id'] is int ? json['id'] as int : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
-      storeId: json['store_id'] is int ? json['store_id'] as int : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
-      name: json['name']?.toString() ??
-          json['title']?.toString() ??
-          json['company_name']?.toString() ??
-          json['contractor']?.toString() ??
-          'Контрагент #${json['id'] ?? ''}',
-      contact: json['contact']?.toString() ?? json['phone']?.toString() ?? json['mobile']?.toString(),
-      inn: json['inn']?.toString() ?? json['tin']?.toString(),
-      address: json['address']?.toString() ?? json['city']?.toString(),
-      balance: (json['balance'] as num?)?.toDouble() ?? 0.0,
+      id: id,
+      storeId: storeId,
+      name: name.trim(),
+      contact: contact?.trim(),
+      inn: inn?.trim(),
+      address: address?.trim(),
+      balance: balance,
     );
   }
 }

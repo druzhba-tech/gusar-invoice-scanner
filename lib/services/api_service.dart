@@ -386,6 +386,10 @@ class ApiService {
         await updateStore(assignedStoreId, assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
+        // Предварительно загружаем актуальных поставщиков и каталог товаров в фоне
+        getSuppliers(forceRefresh: true).catchError((_) => <Supplier>[]);
+        fetchProducts().catchError((_) => <Product>[]);
+
         return {
           'success': true,
           'message': 'Добро пожаловать! Открыт магазин: $assignedStoreName',
@@ -770,7 +774,7 @@ class ApiService {
   List<Supplier> _cachedSuppliers = [];
   List<Supplier> get cachedSuppliers => _cachedSuppliers;
 
-  // 4. Получение актуального списка контрагентов из базы магазина на gusar.tj (СТРОГО из базы магазина)
+  // 4. Получение актуального списка контрагентов из базы gusar.tj
   Future<List<Supplier>> getSuppliers({bool forceRefresh = false}) async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -786,59 +790,91 @@ class ApiService {
             .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
             .where((s) => s.id > 0 && s.id < 1000000)
             .toList();
-        // Защита от старых тестовых сидов: если обнаружены старые заглушки, очищаем кэш!
-        final hasLegacySeeds = sups.any((s) => s.name.contains('Оби Зулол') || s.name.contains('Кока-Кола Таджикистан') || s.name.contains('Шири Душанбе'));
-        if (!hasLegacySeeds && sups.isNotEmpty) {
-          _cachedSuppliers = sups.where((s) => s.storeId == currentStoreId).toList();
-          if (_cachedSuppliers.isNotEmpty) return _cachedSuppliers;
-        } else if (hasLegacySeeds) {
-          await prefs.remove('cached_suppliers_list');
+        if (sups.isNotEmpty) {
+          _cachedSuppliers = sups;
+          return _cachedSuppliers;
         }
       } catch (_) {}
     }
 
-    try {
-      Response? response;
+    // Пробуем эндпоинты gusar.tj по очереди
+    final endpointsToTry = [
+      {'path': '/api/suppliers', 'params': {'store_id': currentStoreId}},
+      {'path': '/api/suppliers', 'params': <String, dynamic>{}},
+      {'path': '/api/purchases/suppliers', 'params': <String, dynamic>{}},
+      {'path': '/api/contractors', 'params': <String, dynamic>{}},
+      {'path': '/api/admin/suppliers', 'params': <String, dynamic>{}},
+    ];
+
+    for (var ep in endpointsToTry) {
       try {
-        response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
-      } on DioException catch (e) {
-        if (e.response?.statusCode == 401) {
-          await _trySilentReLogin();
-          response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
-        } else {
-          rethrow;
-        }
-      } catch (_) {
-        response = await _dio.get('/api/contractors', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
-      }
+        final path = ep['path'] as String;
+        final params = ep['params'] as Map<String, dynamic>;
 
-      if (response != null && response.statusCode == 200 && response.data != null) {
-        dynamic raw = response.data;
-        List<dynamic> items = [];
-        if (raw is List) {
-          items = raw;
-        } else if (raw is Map && raw['suppliers'] is List) {
-          items = raw['suppliers'];
-        } else if (raw is Map && raw['contractors'] is List) {
-          items = raw['contractors'];
-        } else if (raw is Map && raw['data'] is List) {
-          items = raw['data'];
+        Response? response;
+        try {
+          response = await _dio.get(
+            path,
+            queryParameters: params.isNotEmpty ? params : null,
+          ).timeout(const Duration(seconds: 7));
+        } on DioException catch (dioErr) {
+          if (dioErr.response?.statusCode == 401) {
+            final ok = await _trySilentReLogin();
+            if (ok) {
+              response = await _dio.get(
+                path,
+                queryParameters: params.isNotEmpty ? params : null,
+              ).timeout(const Duration(seconds: 7));
+            }
+          }
         }
 
-        if (items.isNotEmpty) {
-          _cachedSuppliers = items
-              .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
-              .where((s) => s.id > 0 && s.id < 1000000)
-              .toList();
-          await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
-          return _cachedSuppliers;
+        if (response != null && response.statusCode == 200 && response.data != null) {
+          dynamic raw = response.data;
+          List<dynamic> items = [];
+
+          if (raw is List) {
+            items = raw;
+          } else if (raw is Map) {
+            if (raw['suppliers'] is List) {
+              items = raw['suppliers'];
+            } else if (raw['contractors'] is List) {
+              items = raw['contractors'];
+            } else if (raw['data'] is List) {
+              items = raw['data'];
+            } else if (raw['data'] is Map && raw['data']['suppliers'] is List) {
+              items = raw['data']['suppliers'];
+            } else if (raw['data'] is Map && raw['data']['data'] is List) {
+              items = raw['data']['data'];
+            } else if (raw['items'] is List) {
+              items = raw['items'];
+            } else if (raw['result'] is List) {
+              items = raw['result'];
+            }
+          }
+
+          if (items.isNotEmpty) {
+            final parsed = items
+                .whereType<Map<String, dynamic>>()
+                .map((s) => Supplier.fromJson(s))
+                .where((s) => s.id > 0 && s.id < 1000000 && s.name.trim().isNotEmpty)
+                .toList();
+
+            if (parsed.isNotEmpty) {
+              _cachedSuppliers = parsed;
+              await prefs.setString(
+                'cached_suppliers_list',
+                jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()),
+              );
+              return _cachedSuppliers;
+            }
+          }
         }
+      } catch (e) {
+        // Пробуем следующий эндпоинт
       }
-    } catch (e) {
-      print('Fetch suppliers error: $e');
     }
 
-    // Никаких заглушек: строго реальные поставщики базы gusar.tj
     return _cachedSuppliers;
   }
 

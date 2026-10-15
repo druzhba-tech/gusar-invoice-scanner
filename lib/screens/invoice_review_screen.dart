@@ -38,6 +38,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     _doc = widget.document;
     _matcher.init();
     _checkDuplicate();
+    // Фоновая загрузка контрагентов при входе в накладную
+    _api.getSuppliers().then((_) {
+      if (mounted) setState(() {});
+    }).catchError((_) {});
   }
 
   Future<void> _checkDuplicate() async {
@@ -732,7 +736,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   // 7. Выбор контрагента из базы магазина на gusar.tj
   void _showCounterpartyPicker() {
     final searchCtrl = TextEditingController();
-    bool isSyncing = false;
+    bool isSyncing = _api.cachedSuppliers.isEmpty;
     List<Supplier> suppliersList = List.from(_api.cachedSuppliers);
 
     showModalBottomSheet(
@@ -742,14 +746,17 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (modalCtx) => StatefulBuilder(
         builder: (ctx, setModalState) {
-          if (suppliersList.isEmpty && !isSyncing) {
-            isSyncing = true;
+          if (isSyncing && suppliersList.isEmpty) {
             _api.getSuppliers().then((sups) {
               if (modalCtx.mounted) {
                 setModalState(() {
                   isSyncing = false;
                   suppliersList = sups;
                 });
+              }
+            }).catchError((_) {
+              if (modalCtx.mounted) {
+                setModalState(() => isSyncing = false);
               }
             });
           }
@@ -873,19 +880,49 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                   const SizedBox(height: 8),
                                   Text(
                                     searchCtrl.text.isEmpty
-                                        ? 'Контрагенты не найдены'
-                                        : 'Контрагент "${searchCtrl.text}" не найден в базе магазина',
+                                        ? 'Контрагенты не найдены в базе'
+                                        : 'Контрагент "${searchCtrl.text}" не найден в базе',
                                     style: const TextStyle(color: Colors.white54, fontSize: 13),
                                   ),
-                                  const SizedBox(height: 12),
-                                  ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-                                    icon: const Icon(Icons.add, color: Colors.white),
-                                    label: const Text('Создать контрагента в gusar.tj', style: TextStyle(color: Colors.white)),
-                                    onPressed: () {
-                                      Navigator.pop(modalCtx);
-                                      _showCreateSupplierDialog(initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : _doc.supplierName);
-                                    },
+                                  const SizedBox(height: 16),
+                                  Wrap(
+                                    spacing: 10,
+                                    runSpacing: 10,
+                                    alignment: WrapAlignment.center,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFF0284C7),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                        ),
+                                        icon: const Icon(Icons.sync_rounded, size: 18),
+                                        label: const Text('Обновить с gusar.tj'),
+                                        onPressed: () async {
+                                          setModalState(() => isSyncing = true);
+                                          final sups = await _api.getSuppliers(forceRefresh: true);
+                                          if (modalCtx.mounted) {
+                                            setModalState(() {
+                                              isSyncing = false;
+                                              suppliersList = sups;
+                                            });
+                                          }
+                                        },
+                                      ),
+                                      ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFF10B981),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                        ),
+                                        icon: const Icon(Icons.add, size: 18),
+                                        label: const Text('Создать контрагента'),
+                                        onPressed: () {
+                                          Navigator.pop(modalCtx);
+                                          _showCreateSupplierDialog(initialName: searchCtrl.text.isNotEmpty ? searchCtrl.text : _doc.supplierName);
+                                        },
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
