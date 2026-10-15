@@ -1058,6 +1058,100 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
             onPressed: () async {
               final newName = nameCtrl.text.trim();
               if (newName.isEmpty) return;
+
+              final cleanNewName = newName.toLowerCase().replaceAll(RegExp(r'["«»„“\s]+'), '');
+              final cleanInn = innCtrl.text.replaceAll(RegExp(r'\D'), '').trim();
+              final cleanPhone = phoneCtrl.text.replaceAll(RegExp(r'\D'), '').trim();
+
+              // ПРАВИЛО ДУБЛИКАТОВ: проверяем наличие контрагента в базе магазина
+              Supplier? duplicateSupplier;
+              for (final s in _api.cachedSuppliers) {
+                final sNameClean = s.name.toLowerCase().replaceAll(RegExp(r'["«»„“\s]+'), '');
+                final sInnClean = s.inn?.replaceAll(RegExp(r'\D'), '').trim() ?? '';
+                final sPhoneClean = s.contact?.replaceAll(RegExp(r'\D'), '').trim() ?? '';
+
+                if (cleanNewName.isNotEmpty && (cleanNewName == sNameClean || sNameClean.contains(cleanNewName) || cleanNewName.contains(sNameClean))) {
+                  duplicateSupplier = s;
+                  break;
+                }
+                if (cleanInn.isNotEmpty && sInnClean.isNotEmpty && cleanInn == sInnClean) {
+                  duplicateSupplier = s;
+                  break;
+                }
+                if (cleanPhone.length >= 6 && sPhoneClean.length >= 6 && sPhoneClean.contains(cleanPhone)) {
+                  duplicateSupplier = s;
+                  break;
+                }
+              }
+
+              if (duplicateSupplier != null) {
+                final useExisting = await showDialog<bool>(
+                  context: dlgCtx,
+                  builder: (warnCtx) => AlertDialog(
+                    backgroundColor: const Color(0xFF1E293B),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    title: const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: Colors.amberAccent, size: 24),
+                        SizedBox(width: 8),
+                        Expanded(child: Text('Контрагент уже есть в базе!', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))),
+                      ],
+                    ),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('В базе магазина уже зарегистрирован контрагент:\n\n• "${duplicateSupplier!.name}" (ID: ${duplicateSupplier.id})',
+                            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                        if (duplicateSupplier.inn != null && duplicateSupplier.inn!.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text('• ИНН: ${duplicateSupplier.inn}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                          ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Правило учета: создание дубликатов контрагентов запрещено.\nВыбрать существующего контрагента?',
+                          style: TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(warnCtx, false),
+                        child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+                      ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                        onPressed: () => Navigator.pop(warnCtx, true),
+                        child: const Text('Выбрать существующего', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                );
+
+                if (useExisting == true) {
+                  final oldName = _doc.supplierName;
+                  setState(() {
+                    _doc.supplierId = duplicateSupplier.id;
+                    _doc.supplierName = duplicateSupplier.name;
+                  });
+                  await _matcher.saveSupplierAlias(oldName, duplicateSupplier.id, duplicateSupplier.name);
+                  Navigator.pop(dlgCtx);
+                  await _saveAndRefresh();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('✅ Выбран существующий контрагент: "${duplicateSupplier.name}" (ID: ${duplicateSupplier.id})'),
+                        backgroundColor: const Color(0xFF10B981),
+                      ),
+                    );
+                  }
+                  return;
+                } else {
+                  return; // Не разрешаем создавать дубликат
+                }
+              }
+
               final created = await _api.createSupplier(
                 newName,
                 contact: phoneCtrl.text.trim(),
@@ -1158,323 +1252,20 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
 
     final double totalInvoiceSum = _doc.totalAmount > 0 ? _doc.totalAmount : _doc.calculatedTotal;
 
-    // Модальное окно статуса оплаты: Оплачено (ввод суммы) или В долг (пустая ячейка)
+    // Модальное окно статуса оплаты: Оплачено (ввод суммы, частичная оплата с расчётом долга) или В долг
     final paymentResult = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (bSheetCtx) {
-        bool isDebtSelected = _doc.paidAmount <= 0 && _doc.status != DocumentStatus.draft;
-        final payAmountCtrl = TextEditingController(
-          text: isDebtSelected ? '' : (_doc.paidAmount > 0 ? _doc.paidAmount.toStringAsFixed(2) : totalInvoiceSum.toStringAsFixed(2)),
-        );
-        final invoiceNumCtrl = TextEditingController(text: _doc.invoiceNumber);
-
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            return Container(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-                top: 20,
-                left: 20,
-                right: 20,
-              ),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1E293B),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Colors.white24,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF10B981).withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Icon(Icons.receipt_long_rounded, color: Color(0xFF10B981), size: 24),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Оприходование и статус оплаты',
-                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                              ),
-                              Text(
-                                '${_api.currentStoreName} • ${_doc.supplierName}',
-                                style: const TextStyle(color: Colors.white60, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Сводка по сумме
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Итого к оплате:', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                          Text(
-                            '${totalInvoiceSum.toStringAsFixed(2)} TJS',
-                            style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Номер бумажной накладной (сохраняется в отдельной колонке рядом в gusar.tj)
-                    const Text(
-                      'Номер бумажной накладной (из сканера):',
-                      style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: invoiceNumCtrl,
-                      style: const TextStyle(color: Colors.white, fontSize: 14),
-                      decoration: InputDecoration(
-                        filled: true,
-                        fillColor: const Color(0xFF0F172A),
-                        prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF38BDF8), size: 18),
-                        hintText: 'Например: 458-Б или №1024',
-                        hintStyle: const TextStyle(color: Colors.white38),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    const Text(
-                      'Статус расчёта с поставщиком:',
-                      style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Выбор: Оплачено или В долг
-                    Row(
-                      children: [
-                        Expanded(
-                          child: InkWell(
-                            onTap: () {
-                              setModalState(() {
-                                isDebtSelected = false;
-                                if (payAmountCtrl.text.trim().isEmpty) {
-                                  payAmountCtrl.text = totalInvoiceSum.toStringAsFixed(2);
-                                }
-                              });
-                            },
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                              decoration: BoxDecoration(
-                                color: !isDebtSelected ? const Color(0xFF10B981).withOpacity(0.18) : const Color(0xFF0F172A),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: !isDebtSelected ? const Color(0xFF10B981) : Colors.white12,
-                                  width: !isDebtSelected ? 1.8 : 1.0,
-                                ),
-                              ),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.check_circle_rounded,
-                                    color: !isDebtSelected ? const Color(0xFF10B981) : Colors.white38,
-                                    size: 24,
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Накладная оплачена',
-                                    style: TextStyle(
-                                      color: !isDebtSelected ? Colors.white : Colors.white60,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: InkWell(
-                            onTap: () {
-                              setModalState(() {
-                                isDebtSelected = true;
-                                payAmountCtrl.clear();
-                              });
-                            },
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                              decoration: BoxDecoration(
-                                color: isDebtSelected ? const Color(0xFFEF4444).withOpacity(0.18) : const Color(0xFF0F172A),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: isDebtSelected ? const Color(0xFFEF4444) : Colors.white12,
-                                  width: isDebtSelected ? 1.8 : 1.0,
-                                ),
-                              ),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.hourglass_bottom_rounded,
-                                    color: isDebtSelected ? const Color(0xFFEF4444) : Colors.white38,
-                                    size: 24,
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Взято в долг',
-                                    style: TextStyle(
-                                      color: isDebtSelected ? Colors.white : Colors.white60,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-
-                    // Поле суммы оплаты (если оплачено) ИЛИ инфо о пустой ячейке (если в долг)
-                    if (!isDebtSelected) ...[
-                      const Text(
-                        'Сумма фактической оплаты (сомони):',
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                      const SizedBox(height: 6),
-                      TextField(
-                        controller: payAmountCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-                        decoration: InputDecoration(
-                          filled: true,
-                          fillColor: const Color(0xFF0F172A),
-                          prefixIcon: const Icon(Icons.payments_outlined, color: Color(0xFF10B981)),
-                          suffixText: 'сомони',
-                          suffixStyle: const TextStyle(color: Colors.white54),
-                          hintText: 'Введите сумму оплаты',
-                          hintStyle: const TextStyle(color: Colors.white38),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          InkWell(
-                            onTap: () => payAmountCtrl.text = totalInvoiceSum.toStringAsFixed(2),
-                            child: const Text('Вся сумма (100%)', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
-                          ),
-                          const SizedBox(width: 16),
-                          InkWell(
-                            onTap: () => payAmountCtrl.text = (totalInvoiceSum / 2).toStringAsFixed(2),
-                            child: const Text('Частично (50%)', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
-                          ),
-                        ],
-                      ),
-                    ] else ...[
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEF4444).withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
-                        ),
-                        child: const Row(
-                          children: [
-                            Icon(Icons.info_outline, color: Color(0xFFEF4444), size: 20),
-                            SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Ячейка оплаты остаётся пустой (0.00 TJS).\nТовары поступят на баланс магазина, а долг перед контрагентом зафиксируется в gusar.tj.',
-                                style: TextStyle(color: Colors.white, fontSize: 12),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-
-                    const SizedBox(height: 24),
-
-                    // Кнопки действий
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextButton(
-                            onPressed: () => Navigator.pop(bSheetCtx),
-                            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          flex: 2,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF10B981),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: () {
-                              double finalPaid = 0.0;
-                              if (!isDebtSelected) {
-                                final text = payAmountCtrl.text.replaceAll(',', '.').trim();
-                                finalPaid = double.tryParse(text) ?? totalInvoiceSum;
-                              }
-                              Navigator.pop(bSheetCtx, {
-                                'is_debt': isDebtSelected,
-                                'paid_amount': finalPaid,
-                                'invoice_number': invoiceNumCtrl.text.trim(),
-                              });
-                            },
-                            child: const Text(
-                              'Подтвердить и оприходовать',
-                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+      enableDrag: true,
+      builder: (bSheetCtx) => _InvoicePaymentSheet(
+        totalInvoiceSum: totalInvoiceSum,
+        storeName: _api.currentStoreName,
+        supplierName: _doc.supplierName,
+        initialInvoiceNumber: _doc.invoiceNumber,
+        initialPaidAmount: _doc.paidAmount,
+        initiallyDebt: _doc.paidAmount <= 0.001 && _doc.status != DocumentStatus.draft,
+      ),
     );
 
     if (paymentResult == null) return;
@@ -1515,7 +1306,41 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Text('Успешно оприходовано!', style: TextStyle(color: Colors.white)),
               ],
             ),
-            content: const Text('Накладная проведена в системе gusar.tj. Остатки магазина обновлены.', style: TextStyle(color: Colors.white70)),
+            content: Builder(
+              builder: (c) {
+                final double totalDone = _doc.totalAmount > 0 ? _doc.totalAmount : _doc.calculatedTotal;
+                final double debtDone = (totalDone - _doc.paidAmount) > 0.001 ? (totalDone - _doc.paidAmount) : 0.0;
+                String payInfo;
+                if (_doc.paidAmount <= 0.001) {
+                  payInfo = '• Оплата: В ДОЛГ (0.00 TJS)\n• Задолженность: ${debtDone.toStringAsFixed(2)} TJS сохранена в базе.';
+                } else if (debtDone > 0.001) {
+                  payInfo = '• Оплачено сейчас: ${_doc.paidAmount.toStringAsFixed(2)} TJS\n• Остаток в долг: ${debtDone.toStringAsFixed(2)} TJS сохранен в базе.';
+                } else {
+                  payInfo = '• Оплата: ПОЛНОСТЬЮ ОПЛАЧЕНО (${_doc.paidAmount.toStringAsFixed(2)} TJS). Долг: 0.00 TJS.';
+                }
+
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Накладная проведена в системе gusar.tj. Остатки магазина обновлены.', style: TextStyle(color: Colors.white70)),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Text(
+                        payInfo,
+                        style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13, height: 1.4),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
             actions: [
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
@@ -2525,4 +2350,457 @@ class _ItemBarcodeScannerModalState extends State<_ItemBarcodeScannerModal> {
     );
   }
 }
+
+class _InvoicePaymentSheet extends StatefulWidget {
+  final double totalInvoiceSum;
+  final String storeName;
+  final String supplierName;
+  final String initialInvoiceNumber;
+  final double initialPaidAmount;
+  final bool initiallyDebt;
+
+  const _InvoicePaymentSheet({
+    required this.totalInvoiceSum,
+    required this.storeName,
+    required this.supplierName,
+    required this.initialInvoiceNumber,
+    required this.initialPaidAmount,
+    required this.initiallyDebt,
+  });
+
+  @override
+  State<_InvoicePaymentSheet> createState() => _InvoicePaymentSheetState();
+}
+
+class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
+  late bool _isDebtSelected;
+  late TextEditingController _payAmountCtrl;
+  late TextEditingController _invoiceNumCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _isDebtSelected = widget.initiallyDebt || widget.initialPaidAmount <= 0.001;
+    final initialText = _isDebtSelected
+        ? ''
+        : (widget.initialPaidAmount > 0
+            ? widget.initialPaidAmount.toStringAsFixed(2)
+            : widget.totalInvoiceSum.toStringAsFixed(2));
+    _payAmountCtrl = TextEditingController(text: initialText);
+    _invoiceNumCtrl = TextEditingController(text: widget.initialInvoiceNumber);
+    _payAmountCtrl.addListener(_onAmountChanged);
+  }
+
+  void _onAmountChanged() {
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _payAmountCtrl.removeListener(_onAmountChanged);
+    _payAmountCtrl.dispose();
+    _invoiceNumCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double rawPaid = double.tryParse(_payAmountCtrl.text.replaceAll(',', '.').trim()) ?? 0.0;
+    final double currentPaid = _isDebtSelected ? 0.0 : rawPaid;
+    final double remainingDebt = (widget.totalInvoiceSum - currentPaid) > 0.001
+        ? (widget.totalInvoiceSum - currentPaid)
+        : 0.0;
+
+    return Container(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        top: 20,
+        left: 20,
+        right: 20,
+      ),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E293B),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.receipt_long_rounded, color: Color(0xFF10B981), size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Оприходование и статус оплаты',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        '${widget.storeName} • ${widget.supplierName}',
+                        style: const TextStyle(color: Colors.white60, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Итого по накладной
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Итого к оплате:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  Text(
+                    '${widget.totalInvoiceSum.toStringAsFixed(2)} TJS',
+                    style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Номер накладной
+            const Text(
+              'Номер бумажной накладной (из сканера):',
+              style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _invoiceNumCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: const Color(0xFF0F172A),
+                prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF38BDF8), size: 18),
+                hintText: 'Например: 458-Б или №1024',
+                hintStyle: const TextStyle(color: Colors.white38),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            const Text(
+              'Статус расчёта с поставщиком:',
+              style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+
+            // Переключатель Оплачено / В долг
+            Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _isDebtSelected = false;
+                        if (_payAmountCtrl.text.trim().isEmpty) {
+                          _payAmountCtrl.text = widget.totalInvoiceSum.toStringAsFixed(2);
+                        }
+                      });
+                    },
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: !_isDebtSelected ? const Color(0xFF10B981).withOpacity(0.18) : const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: !_isDebtSelected ? const Color(0xFF10B981) : Colors.white12,
+                          width: !_isDebtSelected ? 1.8 : 1.0,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            color: !_isDebtSelected ? const Color(0xFF10B981) : Colors.white38,
+                            size: 24,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Оплата (полная/часть)',
+                            style: TextStyle(
+                              color: !_isDebtSelected ? Colors.white : Colors.white60,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _isDebtSelected = true;
+                        _payAmountCtrl.clear();
+                      });
+                    },
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: _isDebtSelected ? const Color(0xFFEF4444).withOpacity(0.18) : const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _isDebtSelected ? const Color(0xFFEF4444) : Colors.white12,
+                          width: _isDebtSelected ? 1.8 : 1.0,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            Icons.hourglass_bottom_rounded,
+                            color: _isDebtSelected ? const Color(0xFFEF4444) : Colors.white38,
+                            size: 24,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Взято в долг',
+                            style: TextStyle(
+                              color: _isDebtSelected ? Colors.white : Colors.white60,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            if (!_isDebtSelected) ...[
+              const Text(
+                'Сумма фактической оплаты (сомони):',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _payAmountCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF0F172A),
+                  prefixIcon: const Icon(Icons.payments_outlined, color: Color(0xFF10B981)),
+                  suffixText: 'сомони',
+                  suffixStyle: const TextStyle(color: Colors.white54),
+                  hintText: 'Введите сумму оплаты',
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  InkWell(
+                    onTap: () => _payAmountCtrl.text = widget.totalInvoiceSum.toStringAsFixed(2),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0284C7).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.4)),
+                      ),
+                      child: const Text('100% Вся сумма', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: () => _payAmountCtrl.text = (widget.totalInvoiceSum / 2).toStringAsFixed(2),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text('50% Половина', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Живой расчет долга при частичной оплате
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: remainingDebt > 0.001
+                      ? const Color(0xFFD97706).withOpacity(0.15)
+                      : const Color(0xFF10B981).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: remainingDebt > 0.001
+                        ? const Color(0xFFF59E0B).withOpacity(0.4)
+                        : const Color(0xFF10B981).withOpacity(0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Оплачено сейчас:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                        Text(
+                          '${currentPaid.toStringAsFixed(2)} TJS',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          remainingDebt > 0.001 ? 'Остаток в долг:' : 'Долг по накладной:',
+                          style: TextStyle(
+                            color: remainingDebt > 0.001 ? const Color(0xFFFBBF24) : const Color(0xFF34D399),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          '${remainingDebt.toStringAsFixed(2)} TJS',
+                          style: TextStyle(
+                            color: remainingDebt > 0.001 ? const Color(0xFFF87171) : const Color(0xFF34D399),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (remainingDebt > 0.001) ...[
+                      const SizedBox(height: 6),
+                      const Text(
+                        '⚠️ Частичная оплата: остаток долга автоматически зафиксируется в базе gusar.tj перед контрагентом.',
+                        style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11),
+                      ),
+                    ] else ...[
+                      const SizedBox(height: 6),
+                      const Text(
+                        '✅ Накладная закрыта полностью, задолженность отсутствует.',
+                        style: TextStyle(color: Color(0xFFA7F3D0), fontSize: 11),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ] else ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEF4444).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.hourglass_bottom_rounded, color: Color(0xFFEF4444), size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Товары взяты полностью в долг',
+                          style: TextStyle(color: Color(0xFFFCA5A5), fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Ячейка оплаты: 0.00 TJS.\nВся сумма накладной (${widget.totalInvoiceSum.toStringAsFixed(2)} TJS) запишется в задолженность магазина перед контрагентом.',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 24),
+
+            // Кнопки
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () {
+                      final double finalPaid = _isDebtSelected ? 0.0 : currentPaid;
+                      final double finalDebt = (widget.totalInvoiceSum - finalPaid) > 0.001
+                          ? (widget.totalInvoiceSum - finalPaid)
+                          : 0.0;
+                      Navigator.pop(context, {
+                        'is_debt': _isDebtSelected || finalPaid <= 0.001,
+                        'paid_amount': finalPaid,
+                        'debt_amount': finalDebt,
+                        'invoice_number': _invoiceNumCtrl.text.trim(),
+                      });
+                    },
+                    child: const Text(
+                      'Подтвердить и оприходовать',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 

@@ -70,12 +70,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     int savedId = prefs.getInt('store_id') ?? _api.currentStoreId;
     String savedName = prefs.getString('store_name') ?? _api.currentStoreName;
 
-    if (_api.accessibleStores.isNotEmpty) {
-      _availableStores = _api.accessibleStores.map((s) => StoreOption(
-        id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1,
-        name: s['name']?.toString() ?? 'Магазин gusar.tj',
-        address: s['address']?.toString() ?? 'Подразделение сотрудника',
-      )).toList();
+    if (savedId <= 0 || savedName.trim().isEmpty) {
+      savedId = 2;
+      savedName = 'Мағозаи Арзон';
+    }
+
+    if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.any((s) => (s['id'] ?? 0) > 0)) {
+      _availableStores = _api.accessibleStores
+          .where((s) => (s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '0') ?? 0) > 0)
+          .map((s) => StoreOption(
+                id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '2') ?? 2,
+                name: (s['name'] != null && s['name'].toString().trim().isNotEmpty) ? s['name'].toString().trim() : 'Мағозаи Арзон',
+                address: s['address']?.toString() ?? 'Подразделение сотрудника',
+              ))
+          .toList();
     } else {
       _availableStores = [
         StoreOption(id: savedId, name: savedName, address: 'Подразделение сотрудника'),
@@ -83,8 +91,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     if (!_availableStores.any((s) => s.id == savedId)) {
-      savedId = _availableStores.first.id;
-      savedName = _availableStores.first.name;
+      final valid = _availableStores.firstWhere((s) => s.id > 0, orElse: () => _availableStores.first);
+      savedId = valid.id;
+      savedName = valid.name;
     }
 
     setState(() {
@@ -108,14 +117,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Если сотрудник привязан к своему магазину, жестко фиксируем его склад!
     if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.length == 1) {
       final s = _api.accessibleStores.first;
-      final int sId = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1;
-      final String sName = s['name']?.toString() ?? 'Магазин сотрудника';
-      setState(() {
-        _selectedStoreId = sId;
-        _selectedStoreName = sName;
-        _availableStores = [StoreOption(id: sId, name: sName, address: 'Магазин сотрудника')];
-      });
-      return;
+      final int sId = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '2') ?? 2;
+      final String sName = (s['name'] != null && s['name'].toString().trim().isNotEmpty)
+          ? s['name'].toString().trim()
+          : 'Мағозаи Арзон';
+      if (sId > 0 && sName.isNotEmpty) {
+        setState(() {
+          _selectedStoreId = sId;
+          _selectedStoreName = sName;
+          _availableStores = [StoreOption(id: sId, name: sName, address: 'Магазин сотрудника')];
+        });
+        await _api.updateStore(sId, sName);
+        return;
+      }
     }
 
     setState(() => _isSyncingStores = true);
@@ -131,8 +145,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       setState(() {
         _availableStores = newOptions;
-        if (!_availableStores.any((s) => s.id == _selectedStoreId)) {
-          final found = _availableStores.firstWhere((s) => s.id == _selectedStoreId, orElse: () => _availableStores.first);
+        if (_selectedStoreId <= 0 || _selectedStoreName.trim().isEmpty || !_availableStores.any((s) => s.id == _selectedStoreId)) {
+          final found = _availableStores.firstWhere((s) => s.id == 2, orElse: () => _availableStores.first);
           _selectedStoreId = found.id;
           _selectedStoreName = found.name;
         } else {
@@ -140,6 +154,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedStoreName = found.name;
         }
       });
+      await _api.updateStore(_selectedStoreId, _selectedStoreName);
 
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -248,11 +263,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final user = _usernameCtrl.text.trim();
     final pass = _passwordCtrl.text.trim();
 
-    await _api.updateStore(_selectedStoreId, _selectedStoreName);
+    final storeIdToSave = _selectedStoreId > 0 ? _selectedStoreId : 2;
+    final storeNameToSave = _selectedStoreName.trim().isNotEmpty ? _selectedStoreName : 'Мағозаи Арзон';
+
+    await _api.updateStore(storeIdToSave, storeNameToSave);
     await prefs.setString('ai_provider', _aiProvider);
     await prefs.setString('yandex_api_key', _yandexKeyCtrl.text.trim());
     await prefs.setString('yandex_folder_id', _yandexFolderIdCtrl.text.trim());
-    await prefs.setString('gemini_api_key', _geminiKeyCtrl.text.trim());
+    await prefs.setString('gemini_api_key', defaultGeminiKey);
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
 
@@ -310,6 +328,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final displayStoreName = _selectedStoreName.trim().isNotEmpty
+        ? _selectedStoreName
+        : (_api.currentStoreName.trim().isNotEmpty ? _api.currentStoreName : 'Мағозаи Арзон');
+    final displayStoreId = _selectedStoreId > 0
+        ? _selectedStoreId
+        : (_api.currentStoreId > 0 ? _api.currentStoreId : 2);
+
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
@@ -355,7 +380,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           children: [
                             Expanded(
                               child: Text(
-                                _selectedStoreName,
+                                displayStoreName,
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                               ),
                             ),
@@ -366,7 +391,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
-                                'ID: $_selectedStoreId',
+                                'ID: $displayStoreId',
                                 style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
                               ),
                             ),
@@ -425,7 +450,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             children: [
                               Text('Сотрудник: ${_currentUsername ?? "Товаровед"}',
                                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-                              Text('Доступ: $_selectedStoreName',
+                              Text('Доступ: $displayStoreName',
                                   style: const TextStyle(color: Colors.white70, fontSize: 12)),
                               if (_availableStores.length > 1) ...[
                                 const SizedBox(height: 6),
@@ -696,29 +721,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
-                      controller: _geminiKeyCtrl,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        labelText: 'Google Gemini API Key (активен)',
-                        hintText: 'Встроенный ключ активирован',
-                        labelStyle: const TextStyle(color: Colors.white54),
-                        filled: true,
-                        fillColor: const Color(0xFF0F172A),
-                        border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF0284C7)),
-                          tooltip: 'Получить ключ на сайте Google',
-                          onPressed: _openGeminiSite,
-                        ),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white12),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    GestureDetector(
-                      onTap: _openGeminiSite,
-                      child: const Text(
-                        '👉 Ключ уже активирован в сборке по умолчанию (нажмите, если хотите сменить ключ)',
-                        style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12, decoration: TextDecoration.underline),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.lock_rounded, color: Color(0xFF10B981), size: 18),
+                          SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Ключ Gemini Vision AI активен',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Ключ защищен от изменений и встроен в приложение.',
+                                  style: TextStyle(color: Colors.white54, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],

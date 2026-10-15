@@ -44,49 +44,102 @@ class UpdaterService {
     }
   }
 
-  // 1. Проверка наличия обновлений на GitHub Releases
+  // 1. Проверка наличия обновлений на GitHub Releases с гарантированным выбором САМОЙ ПОСЛЕДНЕЙ версии
   Future<UpdateInfo?> checkForUpdate() async {
     try {
       final currentInfo = await PackageInfo.fromPlatform();
       final currentVersion = currentInfo.version;
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-      final url = Uri.parse('https://api.github.com/repos/$repoOwner/$repoName/releases/latest');
-      final response = await http.get(url, headers: {
+      final reqHeaders = {
         'User-Agent': 'Gusar-Scanner-App',
         'Accept': 'application/vnd.github.v3+json',
-      }).timeout(const Duration(seconds: 10));
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      };
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final tag = data['tag_name']?.toString().replaceAll('v', '').replaceAll('V', '') ?? '1.0.0';
-        final body = data['body']?.toString() ?? 'Доступно плановое обновление приложения GScan.';
-        final publishedStr = data['published_at']?.toString();
-        DateTime? publishedAt;
-        if (publishedStr != null) {
-          publishedAt = DateTime.tryParse(publishedStr);
+      // 1. Запрашиваем список всех последних релизов (per_page=20), чтобы найти абсолютный максимум версий
+      final listUrl = Uri.parse('https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=20&t=$timestamp');
+      http.Response? response;
+      try {
+        response = await http.get(listUrl, headers: reqHeaders).timeout(const Duration(seconds: 10));
+      } catch (e) {
+        debugPrint('Releases list fetch error: $e');
+      }
+
+      List<dynamic> releasesList = [];
+      if (response != null && response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is List) {
+          releasesList = decoded;
         }
+      }
 
-        final assets = data['assets'] as List<dynamic>? ?? [];
-        String? apkUrl;
-        for (var asset in assets) {
-          final name = asset['name']?.toString() ?? '';
-          if (name.endsWith('.apk')) {
-            apkUrl = asset['browser_download_url'];
-            break;
+      // 2. Fallback на эндпоинт releases/latest, если список недоступен
+      if (releasesList.isEmpty) {
+        final latestUrl = Uri.parse('https://api.github.com/repos/$repoOwner/$repoName/releases/latest?t=$timestamp');
+        final latestResp = await http.get(latestUrl, headers: reqHeaders).timeout(const Duration(seconds: 10));
+        if (latestResp.statusCode == 200) {
+          final decoded = jsonDecode(latestResp.body);
+          if (decoded is Map<String, dynamic>) {
+            releasesList = [decoded];
           }
         }
+      }
 
-        apkUrl ??= 'https://github.com/$repoOwner/$repoName/releases/latest';
+      if (releasesList.isEmpty) {
+        return null;
+      }
 
-        if (_isNewer(tag, currentVersion)) {
-          lastDetectedUpdate = UpdateInfo(
-            version: tag,
-            downloadUrl: apkUrl,
-            releaseNotes: body,
-            publishedAt: publishedAt,
-          );
-          return lastDetectedUpdate;
+      // 3. Отфильтровываем черновики (draft)
+      final validReleases = releasesList.where((r) {
+        if (r is! Map<String, dynamic>) return false;
+        final isDraft = r['draft'] == true;
+        return !isDraft;
+      }).cast<Map<String, dynamic>>().toList();
+
+      if (validReleases.isEmpty) return null;
+
+      // 4. Сортируем все релизы строго по семантической версии по убыванию (наивысшая версия ПЕРВОЙ)
+      validReleases.sort((a, b) {
+        final tagA = (a['tag_name']?.toString() ?? '').replaceAll(RegExp(r'^[vV]'), '');
+        final tagB = (b['tag_name']?.toString() ?? '').replaceAll(RegExp(r'^[vV]'), '');
+        return compareVersions(tagB, tagA); // tagB > tagA => положительно => b идет перед a
+      });
+
+      // 5. Берем ТОЛЬКО абсолютную максимальную (самую свежую) версию из всех
+      final highestRelease = validReleases.first;
+      final highestTag = (highestRelease['tag_name']?.toString() ?? '1.0.0').replaceAll(RegExp(r'^[vV]'), '');
+      final body = highestRelease['body']?.toString() ?? 'Доступно плановое обновление приложения GScan.';
+      final publishedStr = highestRelease['published_at']?.toString();
+      DateTime? publishedAt;
+      if (publishedStr != null) {
+        publishedAt = DateTime.tryParse(publishedStr);
+      }
+
+      // 6. Ищем APK файл именно для этой наивысшей версии
+      final assets = highestRelease['assets'] as List<dynamic>? ?? [];
+      String? apkUrl;
+      for (var asset in assets) {
+        final name = asset['name']?.toString() ?? '';
+        if (name.endsWith('.apk')) {
+          apkUrl = asset['browser_download_url'];
+          break;
         }
+      }
+
+      apkUrl ??= 'https://github.com/$repoOwner/$repoName/releases/download/v$highestTag/Gusar-Scanner.apk';
+
+      // 7. Сравниваем максимальную найденную версию с текущей версией приложения
+      if (_isNewer(highestTag, currentVersion)) {
+        lastDetectedUpdate = UpdateInfo(
+          version: highestTag,
+          downloadUrl: apkUrl,
+          releaseNotes: body,
+          publishedAt: publishedAt,
+        );
+        return lastDetectedUpdate;
       }
     } catch (e) {
       debugPrint('Update check warning: $e');
@@ -94,26 +147,31 @@ class UpdaterService {
     return null;
   }
 
+  // Сравнение версий: 1 если v1 > v2, -1 если v1 < v2, 0 если равны
+  int compareVersions(String v1, String v2) {
+    try {
+      final v1Clean = v1.split('-').first.replaceAll(RegExp(r'[^0-9.]'), '');
+      final v2Clean = v2.split('-').first.replaceAll(RegExp(r'[^0-9.]'), '');
+
+      final v1Parts = v1Clean.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+      final v2Parts = v2Clean.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+
+      final maxLen = v1Parts.length > v2Parts.length ? v1Parts.length : v2Parts.length;
+      for (int i = 0; i < maxLen; i++) {
+        final p1 = i < v1Parts.length ? v1Parts[i] : 0;
+        final p2 = i < v2Parts.length ? v2Parts[i] : 0;
+        if (p1 > p2) return 1;
+        if (p1 < p2) return -1;
+      }
+      return 0;
+    } catch (_) {
+      return v1.compareTo(v2);
+    }
+  }
+
   // 2. Сравнение версий
   bool _isNewer(String remote, String current) {
-    try {
-      final rClean = remote.split('-').first.replaceAll(RegExp(r'[^0-9.]'), '');
-      final cClean = current.split('-').first.replaceAll(RegExp(r'[^0-9.]'), '');
-      
-      final rParts = rClean.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-      final cParts = cClean.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-
-      final maxLen = rParts.length > cParts.length ? rParts.length : cParts.length;
-      for (int i = 0; i < maxLen; i++) {
-        final r = i < rParts.length ? rParts[i] : 0;
-        final c = i < cParts.length ? cParts[i] : 0;
-        if (r > c) return true;
-        if (r < c) return false;
-      }
-      return false;
-    } catch (_) {
-      return remote.trim() != current.trim();
-    }
+    return compareVersions(remote, current) > 0;
   }
 
   // 3. Скачивание APK с умной докачкой (Range / Resume) и защитой от обрывов сети
@@ -124,6 +182,17 @@ class UpdaterService {
     CancelToken? cancelToken,
   }) async {
     final dir = await getTemporaryDirectory();
+
+    // Удаляем любые старые скачанные APK промежуточных версий
+    try {
+      final entries = dir.listSync();
+      for (var entity in entries) {
+        if (entity is File && entity.path.contains('Gusar-Scanner') && !entity.path.endsWith('v$version.apk')) {
+          try { entity.deleteSync(); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
     final filePath = '${dir.path}/Gusar-Scanner-v$version.apk';
     final file = File(filePath);
 
@@ -316,6 +385,12 @@ class UpdaterService {
     final prefs = await SharedPreferences.getInstance();
     final postponedVersion = prefs.getString('postponed_update_version');
     final postponedTime = prefs.getInt('postponed_update_time') ?? 0;
+
+    // Если вышла версия СВЕЖЕЕ отложенной — сразу сбрасываем откладывание!
+    if (postponedVersion != null && compareVersions(version, postponedVersion) > 0) {
+      await clearPostponedUpdate();
+      return false;
+    }
 
     if (postponedVersion == version) {
       final now = DateTime.now().millisecondsSinceEpoch;

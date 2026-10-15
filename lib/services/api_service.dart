@@ -16,8 +16,8 @@ class ApiService {
   late Dio _dio;
   String baseUrl = 'https://gusar.tj';
   String? authToken;
-  int currentStoreId = 1;
-  String currentStoreName = 'База gusar.tj (Основной склад)';
+  int currentStoreId = 2; // По умолчанию активный магазин Мағозаи Арзон (ID: 2)
+  String currentStoreName = 'Мағозаи Арзон';
   List<Map<String, dynamic>> accessibleStores = [];
 
   String? lastSubmitError;
@@ -27,19 +27,29 @@ class ApiService {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     authToken = prefs.getString('auth_token');
-    currentStoreId = prefs.getInt('store_id') ?? 1;
-    currentStoreName = prefs.getString('store_name') ?? 'База gusar.tj (Основной склад)';
+    final savedId = prefs.getInt('store_id');
+    final savedName = prefs.getString('store_name');
+    if (savedId != null && savedId > 0 && savedName != null && savedName.trim().isNotEmpty) {
+      currentStoreId = savedId;
+      currentStoreName = savedName.trim();
+    } else {
+      currentStoreId = 2;
+      currentStoreName = 'Мағозаи Арзон';
+    }
 
     final savedAcc = prefs.getString('accessible_stores_list');
     if (savedAcc != null) {
       try {
         final decoded = jsonDecode(savedAcc) as List;
-        accessibleStores = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        accessibleStores = decoded
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .where((s) => (s['id'] ?? 0) > 0 && (s['name'] ?? '').toString().trim().isNotEmpty)
+            .toList();
       } catch (_) {}
     }
     if (accessibleStores.isEmpty) {
       accessibleStores = [
-        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Склад gusar.tj'}
+        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Магазин gusar.tj'}
       ];
     }
 
@@ -155,24 +165,27 @@ class ApiService {
   }
 
   Future<void> updateStore(int id, String name) async {
-    currentStoreId = id;
-    currentStoreName = name;
+    final validId = id > 0 ? id : 2;
+    final validName = name.trim().isNotEmpty ? name.trim() : 'Мағозаи Арзон';
+    currentStoreId = validId;
+    currentStoreName = validName;
     _cachedProducts = []; // ВАЖНО: очищаем память от товаров старого магазина!
     _cachedSuppliers = []; // ВАЖНО: очищаем память от контрагентов старого магазина!
-    _dio.options.headers['X-Store-ID'] = id.toString();
+    _dio.options.headers['X-Store-ID'] = validId.toString();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('store_id', id);
-    await prefs.setString('store_name', name);
+    await prefs.setInt('store_id', validId);
+    await prefs.setString('store_name', validName);
     await prefs.remove('cached_products_list'); // Очищаем кэш старого магазина
     await prefs.remove('cached_suppliers_list'); // Очищаем кэш контрагентов старого магазина
   }
 
   void updateStoreId(int id) async {
-    currentStoreId = id;
+    final validId = id > 0 ? id : 2;
+    currentStoreId = validId;
     _cachedProducts = [];
     _cachedSuppliers = [];
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('store_id', id);
+    await prefs.setInt('store_id', validId);
     await prefs.remove('cached_products_list');
     await prefs.remove('cached_suppliers_list');
   }
@@ -206,7 +219,14 @@ class ApiService {
             final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
             final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
             final subdomain = e['subdomain']?.toString() ?? '';
-            return {'id': id, 'name': name, 'address': address, 'subdomain': subdomain};
+            final isActive = e['is_active'] == true || e['active'] == true || e['is_active'] == 1;
+            return {
+              'id': id,
+              'name': name,
+              'address': address,
+              'subdomain': subdomain,
+              'is_active': isActive,
+            };
           }).toList();
           return list;
         }
@@ -221,15 +241,10 @@ class ApiService {
   Future<Map<String, dynamic>> login(String username, String password, {bool remember = true}) async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Сохраняем пароль, если включен чекбокс "Запомнить"
-    if (remember) {
-      await prefs.setString('saved_username', username);
-      await prefs.setString('saved_password', password);
-      await prefs.setBool('remember_credentials', true);
-    } else {
-      await prefs.remove('saved_password');
-      await prefs.setBool('remember_credentials', false);
-    }
+    // Всегда надежно сохраняем логин и пароль сотрудника в памяти приложения
+    await prefs.setString('saved_username', username);
+    await prefs.setString('saved_password', password);
+    await prefs.setBool('remember_credentials', true);
 
     try {
       Response? response;
@@ -386,18 +401,23 @@ class ApiService {
         int assignedStoreId;
         String assignedStoreName;
 
-        if (userStoreId != null) {
+        if (userStoreId != null && userStoreId > 0) {
           // Для сотрудника закрепляем ЕГО магазин, но сохраняем все магазины в доступных для переключения при необходимости
           assignedStoreId = userStoreId;
-          assignedStoreName = userStoreName ?? 'Магазин gusar.tj #$userStoreId';
+          assignedStoreName = (userStoreName != null && userStoreName.trim().isNotEmpty)
+              ? userStoreName.trim()
+              : 'Магазин gusar.tj #$userStoreId';
           accessibleStores = allStores.isNotEmpty ? allStores : [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
         } else {
-          // Если магазин не определен, выбираем первый активный магазин из базы (например, Мағозаи Арзон)
+          // Если магазин не определен, выбираем активный магазин ID 2 (Мағозаи Арзон)
           final activeStore = allStores.firstWhere(
-            (s) => s['is_active'] == true,
-            orElse: () => allStores.isNotEmpty ? allStores.first : {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'},
+            (s) => s['is_active'] == true && s['id'] != null && (s['id'] as int) > 1,
+            orElse: () => allStores.firstWhere(
+              (s) => s['id'] == 2,
+              orElse: () => {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'},
+            ),
           );
           assignedStoreId = activeStore['id'] as int;
           assignedStoreName = activeStore['name'] as String;
@@ -429,19 +449,25 @@ class ApiService {
       // Офлайн-авторизация при временном отсутствии интернета
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
+      final fallbackId = currentStoreId > 0 ? currentStoreId : 2;
+      final fallbackName = currentStoreName.trim().isNotEmpty ? currentStoreName : 'Мағозаи Арзон';
+      await updateStore(fallbackId, fallbackName);
       accessibleStores = [
-        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Магазин сотрудника $username'}
+        {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
       ];
       await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
         'success': true,
-        'message': 'Вход выполнен (офлайн-режим для $currentStoreName).'
+        'message': 'Вход выполнен (офлайн-режим для $fallbackName).'
       };
     } catch (e) {
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
+      final fallbackId = currentStoreId > 0 ? currentStoreId : 2;
+      final fallbackName = currentStoreName.trim().isNotEmpty ? currentStoreName : 'Мағозаи Арзон';
+      await updateStore(fallbackId, fallbackName);
       accessibleStores = [
-        {'id': currentStoreId, 'name': currentStoreName, 'address': 'Магазин сотрудника $username'}
+        {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
       ];
       await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
@@ -455,22 +481,18 @@ class ApiService {
     authToken = null;
     _cachedProducts = [];
     _cachedSuppliers = [];
-    currentStoreId = 0;
-    currentStoreName = '';
-    accessibleStores = [];
+    currentStoreId = 2; // Всегда валидный активный магазин (Мағозаи Арзон)
+    currentStoreName = 'Мағозаи Арзон';
+    accessibleStores = [
+      {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'}
+    ];
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
     await prefs.setBool('is_authenticated', false);
     await prefs.remove('logged_username');
-    await prefs.remove('store_id');
-    await prefs.remove('store_name');
+    // ВАЖНО: сохраняем saved_username и saved_password, чтобы пароли НЕ слетали при выходе!
     await prefs.remove('cached_products_list');
     await prefs.remove('cached_suppliers_list');
-    await prefs.remove('accessible_stores_list');
-    final keepPassword = prefs.getBool('remember_credentials') ?? false;
-    if (!keepPassword) {
-      await prefs.remove('saved_password');
-    }
     _dio.options.headers.remove('Authorization');
     _dio.options.headers.remove('X-Store-ID');
   }
@@ -923,10 +945,27 @@ class ApiService {
     return matches;
   }
 
-  // 5. Создание нового контрагента в базе магазина на сервере gusar.tj
+  // 5. Создание нового контрагента в базе магазина на сервере gusar.tj (с защитой от дубликатов)
   Future<Supplier?> createSupplier(String name, {String? contact, String? address, String? inn}) async {
     final cleanName = name.trim();
     if (cleanName.isEmpty) return null;
+
+    // ПРАВИЛО ДУБЛИКАТОВ: если контрагент с таким именем или ИНН уже есть в базе магазина — возвращаем существующего
+    if (_cachedSuppliers.isEmpty) {
+      await getSuppliers();
+    }
+    final cleanSimple = cleanName.toLowerCase().replaceAll(RegExp(r'["«»„“\s]+'), '');
+    final cleanInn = inn?.replaceAll(RegExp(r'\D'), '').trim();
+    for (final s in _cachedSuppliers) {
+      final sSimple = s.name.toLowerCase().replaceAll(RegExp(r'["«»„“\s]+'), '');
+      final sInn = s.inn?.replaceAll(RegExp(r'\D'), '').trim();
+      if (sSimple.isNotEmpty && sSimple == cleanSimple) {
+        return s; // Уже существует по названию — возвращаем имеющегося!
+      }
+      if (cleanInn != null && cleanInn.isNotEmpty && sInn != null && sInn.isNotEmpty && cleanInn == sInn) {
+        return s; // Уже существует по ИНН — возвращаем имеющегося!
+      }
+    }
 
     Supplier? created;
     try {
@@ -1103,6 +1142,8 @@ class ApiService {
         return false;
       }
 
+      final double debtAmount = (total - paid) > 0.001 ? (total - paid) : 0.0;
+
       final purchasePayload = {
         'store_id': currentStoreId,
         'supplier_id': verifiedSupplierId,
@@ -1111,12 +1152,17 @@ class ApiService {
         'incoming_invoice_number': cleanInvNum,
         'incoming_number': cleanInvNum,
         'date': document.invoiceDate.toIso8601String(),
-        'total_amount': total,
-        // Если выбрано в долг — ячейка оплаты пустая (null/0)
-        'paid_amount': isDebt ? null : paid,
-        'payment_status': isDebt ? 'debt' : (paid >= total ? 'paid' : 'partial'),
-        'is_debt': isDebt ? 1 : 0,
-        'notes': 'Накладная №$cleanInvNum от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ / НЕ ОПЛАЧЕНО" : "ОПЛАЧЕНО: " + paid.toStringAsFixed(2) + " TJS"}]',
+        'total_amount': double.parse(total.toStringAsFixed(2)),
+        // Сумма оплаты и остаток долга по накладной
+        'paid_amount': isDebt ? null : double.parse(paid.toStringAsFixed(2)),
+        'amount_paid': isDebt ? 0.0 : double.parse(paid.toStringAsFixed(2)),
+        'debt_amount': double.parse(debtAmount.toStringAsFixed(2)),
+        'remaining_amount': double.parse(debtAmount.toStringAsFixed(2)),
+        'unpaid_amount': double.parse(debtAmount.toStringAsFixed(2)),
+        'payment_status': isDebt ? 'debt' : (debtAmount > 0.001 ? 'partial' : 'paid'),
+        'is_debt': (isDebt || debtAmount > 0.001) ? 1 : 0,
+        'payment_source': paid > 0 ? 'cash' : 'unpaid',
+        'notes': 'Накладная №$cleanInvNum от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : (debtAmount > 0.001 ? "ОПЛАЧЕНО: ${paid.toStringAsFixed(2)} TJS, ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : "ОПЛАЧЕНО ПОЛНОСТЬЮ: ${paid.toStringAsFixed(2)} TJS")}]',
         'items': itemsPayload,
       };
 
