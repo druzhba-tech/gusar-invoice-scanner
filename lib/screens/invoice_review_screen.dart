@@ -1085,6 +1085,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
               }
 
               if (duplicateSupplier != null) {
+                final Supplier foundDuplicate = duplicateSupplier;
                 final useExisting = await showDialog<bool>(
                   context: dlgCtx,
                   builder: (warnCtx) => AlertDialog(
@@ -1101,12 +1102,12 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('В базе магазина уже зарегистрирован контрагент:\n\n• "${duplicateSupplier!.name}" (ID: ${duplicateSupplier.id})',
+                        Text('В базе магазина уже зарегистрирован контрагент:\n\n• "${foundDuplicate.name}" (ID: ${foundDuplicate.id})',
                             style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                        if (duplicateSupplier.inn != null && duplicateSupplier.inn!.isNotEmpty)
+                        if (foundDuplicate.inn != null && foundDuplicate.inn!.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
-                            child: Text('• ИНН: ${duplicateSupplier.inn}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                            child: Text('• ИНН: ${foundDuplicate.inn}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
                           ),
                         const SizedBox(height: 12),
                         const Text(
@@ -1132,16 +1133,16 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 if (useExisting == true) {
                   final oldName = _doc.supplierName;
                   setState(() {
-                    _doc.supplierId = duplicateSupplier.id;
-                    _doc.supplierName = duplicateSupplier.name;
+                    _doc.supplierId = foundDuplicate.id;
+                    _doc.supplierName = foundDuplicate.name;
                   });
-                  await _matcher.saveSupplierAlias(oldName, duplicateSupplier.id, duplicateSupplier.name);
+                  await _matcher.saveSupplierAlias(oldName, foundDuplicate.id, foundDuplicate.name);
                   Navigator.pop(dlgCtx);
                   await _saveAndRefresh();
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('✅ Выбран существующий контрагент: "${duplicateSupplier.name}" (ID: ${duplicateSupplier.id})'),
+                        content: Text('✅ Выбран существующий контрагент: "${foundDuplicate.name}" (ID: ${foundDuplicate.id})'),
                         backgroundColor: const Color(0xFF10B981),
                       ),
                     );
