@@ -99,7 +99,7 @@ class OcrService {
 
     // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
     if ((doc == null || doc.items.isEmpty) && provider == 'yandex' && yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, yandexFolderId, originalPaths: preparedPaths);
+      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, folderId: yandexFolderId, originalPaths: preparedPaths);
     }
 
     // 3. Fallback к Gemini, если Яндекс не сработал
@@ -109,7 +109,7 @@ class OcrService {
 
     // 4. Если есть ключ Яндекс, но был выбран другой провайдер
     if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, yandexFolderId, originalPaths: preparedPaths);
+      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, folderId: yandexFolderId, originalPaths: preparedPaths);
     }
 
     // 5. Если облачные нейросети не ответили, используем эвристический локальный парсер
@@ -131,10 +131,10 @@ class OcrService {
   // =========================================================================
   Future<InvoiceDocument?> parseInvoiceWithYandexVision(
     List<String> imagePaths,
-    String apiKey, [
+    String apiKey, {
     String? folderId,
     List<String>? originalPaths,
-  ]) async {
+  }) async {
     try {
       final List<String> extractedLines = [];
 
