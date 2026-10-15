@@ -11,6 +11,7 @@ import 'invoice_review_screen.dart';
 import 'settings_screen.dart';
 import 'add_product_screen.dart';
 import 'product_photo_manager_screen.dart';
+import '../widgets/document_photo_viewer_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -822,13 +823,27 @@ class _HomeScreenState extends State<HomeScreen> {
               MaterialPageRoute(builder: (_) => InvoiceReviewScreen(document: doc)),
             ).then((_) => _loadData());
           },
-          leading: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: statusColor.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(10),
+          leading: InkWell(
+            onTap: doc.pagePhotos.isNotEmpty
+                ? () => DocumentPhotoViewerDialog.show(
+                      context,
+                      photoPaths: doc.pagePhotos,
+                      invoiceNumber: doc.invoiceNumber,
+                      supplierName: doc.supplierName,
+                    )
+                : null,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: statusColor.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                doc.pagePhotos.isNotEmpty ? Icons.photo_library_outlined : Icons.description_outlined,
+                color: statusColor,
+              ),
             ),
-            child: Icon(Icons.description_outlined, color: statusColor),
           ),
           title: Row(
             children: [
@@ -849,9 +864,70 @@ class _HomeScreenState extends State<HomeScreen> {
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 4),
-              Text('№${doc.invoiceNumber} от ${dateFormat.format(doc.invoiceDate)} • ${doc.items.length} поз.',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 5),
+              Row(
+                children: [
+                  InkWell(
+                    onTap: doc.pagePhotos.isNotEmpty
+                        ? () => DocumentPhotoViewerDialog.show(
+                              context,
+                              photoPaths: doc.pagePhotos,
+                              invoiceNumber: doc.invoiceNumber,
+                              supplierName: doc.supplierName,
+                            )
+                        : null,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3B82F6).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFF3B82F6).withOpacity(0.4), width: 0.8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.description_rounded, size: 12, color: Color(0xFF60A5FA)),
+                          const SizedBox(width: 4),
+                          Text(
+                            '№${doc.invoiceNumber}',
+                            style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          if (doc.pagePhotos.isNotEmpty) ...[
+                            const SizedBox(width: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981).withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.image_outlined, size: 10, color: Color(0xFF6EE7B7)),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    '${doc.pagePhotos.length} ф.',
+                                    style: const TextStyle(color: Color(0xFF6EE7B7), fontSize: 9, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '${dateFormat.format(doc.invoiceDate)} • ${doc.items.length} поз.',
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 6),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

@@ -13,6 +13,7 @@ import 'matching_screen.dart';
 import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
 import 'add_product_screen.dart';
+import '../widgets/document_photo_viewer_dialog.dart';
 
 class InvoiceReviewScreen extends StatefulWidget {
   final InvoiceDocument document;
@@ -1577,8 +1578,61 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
-        title: Text('Накладная №${_doc.invoiceNumber}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        title: InkWell(
+          onTap: _doc.pagePhotos.isNotEmpty
+              ? () => DocumentPhotoViewerDialog.show(
+                    context,
+                    photoPaths: _doc.pagePhotos,
+                    invoiceNumber: _doc.invoiceNumber,
+                    supplierName: _doc.supplierName,
+                  )
+              : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  'Накладная №${_doc.invoiceNumber}',
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_doc.pagePhotos.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3B82F6).withOpacity(0.25),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF3B82F6), width: 0.8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.photo_library_outlined, size: 12, color: Color(0xFF60A5FA)),
+                      const SizedBox(width: 3),
+                      Text('Фото (${_doc.pagePhotos.length})',
+                          style: const TextStyle(color: Color(0xFF60A5FA), fontSize: 10, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
         actions: [
+          if (_doc.pagePhotos.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.photo_library_outlined, color: Color(0xFF38BDF8)),
+              tooltip: 'Открыть фото накладной',
+              onPressed: () => DocumentPhotoViewerDialog.show(
+                context,
+                photoPaths: _doc.pagePhotos,
+                invoiceNumber: _doc.invoiceNumber,
+                supplierName: _doc.supplierName,
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.add, color: Color(0xFF38BDF8)),
             tooltip: 'Добавить строку вручную',
@@ -1738,15 +1792,60 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Накладная №${_doc.invoiceNumber}',
-                                  style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-                              const SizedBox(height: 2),
-                              Text('Дата: ${dateFormat.format(_doc.invoiceDate)} • ${_api.currentStoreName}',
-                                  style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                            ],
+                          InkWell(
+                            onTap: _doc.pagePhotos.isNotEmpty
+                                ? () => DocumentPhotoViewerDialog.show(
+                                      context,
+                                      photoPaths: _doc.pagePhotos,
+                                      invoiceNumber: _doc.invoiceNumber,
+                                      supplierName: _doc.supplierName,
+                                    )
+                                : null,
+                            borderRadius: BorderRadius.circular(6),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        'Накладная №${_doc.invoiceNumber}',
+                                        style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13, fontWeight: FontWeight.bold),
+                                      ),
+                                      if (_doc.pagePhotos.isNotEmpty) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF3B82F6).withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: const Color(0xFF3B82F6).withOpacity(0.5), width: 0.8),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.photo_library_outlined, size: 11, color: Color(0xFF60A5FA)),
+                                              const SizedBox(width: 3),
+                                              Text(
+                                                'Оригинал (${_doc.pagePhotos.length})',
+                                                style: const TextStyle(color: Color(0xFF60A5FA), fontSize: 10, fontWeight: FontWeight.bold),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Дата: ${dateFormat.format(_doc.invoiceDate)} • ${_api.currentStoreName}',
+                                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.end,

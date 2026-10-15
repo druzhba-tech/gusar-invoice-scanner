@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 import '../models/product.dart';
+import '../utils/image_utils.dart';
 
 class LocalStorageService {
   static final LocalStorageService _instance = LocalStorageService._internal();
@@ -62,9 +64,29 @@ class LocalStorageService {
     );
   }
 
-  // 1. Сохранение черновика накладной
+  // 1. Сохранение черновика накладной (со сжатием оригиналов фото до 40 КБ)
   Future<void> saveInvoice(InvoiceDocument doc) async {
     final db = await database;
+
+    // Сжимаем прикрепленные оригиналы страниц накладной строго до 40 КБ
+    final List<String> optimizedPhotos = [];
+    for (final photoPath in doc.pagePhotos) {
+      if (photoPath.isNotEmpty) {
+        try {
+          final file = File(photoPath);
+          if (file.existsSync()) {
+            final compressed = await ImageUtils.compressFileToMaxKb(file, maxKb: 40);
+            optimizedPhotos.add(compressed.path);
+          } else {
+            optimizedPhotos.add(photoPath);
+          }
+        } catch (_) {
+          optimizedPhotos.add(photoPath);
+        }
+      }
+    }
+    doc.pagePhotos = optimizedPhotos;
+
     await db.insert(
       'invoices',
       {

@@ -427,6 +427,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
                               Text('Доступ: $_selectedStoreName',
                                   style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                              if (_availableStores.length > 1) ...[
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0F172A),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white24),
+                                  ),
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<int>(
+                                      value: _availableStores.any((s) => s.id == _selectedStoreId)
+                                          ? _selectedStoreId
+                                          : _availableStores.first.id,
+                                      isDense: true,
+                                      dropdownColor: const Color(0xFF1E293B),
+                                      icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF10B981)),
+                                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                                      items: _availableStores.map((s) => DropdownMenuItem<int>(
+                                        value: s.id,
+                                        child: Text('${s.name} (ID: ${s.id})', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                                      )).toList(),
+                                      onChanged: (newId) async {
+                                        if (newId != null && newId != _selectedStoreId) {
+                                          final st = _availableStores.firstWhere((s) => s.id == newId);
+                                          setState(() {
+                                            _selectedStoreId = newId;
+                                            _selectedStoreName = st.name;
+                                          });
+                                          await _api.updateStore(newId, st.name);
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('Магазин изменен на: ${st.name}'), backgroundColor: const Color(0xFF10B981)),
+                                            );
+                                          }
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),

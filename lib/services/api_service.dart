@@ -287,31 +287,36 @@ class ApiService {
           }
         }
 
-        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/admin/me или /api/auth/me)
+        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/auth/me)
         try {
-          Response? meResp;
-          try {
-            meResp = await _dio.get('/api/admin/me').timeout(const Duration(seconds: 4));
-          } catch (_) {
-            meResp = await _dio.get('/api/auth/me').timeout(const Duration(seconds: 4));
-          }
-          if (meResp != null && meResp.statusCode == 200 && meResp.data != null) {
+          final meResp = await _dio.get(
+            '/api/auth/me',
+            options: Options(headers: {'Authorization': 'Bearer $token'}),
+          ).timeout(const Duration(seconds: 6));
+
+          if (meResp.statusCode == 200 && meResp.data != null) {
             final meData = meResp.data;
             if (meData['store_id'] != null) {
-              userStoreId = int.tryParse(meData['store_id'].toString()) ?? userStoreId;
+              userStoreId = int.tryParse(meData['store_id'].toString());
+            } else if (meData['storeId'] != null) {
+              userStoreId = int.tryParse(meData['storeId'].toString());
             }
+
             if (meData['role'] != null) {
               userRole = meData['role'].toString().toUpperCase();
             }
-            final meUser = meData['user'] ?? meData['data'];
+
+            final dynamic meUser = meData['user'] ?? meData['data'];
             if (meUser is Map) {
               if (meUser['store_id'] != null) {
                 userStoreId = int.tryParse(meUser['store_id'].toString()) ?? userStoreId;
+              } else if (meUser['storeId'] != null) {
+                userStoreId = int.tryParse(meUser['storeId'].toString()) ?? userStoreId;
               }
+
               if (meUser['store_name'] != null && meUser['store_name'].toString().trim().isNotEmpty) {
                 userStoreName = meUser['store_name'].toString().trim();
-              }
-              if (meUser['store'] is Map) {
+              } else if (meUser['store'] is Map) {
                 if (meUser['store']['id'] != null) {
                   userStoreId = int.tryParse(meUser['store']['id'].toString()) ?? userStoreId;
                 }
@@ -319,6 +324,7 @@ class ApiService {
                   userStoreName = meUser['store']['name'].toString().trim();
                 }
               }
+
               if (meUser['role'] != null) {
                 userRole = meUser['role'].toString().toUpperCase();
               }
@@ -326,18 +332,40 @@ class ApiService {
           }
         } catch (_) {}
 
-        // 4. Если store_id все еще не указан сервером, сопоставляем логин с подразделением/магазином (subdomain / имя)
+        // 4. Умное сопоставление логина сотрудника со списком магазинов gusar.tj
         if (userStoreId == null && allStores.isNotEmpty) {
           final cleanUser = username.toLowerCase().trim();
+          final userDigits = cleanUser.replaceAll(RegExp(r'\D'), '');
+
           final matched = allStores.firstWhere(
             (s) {
               final sub = (s['subdomain'] ?? '').toString().toLowerCase().trim();
               final sName = (s['name'] ?? '').toString().toLowerCase().trim();
-              return (sub.isNotEmpty && (sub == cleanUser || cleanUser.contains(sub))) ||
-                     (sName.isNotEmpty && (sName.contains(cleanUser) || cleanUser.contains(sName)));
+              final bot = (s['bot_username'] ?? '').toString().toLowerCase().trim();
+              final card = (s['bank_card'] ?? '').toString().toLowerCase().trim();
+              final cardDigits = card.replaceAll(RegExp(r'\D'), '');
+
+              // Совпадение по поддомену
+              if (sub.isNotEmpty && (sub == cleanUser || cleanUser.contains(sub) || sub.contains(cleanUser))) {
+                return true;
+              }
+              // Совпадение по имени бота
+              if (bot.isNotEmpty && (bot.contains(cleanUser) || cleanUser.contains(bot.replaceAll('_bot', '')))) {
+                return true;
+              }
+              // Совпадение по телефону из карты
+              if (userDigits.length >= 6 && cardDigits.contains(userDigits)) {
+                return true;
+              }
+              // Совпадение по имени магазина
+              if (sName.isNotEmpty && (sName.contains(cleanUser) || cleanUser.contains(sName))) {
+                return true;
+              }
+              return false;
             },
             orElse: () => {},
           );
+
           if (matched.isNotEmpty && matched['id'] != null) {
             userStoreId = matched['id'] as int;
             userStoreName = matched['name'] as String;
@@ -355,34 +383,30 @@ class ApiService {
           }
         }
 
-        final isSuperAdmin = (userRole == 'SUPERADMIN' || userRole == 'OWNER') && userStoreId == null;
-
         int assignedStoreId;
         String assignedStoreName;
 
         if (userStoreId != null) {
-          // Для сотрудника закрепляем строго ЕГО магазин
+          // Для сотрудника закрепляем ЕГО магазин, но сохраняем все магазины в доступных для переключения при необходимости
           assignedStoreId = userStoreId;
           assignedStoreName = userStoreName ?? 'Магазин gusar.tj #$userStoreId';
-          accessibleStores = [
+          accessibleStores = allStores.isNotEmpty ? allStores : [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
-        } else if (isSuperAdmin) {
-          // Для подтвержденного суперадмина без склада открываем каталог
-          accessibleStores = allStores.isNotEmpty ? allStores : [
-            {'id': 1, 'name': 'Ашам Маркет', 'address': 'Основной склад'}
-          ];
-          assignedStoreId = accessibleStores.first['id'] as int;
-          assignedStoreName = accessibleStores.first['name'] as String;
         } else {
-          assignedStoreId = allStores.isNotEmpty ? (allStores.first['id'] as int) : 1;
-          assignedStoreName = allStores.isNotEmpty ? (allStores.first['name'] as String) : 'Склад gusar.tj';
-          accessibleStores = [
+          // Если магазин не определен, выбираем первый активный магазин из базы (например, Мағозаи Арзон)
+          final activeStore = allStores.firstWhere(
+            (s) => s['is_active'] == true,
+            orElse: () => allStores.isNotEmpty ? allStores.first : {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'},
+          );
+          assignedStoreId = activeStore['id'] as int;
+          assignedStoreName = activeStore['name'] as String;
+          accessibleStores = allStores.isNotEmpty ? allStores : [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
         }
 
-        // ВАЖНО: Обновляем текущий магазин и сбрасываем кэш товаров и поставщиков старого магазина!
+        // ВАЖНО: Обновляем текущий магазин и сбрасываем кэш старого магазина!
         await updateStore(assignedStoreId, assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
@@ -431,6 +455,9 @@ class ApiService {
     authToken = null;
     _cachedProducts = [];
     _cachedSuppliers = [];
+    currentStoreId = 0;
+    currentStoreName = '';
+    accessibleStores = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
     await prefs.setBool('is_authenticated', false);
