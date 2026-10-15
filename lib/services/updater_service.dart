@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../utils/top_notification.dart';
 
 class UpdateInfo {
   final String version;
@@ -519,23 +520,9 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
     );
     if (mounted) {
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.download_done_rounded, color: Colors.white, size: 20),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Загрузка продолжается в шторке Android. Можно свернуть или закрыть приложение!',
-                  style: TextStyle(fontSize: 12),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Color(0xFF0284C7),
-          duration: Duration(seconds: 5),
-        ),
+      TopNotification.showInfo(
+        context,
+        'Загрузка продолжается в шторке Android. Можно свернуть или закрыть приложение!',
       );
     }
   }

@@ -16,8 +16,8 @@ class ApiService {
   late Dio _dio;
   String baseUrl = 'https://gusar.tj';
   String? authToken;
-  int currentStoreId = 2; // По умолчанию активный магазин Мағозаи Арзон (ID: 2)
-  String currentStoreName = 'Мағозаи Арзон';
+  int currentStoreId = 3; // По умолчанию магазин Мағозаи намунавӣ (Тестӣ #3)
+  String currentStoreName = 'Мағозаи намунавӣ (Тестӣ #3)';
   List<Map<String, dynamic>> accessibleStores = [];
 
   String? lastSubmitError;
@@ -33,8 +33,8 @@ class ApiService {
       currentStoreId = savedId;
       currentStoreName = savedName.trim();
     } else {
-      currentStoreId = 2;
-      currentStoreName = 'Мағозаи Арзон';
+      currentStoreId = 3;
+      currentStoreName = 'Мағозаи намунавӣ (Тестӣ #3)';
     }
 
     final savedAcc = prefs.getString('accessible_stores_list');
@@ -237,8 +237,8 @@ class ApiService {
     return [];
   }
 
-  // 1. Авторизация сотрудника склада / товароведа с фильтрацией доступа только к своему магазину
-  Future<Map<String, dynamic>> login(String username, String password, {bool remember = true}) async {
+  // 1. Авторизация сотрудника склада / товароведа с привязкой к выбранному или назначенному магазину
+  Future<Map<String, dynamic>> login(String username, String password, {int? preferredStoreId, bool remember = true}) async {
     final prefs = await SharedPreferences.getInstance();
 
     // Всегда надежно сохраняем логин и пароль сотрудника в памяти приложения
@@ -273,17 +273,18 @@ class ApiService {
         // 1. Сначала подгружаем актуальный список всех магазинов базы gusar.tj
         final allStores = await fetchStores();
 
-        // 2. Извлекаем точный store_id пользователя из ответа логина
-        int? userStoreId;
+        // 2. Определяем точный store_id пользователя:
+        // А) Если пользователь выбрал магазин на экране логина - это высший приоритет!
+        int? userStoreId = (preferredStoreId != null && preferredStoreId > 0) ? preferredStoreId : null;
         String? userStoreName;
         String? userRole = response.data['role']?.toString().toUpperCase();
 
-        if (response.data['store_id'] != null) {
+        if (userStoreId == null && response.data['store_id'] != null) {
           userStoreId = int.tryParse(response.data['store_id'].toString());
         }
 
         final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'];
-        if (rawUser is Map) {
+        if (rawUser is Map && userStoreId == null) {
           if (rawUser['store_id'] != null) {
             userStoreId = int.tryParse(rawUser['store_id'].toString());
           }
@@ -302,92 +303,113 @@ class ApiService {
           }
         }
 
-        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/auth/me)
-        try {
-          final meResp = await _dio.get(
-            '/api/auth/me',
-            options: Options(headers: {'Authorization': 'Bearer $token'}),
-          ).timeout(const Duration(seconds: 6));
+        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/auth/me) если еще не определен
+        if (userStoreId == null) {
+          try {
+            final meResp = await _dio.get(
+              '/api/auth/me',
+              options: Options(headers: {'Authorization': 'Bearer $token'}),
+            ).timeout(const Duration(seconds: 6));
 
-          if (meResp.statusCode == 200 && meResp.data != null) {
-            final meData = meResp.data;
-            if (meData['store_id'] != null) {
-              userStoreId = int.tryParse(meData['store_id'].toString());
-            } else if (meData['storeId'] != null) {
-              userStoreId = int.tryParse(meData['storeId'].toString());
-            }
-
-            if (meData['role'] != null) {
-              userRole = meData['role'].toString().toUpperCase();
-            }
-
-            final dynamic meUser = meData['user'] ?? meData['data'];
-            if (meUser is Map) {
-              if (meUser['store_id'] != null) {
-                userStoreId = int.tryParse(meUser['store_id'].toString()) ?? userStoreId;
-              } else if (meUser['storeId'] != null) {
-                userStoreId = int.tryParse(meUser['storeId'].toString()) ?? userStoreId;
+            if (meResp.statusCode == 200 && meResp.data != null) {
+              final meData = meResp.data;
+              if (meData['store_id'] != null) {
+                userStoreId = int.tryParse(meData['store_id'].toString());
+              } else if (meData['storeId'] != null) {
+                userStoreId = int.tryParse(meData['storeId'].toString());
               }
 
-              if (meUser['store_name'] != null && meUser['store_name'].toString().trim().isNotEmpty) {
-                userStoreName = meUser['store_name'].toString().trim();
-              } else if (meUser['store'] is Map) {
-                if (meUser['store']['id'] != null) {
-                  userStoreId = int.tryParse(meUser['store']['id'].toString()) ?? userStoreId;
+              final dynamic meUser = meData['user'] ?? meData['data'];
+              if (meUser is Map) {
+                if (meUser['store_id'] != null) {
+                  userStoreId = int.tryParse(meUser['store_id'].toString()) ?? userStoreId;
+                } else if (meUser['storeId'] != null) {
+                  userStoreId = int.tryParse(meUser['storeId'].toString()) ?? userStoreId;
                 }
-                if (meUser['store']['name'] != null) {
-                  userStoreName = meUser['store']['name'].toString().trim();
+
+                if (meUser['store_name'] != null && meUser['store_name'].toString().trim().isNotEmpty) {
+                  userStoreName = meUser['store_name'].toString().trim();
+                } else if (meUser['store'] is Map) {
+                  if (meUser['store']['id'] != null) {
+                    userStoreId = int.tryParse(meUser['store']['id'].toString()) ?? userStoreId;
+                  }
+                  if (meUser['store']['name'] != null) {
+                    userStoreName = meUser['store']['name'].toString().trim();
+                  }
                 }
               }
-
-              if (meUser['role'] != null) {
-                userRole = meUser['role'].toString().toUpperCase();
-              }
             }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
 
         // 4. Умное сопоставление логина сотрудника со списком магазинов gusar.tj
         if (userStoreId == null && allStores.isNotEmpty) {
           final cleanUser = username.toLowerCase().trim();
           final userDigits = cleanUser.replaceAll(RegExp(r'\D'), '');
 
-          final matched = allStores.firstWhere(
-            (s) {
-              final sub = (s['subdomain'] ?? '').toString().toLowerCase().trim();
-              final sName = (s['name'] ?? '').toString().toLowerCase().trim();
-              final bot = (s['bot_username'] ?? '').toString().toLowerCase().trim();
-              final card = (s['bank_card'] ?? '').toString().toLowerCase().trim();
-              final cardDigits = card.replaceAll(RegExp(r'\D'), '');
+          // Если в логине есть номер магазина (например "3" или "№3")
+          if (userDigits.isNotEmpty) {
+            final parsedDigit = int.tryParse(userDigits);
+            if (parsedDigit != null && allStores.any((s) => s['id'] == parsedDigit)) {
+              final matched = allStores.firstWhere((s) => s['id'] == parsedDigit);
+              userStoreId = matched['id'] as int;
+              userStoreName = matched['name'] as String;
+            }
+          }
 
-              // Совпадение по поддомену
-              if (sub.isNotEmpty && (sub == cleanUser || cleanUser.contains(sub) || sub.contains(cleanUser))) {
-                return true;
-              }
-              // Совпадение по имени бота
-              if (bot.isNotEmpty && (bot.contains(cleanUser) || cleanUser.contains(bot.replaceAll('_bot', '')))) {
-                return true;
-              }
-              // Совпадение по телефону из карты
-              if (userDigits.length >= 6 && cardDigits.contains(userDigits)) {
-                return true;
-              }
-              // Совпадение по имени магазина
-              if (sName.isNotEmpty && (sName.contains(cleanUser) || cleanUser.contains(sName))) {
-                return true;
-              }
-              return false;
-            },
-            orElse: () => {},
-          );
+          // Если в логине слово "тест", "намунав", "test" - это Мағозаи намунавӣ (Тестӣ #3)
+          if (userStoreId == null && (cleanUser.contains('тест') || cleanUser.contains('намунав') || cleanUser.contains('test'))) {
+            final matched = allStores.firstWhere((s) => s['id'] == 3, orElse: () => {});
+            if (matched.isNotEmpty && matched['id'] != null) {
+              userStoreId = 3;
+              userStoreName = matched['name'] as String;
+            }
+          }
 
-          if (matched.isNotEmpty && matched['id'] != null) {
+          if (userStoreId == null) {
+            final matched = allStores.firstWhere(
+              (s) {
+                final sub = (s['subdomain'] ?? '').toString().toLowerCase().trim();
+                final sName = (s['name'] ?? '').toString().toLowerCase().trim();
+                final bot = (s['bot_username'] ?? '').toString().toLowerCase().trim();
+                final card = (s['bank_card'] ?? '').toString().toLowerCase().trim();
+                final cardDigits = card.replaceAll(RegExp(r'\D'), '');
+
+                if (sub.isNotEmpty && (sub == cleanUser || cleanUser.contains(sub) || sub.contains(cleanUser))) {
+                  return true;
+                }
+                if (bot.isNotEmpty && (bot.contains(cleanUser) || cleanUser.contains(bot.replaceAll('_bot', '')))) {
+                  return true;
+                }
+                if (userDigits.length >= 6 && cardDigits.contains(userDigits)) {
+                  return true;
+                }
+                if (sName.isNotEmpty && (sName.contains(cleanUser) || cleanUser.contains(sName))) {
+                  return true;
+                }
+                return false;
+              },
+              orElse: () => {},
+            );
+
+            if (matched.isNotEmpty && matched['id'] != null) {
+              userStoreId = matched['id'] as int;
+              userStoreName = matched['name'] as String;
+            }
+          }
+        }
+
+        // 5. Если всё еще не определен - проверяем ранее сохраненный в приложении магазин!
+        if (userStoreId == null) {
+          final previouslySavedId = prefs.getInt('store_id');
+          if (previouslySavedId != null && previouslySavedId > 0 && allStores.any((s) => s['id'] == previouslySavedId)) {
+            final matched = allStores.firstWhere((s) => s['id'] == previouslySavedId);
             userStoreId = matched['id'] as int;
             userStoreName = matched['name'] as String;
           }
         }
 
-        // 5. Ищем точное название магазина в общем справочнике магазинов gusar.tj
+        // 6. Ищем точное название магазина в общем справочнике магазинов gusar.tj
         if (userStoreId != null && allStores.isNotEmpty) {
           final matched = allStores.firstWhere(
             (s) => (s['id'] as int) == userStoreId,
@@ -402,35 +424,35 @@ class ApiService {
         String assignedStoreName;
 
         if (userStoreId != null && userStoreId > 0) {
-          // Для сотрудника закрепляем ЕГО магазин, но сохраняем все магазины в доступных для переключения при необходимости
           assignedStoreId = userStoreId;
           assignedStoreName = (userStoreName != null && userStoreName.trim().isNotEmpty)
               ? userStoreName.trim()
-              : 'Магазин gusar.tj #$userStoreId';
-          accessibleStores = allStores.isNotEmpty ? allStores : [
-            {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
-          ];
+              : (allStores.firstWhere((s) => s['id'] == userStoreId, orElse: () => {})['name']?.toString() ?? 'Магазин gusar.tj #$userStoreId');
         } else {
-          // Если магазин не определен, выбираем активный магазин ID 2 (Мағозаи Арзон)
-          final activeStore = allStores.firstWhere(
-            (s) => s['is_active'] == true && s['id'] != null && (s['id'] as int) > 1,
+          // Если магазин не определен ни сервером, ни пользователем - отдаем предпочтение Магазину #3
+          final defaultStore = allStores.firstWhere(
+            (s) => s['id'] == 3,
             orElse: () => allStores.firstWhere(
-              (s) => s['id'] == 2,
-              orElse: () => {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'},
+              (s) => s['is_active'] == true && s['id'] != null && (s['id'] as int) >= 1,
+              orElse: () => allStores.isNotEmpty
+                  ? allStores.first
+                  : {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'address': 'Магазин gusar.tj'},
             ),
           );
-          assignedStoreId = activeStore['id'] as int;
-          assignedStoreName = activeStore['name'] as String;
-          accessibleStores = allStores.isNotEmpty ? allStores : [
-            {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
-          ];
+          assignedStoreId = defaultStore['id'] as int;
+          assignedStoreName = defaultStore['name'] as String;
         }
+
+        // ВСЕГДА предоставляем сотруднику полный список доступных магазинов для свободного переключения
+        accessibleStores = allStores.isNotEmpty ? allStores : [
+          {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
+        ];
 
         // ВАЖНО: Обновляем текущий магазин и сбрасываем кэш старого магазина!
         await updateStore(assignedStoreId, assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
-        // Предварительно загружаем актуальных поставщиков и каталог товаров в фоне
+        // Предварительно загружаем актуальных поставщиков и каталог товаров для этого магазина
         getSuppliers(forceRefresh: true).catchError((_) => <Supplier>[]);
         getProducts().catchError((_) => <Product>[]);
 
@@ -438,6 +460,7 @@ class ApiService {
           'success': true,
           'message': 'Добро пожаловать! Открыт магазин: $assignedStoreName',
           'store_name': assignedStoreName,
+          'store_id': assignedStoreId,
         };
       }
       return {'success': false, 'message': 'Неверный логин или пароль.'};
@@ -449,12 +472,15 @@ class ApiService {
       // Офлайн-авторизация при временном отсутствии интернета
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
-      final fallbackId = currentStoreId > 0 ? currentStoreId : 2;
-      final fallbackName = currentStoreName.trim().isNotEmpty ? currentStoreName : 'Мағозаи Арзон';
+      final savedId = preferredStoreId ?? prefs.getInt('store_id') ?? currentStoreId;
+      final fallbackId = savedId > 0 ? savedId : 3;
+      final fallbackName = prefs.getString('store_name') ?? currentStoreName;
       await updateStore(fallbackId, fallbackName);
-      accessibleStores = [
-        {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
-      ];
+      if (accessibleStores.isEmpty) {
+        accessibleStores = [
+          {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
+        ];
+      }
       await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
         'success': true,
@@ -463,12 +489,15 @@ class ApiService {
     } catch (e) {
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
-      final fallbackId = currentStoreId > 0 ? currentStoreId : 2;
-      final fallbackName = currentStoreName.trim().isNotEmpty ? currentStoreName : 'Мағозаи Арзон';
+      final savedId = preferredStoreId ?? prefs.getInt('store_id') ?? currentStoreId;
+      final fallbackId = savedId > 0 ? savedId : 3;
+      final fallbackName = prefs.getString('store_name') ?? currentStoreName;
       await updateStore(fallbackId, fallbackName);
-      accessibleStores = [
-        {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
-      ];
+      if (accessibleStores.isEmpty) {
+        accessibleStores = [
+          {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
+        ];
+      }
       await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
         'success': true,

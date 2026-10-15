@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
+import '../utils/top_notification.dart';
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -16,6 +17,10 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
 
+  List<Map<String, dynamic>> _stores = [];
+  int? _selectedStoreId;
+  bool _loadingStores = true;
+
   bool _rememberPassword = true;
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -25,6 +30,47 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _loadSavedCredentials();
+    _loadStores();
+  }
+
+  Future<void> _loadStores() async {
+    setState(() => _loadingStores = true);
+    final prefs = await SharedPreferences.getInstance();
+    final savedStoreId = prefs.getInt('store_id');
+
+    List<Map<String, dynamic>> storesList = [];
+    try {
+      storesList = await _api.fetchStores();
+    } catch (_) {}
+
+    if (storesList.isEmpty && _api.accessibleStores.isNotEmpty) {
+      storesList = _api.accessibleStores;
+    }
+
+    if (storesList.isEmpty) {
+      storesList = [
+        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'is_active': true},
+        {'id': 2, 'name': 'Мағозаи Арзон', 'is_active': true},
+      ];
+    }
+
+    int? defaultId = savedStoreId;
+    if (defaultId == null || !storesList.any((s) => s['id'] == defaultId)) {
+      // Приоритетно магазин #3 или первый активный
+      if (storesList.any((s) => s['id'] == 3)) {
+        defaultId = 3;
+      } else {
+        defaultId = storesList.first['id'] as int;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _stores = storesList;
+        _selectedStoreId = defaultId;
+        _loadingStores = false;
+      });
+    }
   }
 
   Future<void> _loadSavedCredentials() async {
@@ -50,6 +96,7 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() {
         _errorMessage = 'Пожалуйста, введите логин и пароль сотрудника.';
       });
+      TopNotification.showWarning(context, 'Введите логин и пароль сотрудника');
       return;
     }
 
@@ -58,7 +105,12 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = null;
     });
 
-    final result = await _api.login(username, password, remember: _rememberPassword);
+    final result = await _api.login(
+      username,
+      password,
+      preferredStoreId: _selectedStoreId,
+      remember: _rememberPassword,
+    );
 
     if (!mounted) return;
 
@@ -68,30 +120,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (result['success'] == true) {
       final storeName = result['store_name'] ?? _api.currentStoreName;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle_rounded, color: Colors.white, size: 22),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text('Вход выполнен! Ваш магазин: $storeName'),
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFF10B981),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      TopNotification.showSuccess(context, 'Вход выполнен! Магазин: $storeName');
 
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } else {
+      final errMsg = result['message'] ?? 'Неверный логин или пароль.';
       setState(() {
-        _errorMessage = result['message'] ?? 'Неверный логин или пароль.';
+        _errorMessage = errMsg;
       });
+      TopNotification.showError(context, errMsg);
     }
   }
 
@@ -164,11 +204,89 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 4),
+                      const SizedBox(height: 16),
+
+                      // Выбор магазина / склада приёмки
                       const Text(
-                        'Войдите для доступа к номенклатуре и приёмке вашего магазина',
-                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                        'Магазин / Склад приёмки:',
+                        style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                        ),
+                        child: _loadingStores
+                            ? const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 10),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
+                                    ),
+                                    SizedBox(width: 10),
+                                    Text('Загрузка магазинов gusar.tj...', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                                  ],
+                                ),
+                              )
+                            : DropdownButtonHideUnderline(
+                                child: DropdownButton<int>(
+                                  value: _selectedStoreId,
+                                  isExpanded: true,
+                                  dropdownColor: const Color(0xFF1E293B),
+                                  icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF10B981)),
+                                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                                  items: _stores.map((s) {
+                                    final id = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1;
+                                    final name = s['name']?.toString() ?? 'Магазин #$id';
+                                    return DropdownMenuItem<int>(
+                                      value: id,
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.storefront_rounded, size: 18, color: Color(0xFF10B981)),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              name,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: id == 3 ? FontWeight.bold : FontWeight.normal,
+                                              ),
+                                            ),
+                                          ),
+                                          Container(
+                                            margin: const EdgeInsets.only(left: 6),
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF10B981).withOpacity(0.2),
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              '#$id',
+                                              style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }).toList(),
+                                  onChanged: (newId) {
+                                    if (newId != null) {
+                                      setState(() {
+                                        _selectedStoreId = newId;
+                                      });
+                                    }
+                                  },
+                                ),
+                              ),
+                      ),
+                      const SizedBox(height: 16),
 
                       // Поле логина
                       TextField(

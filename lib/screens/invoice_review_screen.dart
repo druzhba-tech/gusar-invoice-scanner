@@ -14,6 +14,7 @@ import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
 import 'add_product_screen.dart';
 import '../widgets/document_photo_viewer_dialog.dart';
+import '../utils/top_notification.dart';
 
 class InvoiceReviewScreen extends StatefulWidget {
   final InvoiceDocument document;
@@ -73,21 +74,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     await _saveAndRefresh();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('Товар "${product.name}" успешно привязан к накладной!'),
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFF10B981),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      TopNotification.showSuccess(context, 'Товар "${product.name}" успешно привязан к накладной!');
     }
   }
 
@@ -129,21 +116,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
           Navigator.pop(sheetCtx);
           await _saveAndRefresh();
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.white, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('Связано с: "${matchedProduct.name}" (штрихкод: ${matchedProduct.barcode ?? '-'})'),
-                    ),
-                  ],
-                ),
-                backgroundColor: const Color(0xFF10B981),
-                duration: const Duration(seconds: 3),
-              ),
-            );
+            TopNotification.showSuccess(context, 'Связано с: "${matchedProduct.name}" (штрихкод: ${matchedProduct.barcode ?? "-"})');
           }
         },
       ),
@@ -325,12 +298,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                       Navigator.pop(modalCtx);
                                       await _saveAndRefresh();
                                       if (mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(
-                                            content: Text('✅ Позиция привязана к "${p.name}"!'),
-                                            backgroundColor: const Color(0xFF10B981),
-                                          ),
-                                        );
+                                        TopNotification.showSuccess(context, 'Позиция привязана к "${p.name}"!');
                                       }
                                     },
                                     child: const Text('Связать', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
@@ -426,12 +394,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Navigator.pop(dlgCtx);
                 await _saveAndRefresh();
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('✅ Карточка товара "${created.name}" создана в базе gusar.tj и привязана!'),
-                      backgroundColor: const Color(0xFF10B981),
-                    ),
-                  );
+                  TopNotification.showSuccess(context, 'Карточка товара "${created.name}" создана в базе gusar.tj и привязана!');
                 }
               }
             },
@@ -610,13 +573,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     await _saveAndRefresh();
 
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('✅ Товар обновлен! Приложение запомнило исправление.'),
-                          backgroundColor: Color(0xFF10B981),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
+                      TopNotification.showSuccess(context, 'Товар обновлен! Приложение запомнило исправление.');
                     }
                   }
                 },
@@ -641,13 +598,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     });
     await _saveAndRefresh();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Связка отменена. Позиция свободна для выбора.'),
-          backgroundColor: Color(0xFF334155),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      TopNotification.showInfo(context, 'Связка отменена. Позиция свободна для выбора.');
     }
   }
 
@@ -836,12 +787,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                           Navigator.pop(modalCtx);
                           await _saveAndRefresh();
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Связка с контрагентом базы удалена.'),
-                                backgroundColor: Color(0xFF334155),
-                              ),
-                            );
+                            TopNotification.showInfo(context, 'Связка с контрагентом базы удалена.');
                           }
                         },
                       ),
@@ -967,12 +913,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                       Navigator.pop(modalCtx);
                                       await _saveAndRefresh();
                                       if (mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(
-                                            content: Text('✅ Поставщик привязан: "${s.name}" (ID: ${s.id})!'),
-                                            backgroundColor: const Color(0xFF10B981),
-                                          ),
-                                        );
+                                        TopNotification.showSuccess(context, 'Поставщик привязан: "${s.name}" (ID: ${s.id})!');
                                       }
                                     },
                                     child: Text(isCurrent ? 'Привязан' : 'Связать',
@@ -1140,12 +1081,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                   Navigator.pop(dlgCtx);
                   await _saveAndRefresh();
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('✅ Выбран существующий контрагент: "${foundDuplicate.name}" (ID: ${foundDuplicate.id})'),
-                        backgroundColor: const Color(0xFF10B981),
-                      ),
-                    );
+                    TopNotification.showSuccess(context, 'Выбран существующий контрагент: "${foundDuplicate.name}" (ID: ${foundDuplicate.id})');
                   }
                   return;
                 } else {
@@ -1169,12 +1105,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Navigator.pop(dlgCtx);
                 await _saveAndRefresh();
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан (ID: ${created.id})!'),
-                      backgroundColor: const Color(0xFF10B981),
-                    ),
-                  );
+                  TopNotification.showSuccess(context, 'Контрагент "${created.name}" создан в базе и привязан (ID: ${created.id})!');
                 }
               } else {
                 setState(() {
@@ -1184,12 +1115,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Navigator.pop(dlgCtx);
                 await _saveAndRefresh();
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('✅ Поставщик сохранён: "$newName" (будет синхронизирован при оприходовании).'),
-                      backgroundColor: const Color(0xFF0284C7),
-                    ),
-                  );
+                  TopNotification.showInfo(context, 'Поставщик сохранён: "$newName" (будет синхронизирован при оприходовании).');
                 }
               }
             },
@@ -1201,17 +1127,49 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   }
 
   void _submitToInventory() async {
+    _doc.storeId = _api.currentStoreId;
+
     if (_doc.unmatchedCount > 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Внимание! Есть ${_doc.unmatchedCount} непривязанных товаров. Привяжите их перед оприходованием.'),
-          backgroundColor: const Color(0xFFF59E0B),
+      final autoCreateAndProceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.auto_awesome, color: Color(0xFF38BDF8), size: 24),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Автосоздание товаров', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          content: Text(
+            'В накладной есть ${_doc.unmatchedCount} непривязанных товаров.\n\nСоздать карточки товаров автоматически на складе "${_api.currentStoreName}" (ID: ${_api.currentStoreId}) и сразу оприходовать накладную?',
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Привязать вручную', style: TextStyle(color: Colors.white60)),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
+              label: const Text('Создать и оприходовать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
         ),
       );
-      return;
+
+      if (autoCreateAndProceed != true) {
+        TopNotification.showWarning(context, 'В накладной есть ${_doc.unmatchedCount} непривязанных товаров. Привяжите их или подтвердите автосоздание.');
+        return;
+      }
     }
 
-    // ЖЁСТКОЕ ПРАВИЛО: Контрагент ОБЯЗАТЕЛЬНО должен быть из базы gusar.tj текущего магазина!
+    // Если контрагент не привязан к базе gusar.tj текущего магазина
     if (_doc.supplierId == null) {
       final pickNow = await showDialog<bool>(
         context: context,
@@ -1223,32 +1181,41 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
               Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444)),
               SizedBox(width: 8),
               Expanded(
-                child: Text('Контрагент не из базы!', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                child: Text('Контрагент для магазина', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
               ),
             ],
           ),
-          content: const Text(
-            'Действует строгое правило: накладную можно оприходовать ТОЛЬКО с контрагентом из базы магазина gusar.tj.\n\nПожалуйста, выберите поставщика из списка или создайте его на сервере прямо сейчас.',
-            style: TextStyle(color: Colors.white70, fontSize: 14),
+          content: Text(
+            'Поставщик "${_doc.supplierName}" не привязан к базе "${_api.currentStoreName}".\n\nСоздать контрагента на сервере автоматически или выбрать существующего?',
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+              child: const Text('Выбрать из списка', style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Выбрать / Создать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Text('Создать автоматически', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
       );
 
-      if (pickNow == true) {
+      if (pickNow == false) {
         _showCounterpartyPicker();
+        return;
+      } else if (pickNow == true) {
+        final newSup = await _api.createSupplier(_doc.supplierName);
+        if (newSup != null && newSup.id > 0) {
+          _doc.supplierId = newSup.id;
+          _doc.supplierName = newSup.name;
+          await _saveAndRefresh();
+        }
+      } else {
+        return;
       }
-      return;
     }
 
     final double totalInvoiceSum = _doc.totalAmount > 0 ? _doc.totalAmount : _doc.calculatedTotal;

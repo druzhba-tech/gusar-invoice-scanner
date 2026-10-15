@@ -5,6 +5,7 @@ import '../models/invoice_item.dart';
 import '../models/product.dart';
 import '../services/matching_service.dart';
 import '../services/api_service.dart';
+import '../utils/top_notification.dart';
 import 'add_product_screen.dart';
 
 class MatchingScreen extends StatefulWidget {
@@ -60,12 +61,7 @@ class _MatchingScreenState extends State<MatchingScreen> {
     );
 
     if (matched) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✅ Связано по штрихкоду с "${currentItem.matchedProductName}" и сохранено в словарь!'),
-          backgroundColor: const Color(0xFF10B981),
-        ),
-      );
+      TopNotification.showSuccess(context, 'Связано по штрихкоду с "${currentItem.matchedProductName}" и сохранено в словарь!');
       setState(() {
         if (_currentIndex >= _unmatchedItems.length && _currentIndex > 0) {
           _currentIndex = _unmatchedItems.length - 1;
@@ -80,13 +76,7 @@ class _MatchingScreenState extends State<MatchingScreen> {
     _matcher.applyMatch(item, product, confidence: 1.0);
     await _matcher.saveAlias(widget.document.supplierName, item.rawName, product.id);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Связано с "${product.name}". В следующий раз свяжется автоматически!'),
-        backgroundColor: const Color(0xFF10B981),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    TopNotification.showSuccess(context, 'Связано с "${product.name}". В следующий раз свяжется автоматически!');
 
     setState(() {
       if (_currentIndex >= _unmatchedItems.length && _currentIndex > 0) {

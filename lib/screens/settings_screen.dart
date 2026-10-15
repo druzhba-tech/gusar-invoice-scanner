@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../services/updater_service.dart';
+import '../utils/top_notification.dart';
 import 'login_screen.dart';
 
 class StoreOption {
@@ -71,16 +72,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     String savedName = prefs.getString('store_name') ?? _api.currentStoreName;
 
     if (savedId <= 0 || savedName.trim().isEmpty) {
-      savedId = 2;
-      savedName = 'Мағозаи Арзон';
+      savedId = 3;
+      savedName = 'Мағозаи намунавӣ (Тестӣ #3)';
     }
 
     if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.any((s) => (s['id'] ?? 0) > 0)) {
       _availableStores = _api.accessibleStores
           .where((s) => (s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '0') ?? 0) > 0)
           .map((s) => StoreOption(
-                id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '2') ?? 2,
-                name: (s['name'] != null && s['name'].toString().trim().isNotEmpty) ? s['name'].toString().trim() : 'Мағозаи Арзон',
+                id: s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '3') ?? 3,
+                name: (s['name'] != null && s['name'].toString().trim().isNotEmpty) ? s['name'].toString().trim() : 'Магазин gusar.tj',
                 address: s['address']?.toString() ?? 'Подразделение сотрудника',
               ))
           .toList();
@@ -114,24 +115,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _fetchStoresFromGusar({bool silent = false}) async {
-    // Если сотрудник привязан к своему магазину, жестко фиксируем его склад!
-    if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.length == 1) {
-      final s = _api.accessibleStores.first;
-      final int sId = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '2') ?? 2;
-      final String sName = (s['name'] != null && s['name'].toString().trim().isNotEmpty)
-          ? s['name'].toString().trim()
-          : 'Мағозаи Арзон';
-      if (sId > 0 && sName.isNotEmpty) {
-        setState(() {
-          _selectedStoreId = sId;
-          _selectedStoreName = sName;
-          _availableStores = [StoreOption(id: sId, name: sName, address: 'Магазин сотрудника')];
-        });
-        await _api.updateStore(sId, sName);
-        return;
-      }
-    }
-
     setState(() => _isSyncingStores = true);
     final stores = await _api.fetchStores();
     setState(() => _isSyncingStores = false);
@@ -146,7 +129,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _availableStores = newOptions;
         if (_selectedStoreId <= 0 || _selectedStoreName.trim().isEmpty || !_availableStores.any((s) => s.id == _selectedStoreId)) {
-          final found = _availableStores.firstWhere((s) => s.id == 2, orElse: () => _availableStores.first);
+          // Если магазин не выбран, отдаем приоритет магазину #3
+          final found = _availableStores.firstWhere((s) => s.id == 3, orElse: () => _availableStores.first);
           _selectedStoreId = found.id;
           _selectedStoreName = found.name;
         } else {
@@ -157,12 +141,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _api.updateStore(_selectedStoreId, _selectedStoreName);
 
       if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Доступные магазины gusar.tj обновлены (${_availableStores.length} точек)'),
-            backgroundColor: const Color(0xFF10B981),
-          ),
-        );
+        TopNotification.showSuccess(context, 'Доступные магазины gusar.tj обновлены (${_availableStores.length} точек)');
       }
     }
   }
@@ -206,12 +185,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     if (_isAuthenticated && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Вход выполнен! Доступ: $_selectedStoreName'),
-          backgroundColor: const Color(0xFF10B981),
-        ),
-      );
+      TopNotification.showSuccess(context, 'Вход выполнен! Доступ: $_selectedStoreName');
     }
   }
 
@@ -287,12 +261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✅ Настройки успешно сохранены!'),
-          backgroundColor: Color(0xFF10B981),
-        ),
-      );
+      TopNotification.showSuccess(context, 'Настройки успешно сохранены!');
       Navigator.pop(context);
     }
   }
@@ -317,12 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _updater.showDownloadAndInstallDialog(context, update);
     } else if (mounted) {
       final currentVer = await _updater.getCurrentVersion();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('У вас установлена самая актуальная версия: v$currentVer!'),
-          backgroundColor: const Color(0xFF10B981),
-        ),
-      );
+      TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия: v$currentVer!');
     }
   }
 
@@ -350,7 +314,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _sectionHeader(
               stepNumber: '1',
               title: 'ВАШ МАГАЗИН GUSAR.TJ',
-              subtitle: 'Точка приёмки накладных, закреплённая за вашей учётной записью',
+              subtitle: 'Точка приёмки накладных. Выберите нужный магазин для работы',
             ),
             const SizedBox(height: 10),
 
@@ -361,58 +325,128 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 28),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 28),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: Text(
-                                displayStoreName,
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                              ),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    displayStoreName,
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF10B981).withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    'ID: $displayStoreId',
+                                    style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              ],
                             ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF10B981).withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                'ID: $displayStoreId',
-                                style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
-                              ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Активная точка приёмки и списания товаров',
+                              style: TextStyle(color: Colors.white54, fontSize: 11),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 4),
-                        const Row(
-                          children: [
-                            Icon(Icons.lock_rounded, size: 12, color: Color(0xFF34D399)),
-                            SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                'Доступ открыт только к вашему магазину',
-                                style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.w500),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                  if (_availableStores.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    const Divider(color: Colors.white10),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Переключить магазин / склад:',
+                      style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<int>(
+                          value: _availableStores.any((s) => s.id == _selectedStoreId)
+                              ? _selectedStoreId
+                              : _availableStores.first.id,
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF1E293B),
+                          icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF10B981)),
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                          items: _availableStores.map((s) => DropdownMenuItem<int>(
+                            value: s.id,
+                            child: Row(
+                              children: [
+                                Icon(Icons.storefront_rounded, size: 16, color: s.id == 3 ? const Color(0xFF10B981) : Colors.white70),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    s.name,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: s.id == _selectedStoreId ? FontWeight.bold : FontWeight.normal,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  margin: const EdgeInsets.only(left: 6),
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF10B981).withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    '#${s.id}',
+                                    style: const TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )).toList(),
+                          onChanged: (newId) async {
+                            if (newId != null && newId != _selectedStoreId) {
+                              final st = _availableStores.firstWhere((s) => s.id == newId);
+                              setState(() {
+                                _selectedStoreId = newId;
+                                _selectedStoreName = st.name;
+                              });
+                              await _api.updateStore(newId, st.name);
+                              if (mounted) {
+                                TopNotification.showSuccess(context, 'Активный магазин переключен на: ${st.name} (ID: $newId)');
+                              }
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -483,9 +517,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                           });
                                           await _api.updateStore(newId, st.name);
                                           if (mounted) {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('Магазин изменен на: ${st.name}'), backgroundColor: const Color(0xFF10B981)),
-                                            );
+                                            TopNotification.showSuccess(context, 'Магазин изменен на: ${st.name}');
                                           }
                                         }
                                       },

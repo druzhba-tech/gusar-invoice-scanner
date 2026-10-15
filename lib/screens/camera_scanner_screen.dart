@@ -10,6 +10,7 @@ import '../services/matching_service.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
 import '../utils/image_utils.dart';
+import '../utils/top_notification.dart';
 import 'invoice_review_screen.dart';
 
 class CameraScannerScreen extends StatefulWidget {
@@ -69,12 +70,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Не удалось запустить камеру телефона: $e. Попробуйте выбрать фото из галереи.'),
-            backgroundColor: Colors.redAccent,
-          ),
-        );
+        TopNotification.showError(context, 'Не удалось запустить камеру телефона: $e. Попробуйте выбрать фото из галереи.');
       }
     }
   }
@@ -94,9 +90,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка выбора из галереи: $e')),
-        );
+        TopNotification.showError(context, 'Ошибка выбора из галереи: $e');
       }
     }
   }
@@ -118,9 +112,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка открытия файлов: $e')),
-        );
+        TopNotification.showError(context, 'Ошибка открытия файлов: $e');
       }
     }
   }
@@ -128,9 +120,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
   // 4. Запуск распознавания накладной и таблиц
   Future<void> _processInvoice() async {
     if (_capturedPages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сфотографируйте или выберите хотя бы один лист накладной!')),
-      );
+      TopNotification.showWarning(context, 'Сфотографируйте или выберите хотя бы один лист накладной!');
       return;
     }
 
@@ -234,9 +224,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     } catch (e) {
       setState(() => _isProcessing = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка обработки: $e'), backgroundColor: Colors.redAccent),
-        );
+        TopNotification.showError(context, 'Ошибка обработки: $e');
       }
     }
   }

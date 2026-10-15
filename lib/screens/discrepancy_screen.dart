@@ -4,6 +4,7 @@ import 'package:signature/signature.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models/invoice_document.dart';
 import '../services/discrepancy_service.dart';
+import '../utils/top_notification.dart';
 
 class DiscrepancyScreen extends StatefulWidget {
   final InvoiceDocument document;
@@ -66,9 +67,7 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
       await _discrepancyService.shareDiscrepancyAct(pdfFile, widget.document.invoiceNumber);
     } catch (e) {
       setState(() => _isGeneratingPdf = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка создания акта: $e')),
-      );
+      TopNotification.showError(context, 'Ошибка создания акта: $e');
     }
   }
 

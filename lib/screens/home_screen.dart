@@ -12,6 +12,7 @@ import 'settings_screen.dart';
 import 'add_product_screen.dart';
 import 'product_photo_manager_screen.dart';
 import '../widgets/document_photo_viewer_dialog.dart';
+import '../utils/top_notification.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -74,13 +75,87 @@ class _HomeScreenState extends State<HomeScreen> {
         _showUpdateDialog(update);
       }
     } else if (manual && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('У вас установлена самая актуальная версия!'),
-          backgroundColor: Color(0xFF10B981),
-        ),
-      );
+      TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия!');
     }
+  }
+
+  void _showStoreSwitcherDialog() async {
+    List<Map<String, dynamic>> stores = [];
+    try {
+      stores = await _api.fetchStores();
+    } catch (_) {}
+    if (stores.isEmpty) {
+      stores = _api.accessibleStores;
+    }
+    if (stores.isEmpty) {
+      stores = [
+        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)'},
+        {'id': 2, 'name': 'Мағозаи Арзон'},
+      ];
+    }
+
+    if (!mounted) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.storefront_rounded, color: Color(0xFF10B981), size: 24),
+                  const SizedBox(width: 10),
+                  const Text('Выберите магазин приёмки', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const Text('Накладные и товары будут привязаны к выбранному магазину:', style: TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 12),
+              ...stores.map((s) {
+                final id = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1;
+                final name = s['name']?.toString() ?? 'Магазин #$id';
+                final isSelected = id == _api.currentStoreId;
+                return ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  leading: CircleAvatar(
+                    backgroundColor: isSelected ? const Color(0xFF10B981) : const Color(0xFF0F172A),
+                    radius: 18,
+                    child: Icon(Icons.store, color: isSelected ? Colors.white : Colors.white70, size: 18),
+                  ),
+                  title: Text(
+                    name,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  subtitle: Text('ID: $id', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                  trailing: isSelected ? const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981)) : null,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _api.updateStore(id, name);
+                    await _loadData();
+                    if (mounted) {
+                      TopNotification.showSuccess(context, 'Активный магазин переключен на: $name (ID: $id)');
+                    }
+                  },
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _showUpdateDialog(UpdateInfo update) {
@@ -152,13 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.pop(ctx);
               await _updater.postponeUpdate(update.version);
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Обновление отложено. Вы всегда можете запустить его из верхнего меню.'),
-                    backgroundColor: Color(0xFF334155),
-                    duration: Duration(seconds: 3),
-                  ),
-                );
+                TopNotification.showInfo(context, 'Обновление отложено. Вы всегда можете запустить его из верхнего меню.');
               }
             },
             child: const Text('Позже (я решу сам)', style: TextStyle(color: Colors.white60)),
@@ -228,15 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: InkWell(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                  ).then((_) {
-                    _loadData();
-                    _checkUpdates();
-                  });
-                },
+                onTap: _showStoreSwitcherDialog,
                 borderRadius: BorderRadius.circular(8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -245,28 +306,48 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         const Text('GScan', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                         const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: _isAuthenticated ? const Color(0xFF10B981).withOpacity(0.2) : Colors.orange.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            _isAuthenticated ? (_loggedUser ?? 'Вход OK') : 'Войти ⚙️',
-                            style: TextStyle(
-                              color: _isAuthenticated ? const Color(0xFF10B981) : Colors.orangeAccent,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
+                        GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                            ).then((_) {
+                              _loadData();
+                              _checkUpdates();
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: _isAuthenticated ? const Color(0xFF10B981).withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              _isAuthenticated ? (_loggedUser ?? 'Вход OK') : 'Войти ⚙️',
+                              style: TextStyle(
+                                color: _isAuthenticated ? const Color(0xFF10B981) : Colors.orangeAccent,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ),
                       ],
                     ),
-                    Text(
-                      _storeName ?? 'Магазин Gusar #1 (Центральный)',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            _storeName ?? 'Мағозаи намунавӣ (Тестӣ #3)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        const SizedBox(width: 2),
+                        const Icon(Icons.arrow_drop_down, color: Color(0xFF38BDF8), size: 16),
+                      ],
                     ),
                   ],
                 ),
@@ -644,13 +725,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _storage.deleteInvoice(doc.id);
       await _loadData();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Накладная №${doc.invoiceNumber} удалена из журнала'),
-            backgroundColor: Colors.redAccent,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        TopNotification.showSuccess(context, 'Накладная №${doc.invoiceNumber} удалена из журнала');
       }
       return true;
     }
@@ -692,12 +767,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _storage.clearAllInvoices();
       await _loadData();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Журнал накладных очищен'),
-            backgroundColor: Colors.redAccent,
-          ),
-        );
+        TopNotification.showSuccess(context, 'Журнал накладных очищен');
       }
     }
   }

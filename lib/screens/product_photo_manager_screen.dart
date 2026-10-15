@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/product.dart';
 import '../services/api_service.dart';
 import '../utils/image_utils.dart';
+import '../utils/top_notification.dart';
 import '../widgets/barcode_scanner_dialog.dart';
 
 class ProductPhotoManagerScreen extends StatefulWidget {
@@ -423,9 +424,7 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
         HapticFeedback.mediumImpact();
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка съёмки/выбора фото: $e'), backgroundColor: Colors.redAccent),
-      );
+      TopNotification.showError(context, 'Ошибка съёмки/выбора фото: $e');
     }
   }
 
@@ -475,24 +474,11 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
 
       if (mounted) {
         final bool onSite = updated?.imageUrl != null;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: onSite ? const Color(0xFF10B981) : Colors.amber.shade800,
-            content: Row(
-              children: [
-                Icon(onSite ? Icons.cloud_done_rounded : Icons.save_rounded, color: Colors.white),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    onSite
-                        ? 'Фото товара "${widget.product.name}" обновлено на сайте gusar.tj!'
-                        : 'Фото товара "${widget.product.name}" сохранено в приложении!',
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
+        if (onSite) {
+          TopNotification.showSuccess(context, 'Фото товара "${widget.product.name}" обновлено на сайте gusar.tj!');
+        } else {
+          TopNotification.showInfo(context, 'Фото товара "${widget.product.name}" сохранено в приложении!');
+        }
 
         if (updated != null) {
           widget.onPhotoUpdated(updated);
@@ -502,9 +488,7 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
     } catch (e) {
       setState(() => _isUploading = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка отправки фото: $e'), backgroundColor: Colors.redAccent),
-        );
+        TopNotification.showError(context, 'Ошибка отправки фото: $e');
       }
     }
   }

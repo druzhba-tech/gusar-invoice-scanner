@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/product.dart';
 import '../services/api_service.dart';
 import '../utils/image_utils.dart';
+import '../utils/top_notification.dart';
 import '../widgets/barcode_scanner_dialog.dart';
 
 class AddProductScreen extends StatefulWidget {
@@ -124,20 +125,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   void _checkDuplicateBarcode(String barcode) {
     for (var p in _api.cachedProducts) {
       if (p.barcode != null && p.barcode!.trim() == barcode.trim()) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.orange.shade800,
-            content: Row(
-              children: [
-                const Icon(Icons.info_outline, color: Colors.white),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('Товар с таким штрихкодом уже есть в базе:\n"${p.name}"'),
-                ),
-              ],
-            ),
-          ),
-        );
+        TopNotification.showWarning(context, 'Товар с таким штрихкодом уже есть в базе:\n"${p.name}"');
         break;
       }
     }
@@ -238,9 +226,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
         });
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка при загрузке фото: $e'), backgroundColor: Colors.redAccent),
-      );
+      TopNotification.showError(context, 'Ошибка при загрузке фото: $e');
     }
   }
 
@@ -384,26 +370,13 @@ class _AddProductScreenState extends State<AddProductScreen> {
       setState(() => _isSaving = false);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFF10B981),
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle_rounded, color: Colors.white),
-                const SizedBox(width: 8),
-                Expanded(child: Text('Товар "$name" успешно добавлен в базу!')),
-              ],
-            ),
-          ),
-        );
+        TopNotification.showSuccess(context, 'Товар "$name" успешно добавлен в базу!');
         Navigator.pop(context, created);
       }
     } catch (e) {
       setState(() => _isSaving = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка сохранения товара: $e'), backgroundColor: Colors.redAccent),
-        );
+        TopNotification.showError(context, 'Ошибка сохранения товара: $e');
       }
     }
   }
