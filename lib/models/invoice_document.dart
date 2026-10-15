@@ -60,6 +60,7 @@ class InvoiceDocument {
   int get discrepancyCount => items.where((i) => i.defectiveQuantity > 0 || (i.verifiedQuantity > 0 && i.verifiedQuantity != i.quantity)).length;
 
   bool get isReadyToReceive => unmatchedCount == 0 && mathErrorCount == 0;
+  bool get isDebt => paidAmount <= 0;
 
   Map<String, dynamic> toJson() {
     return {

@@ -20,9 +20,6 @@ class ApiService {
   String currentStoreName = 'База gusar.tj (Основной склад)';
   List<Map<String, dynamic>> accessibleStores = [];
 
-  String? lastSubmitError;
-  bool _isRefreshingToken = false;
-
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('api_base_url') ?? 'https://gusar.tj';
@@ -56,97 +53,6 @@ class ApiService {
         },
       ),
     );
-
-    // Перехватчик для автоматического обновления токена при 401 (Session Expired Shield)
-    _dio.interceptors.add(
-      InterceptorsWrapper(
-        onRequest: (options, handler) {
-          if (authToken != null && authToken!.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $authToken';
-          }
-          options.headers['X-Store-ID'] = currentStoreId.toString();
-          return handler.next(options);
-        },
-        onError: (DioException error, handler) async {
-          // Если токен протух (401), пробуем тихий вход с сохранёнными логином и паролем
-          if (error.response?.statusCode == 401 && !error.requestOptions.path.contains('/login')) {
-            final refreshed = await _trySilentReLogin();
-            if (refreshed) {
-              final opts = error.requestOptions;
-              opts.headers['Authorization'] = 'Bearer $authToken';
-              opts.headers['X-Store-ID'] = currentStoreId.toString();
-              try {
-                final retryResponse = await _dio.fetch(opts);
-                return handler.resolve(retryResponse);
-              } catch (retryErr) {
-                return handler.next(error);
-              }
-            }
-          }
-          return handler.next(error);
-        },
-      ),
-    );
-
-    // Фоновая синхронизация списка магазинов gusar.tj на старте
-    fetchStores().then((stores) {
-      if (stores.isNotEmpty) {
-        accessibleStores = stores;
-        SharedPreferences.getInstance().then((p) {
-          p.setString('accessible_stores_list', jsonEncode(stores));
-        });
-      }
-    }).catchError((_) {});
-  }
-
-  // Тихий перезапуск сессии при истечении срока JWT-токена
-  Future<bool> _trySilentReLogin() async {
-    if (_isRefreshingToken) return false;
-    _isRefreshingToken = true;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username');
-      final savedPass = prefs.getString('saved_password');
-
-      if (savedUser == null || savedPass == null || savedUser.isEmpty || savedPass.isEmpty) {
-        _isRefreshingToken = false;
-        return false;
-      }
-
-      final isolatedDio = Dio(BaseOptions(
-        baseUrl: baseUrl,
-        connectTimeout: const Duration(seconds: 10),
-        receiveTimeout: const Duration(seconds: 10),
-      ));
-
-      Response? response;
-      try {
-        response = await isolatedDio.post('/api/admin/login', data: {
-          'username': savedUser,
-          'password': savedPass,
-        });
-      } catch (_) {
-        response = await isolatedDio.post('/api/auth/login', data: {
-          'username': savedUser,
-          'password': savedPass,
-        });
-      }
-
-      if (response != null && (response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
-        final token = response.data['token']?.toString() ??
-            response.data['accessToken']?.toString() ??
-            response.data['data']?['token']?.toString();
-        if (token != null && token.isNotEmpty) {
-          updateToken(token);
-          _isRefreshingToken = false;
-          return true;
-        }
-      }
-    } catch (e) {
-      print('Silent re-login failed: $e');
-    }
-    _isRefreshingToken = false;
-    return false;
   }
 
   void updateToken(String token) async {
@@ -168,20 +74,23 @@ class ApiService {
     currentStoreId = id;
     currentStoreName = name;
     _cachedProducts = []; // ВАЖНО: очищаем память от товаров старого магазина!
+    _cachedSuppliers = []; // ВАЖНО: очищаем память от контрагентов старого магазина!
     _dio.options.headers['X-Store-ID'] = id.toString();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
     await prefs.setString('store_name', name);
     await prefs.remove('cached_products_list'); // Очищаем кэш старого магазина
+    await prefs.remove('cached_suppliers_list'); // Очищаем кэш контрагентов старого магазина
   }
 
   void updateStoreId(int id) async {
     currentStoreId = id;
     _cachedProducts = [];
-    _dio.options.headers['X-Store-ID'] = id.toString();
+    _cachedSuppliers = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('store_id', id);
     await prefs.remove('cached_products_list');
+    await prefs.remove('cached_suppliers_list');
   }
 
   // Загрузка подразделений/складов напрямую из базы gusar.tj (публичный + супер-админский эндпоинты)
@@ -212,7 +121,8 @@ class ApiService {
             final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1;
             final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
             final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
-            return {'id': id, 'name': name, 'address': address};
+            final subdomain = e['subdomain']?.toString() ?? '';
+            return {'id': id, 'name': name, 'address': address, 'subdomain': subdomain};
           }).toList();
           return list;
         }
@@ -264,11 +174,11 @@ class ApiService {
         // 1. Сначала подгружаем актуальный список всех магазинов базы gusar.tj
         final allStores = await fetchStores();
 
-        // 2. Извлекаем точный store_id пользователя
+        // 2. Извлекаем точный store_id пользователя из ответа логина
         int? userStoreId;
         String? userStoreName;
+        String? userRole = response.data['role']?.toString().toUpperCase();
 
-        // В ответе /api/admin/login store_id находится в корне: response.data['store_id']
         if (response.data['store_id'] != null) {
           userStoreId = int.tryParse(response.data['store_id'].toString());
         }
@@ -288,9 +198,69 @@ class ApiService {
               userStoreId = int.tryParse(rawUser['store']['id'].toString());
             }
           }
+          if (rawUser['role'] != null) {
+            userRole = rawUser['role'].toString().toUpperCase();
+          }
         }
 
-        // 3. Ищем правильное название магазина в общем справочнике магазинов
+        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/admin/me или /api/auth/me)
+        try {
+          Response? meResp;
+          try {
+            meResp = await _dio.get('/api/admin/me').timeout(const Duration(seconds: 4));
+          } catch (_) {
+            meResp = await _dio.get('/api/auth/me').timeout(const Duration(seconds: 4));
+          }
+          if (meResp != null && meResp.statusCode == 200 && meResp.data != null) {
+            final meData = meResp.data;
+            if (meData['store_id'] != null) {
+              userStoreId = int.tryParse(meData['store_id'].toString()) ?? userStoreId;
+            }
+            if (meData['role'] != null) {
+              userRole = meData['role'].toString().toUpperCase();
+            }
+            final meUser = meData['user'] ?? meData['data'];
+            if (meUser is Map) {
+              if (meUser['store_id'] != null) {
+                userStoreId = int.tryParse(meUser['store_id'].toString()) ?? userStoreId;
+              }
+              if (meUser['store_name'] != null && meUser['store_name'].toString().trim().isNotEmpty) {
+                userStoreName = meUser['store_name'].toString().trim();
+              }
+              if (meUser['store'] is Map) {
+                if (meUser['store']['id'] != null) {
+                  userStoreId = int.tryParse(meUser['store']['id'].toString()) ?? userStoreId;
+                }
+                if (meUser['store']['name'] != null) {
+                  userStoreName = meUser['store']['name'].toString().trim();
+                }
+              }
+              if (meUser['role'] != null) {
+                userRole = meUser['role'].toString().toUpperCase();
+              }
+            }
+          }
+        } catch (_) {}
+
+        // 4. Если store_id все еще не указан сервером, сопоставляем логин с подразделением/магазином (subdomain / имя)
+        if (userStoreId == null && allStores.isNotEmpty) {
+          final cleanUser = username.toLowerCase().trim();
+          final matched = allStores.firstWhere(
+            (s) {
+              final sub = (s['subdomain'] ?? '').toString().toLowerCase().trim();
+              final sName = (s['name'] ?? '').toString().toLowerCase().trim();
+              return (sub.isNotEmpty && (sub == cleanUser || cleanUser.contains(sub))) ||
+                     (sName.isNotEmpty && (sName.contains(cleanUser) || cleanUser.contains(sName)));
+            },
+            orElse: () => {},
+          );
+          if (matched.isNotEmpty && matched['id'] != null) {
+            userStoreId = matched['id'] as int;
+            userStoreName = matched['name'] as String;
+          }
+        }
+
+        // 5. Ищем точное название магазина в общем справочнике магазинов gusar.tj
         if (userStoreId != null && allStores.isNotEmpty) {
           final matched = allStores.firstWhere(
             (s) => (s['id'] as int) == userStoreId,
@@ -301,41 +271,40 @@ class ApiService {
           }
         }
 
-        final role = response.data['role']?.toString().toUpperCase();
-        final isSuperAdmin = role == 'SUPERADMIN' || role == 'OWNER' || (userStoreId == null && role != 'COURIER');
+        final isSuperAdmin = (userRole == 'SUPERADMIN' || userRole == 'OWNER') && userStoreId == null;
 
         int assignedStoreId;
         String assignedStoreName;
 
-        if (isSuperAdmin) {
-          // Для суперадмина доступны ВСЕ магазины сети gusar.tj
-          accessibleStores = allStores.isNotEmpty ? allStores : [
-            {'id': 1, 'name': 'Ашам Маркет', 'address': 'Основной склад'}
-          ];
-          assignedStoreId = accessibleStores.first['id'] as int;
-          assignedStoreName = accessibleStores.first['name'] as String;
-        } else if (userStoreId != null) {
+        if (userStoreId != null) {
           // Для сотрудника закрепляем строго ЕГО магазин
           assignedStoreId = userStoreId;
           assignedStoreName = userStoreName ?? 'Магазин gusar.tj #$userStoreId';
           accessibleStores = [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
-        } else {
-          assignedStoreId = allStores.isNotEmpty ? (allStores.first['id'] as int) : currentStoreId;
-          assignedStoreName = allStores.isNotEmpty ? (allStores.first['name'] as String) : currentStoreName;
+        } else if (isSuperAdmin) {
+          // Для подтвержденного суперадмина без склада открываем каталог
           accessibleStores = allStores.isNotEmpty ? allStores : [
+            {'id': 1, 'name': 'Ашам Маркет', 'address': 'Основной склад'}
+          ];
+          assignedStoreId = accessibleStores.first['id'] as int;
+          assignedStoreName = accessibleStores.first['name'] as String;
+        } else {
+          assignedStoreId = allStores.isNotEmpty ? (allStores.first['id'] as int) : 1;
+          assignedStoreName = allStores.isNotEmpty ? (allStores.first['name'] as String) : 'Склад gusar.tj';
+          accessibleStores = [
             {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
           ];
         }
 
-        // Обновляем текущий магазин и сбрасываем кэш товаров старого магазина!
+        // ВАЖНО: Обновляем текущий магазин и сбрасываем кэш товаров и поставщиков старого магазина!
         await updateStore(assignedStoreId, assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
         return {
           'success': true,
-          'message': 'Добро пожаловать! Доступ открыт к магазину: $assignedStoreName',
+          'message': 'Добро пожаловать! Открыт магазин: $assignedStoreName',
           'store_name': assignedStoreName,
         };
       }
@@ -373,16 +342,23 @@ class ApiService {
   Future<void> logout() async {
     authToken = null;
     _cachedProducts = [];
+    _cachedSuppliers = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
     await prefs.setBool('is_authenticated', false);
+    await prefs.remove('logged_username');
+    await prefs.remove('store_id');
+    await prefs.remove('store_name');
     await prefs.remove('cached_products_list');
+    await prefs.remove('cached_suppliers_list');
     await prefs.remove('accessible_stores_list');
     final keepPassword = prefs.getBool('remember_credentials') ?? false;
     if (!keepPassword) {
       await prefs.remove('saved_password');
     }
     _dio.options.headers.remove('Authorization');
+    _dio.options.headers.remove('X-Store-ID');
+  }
   }
 
   List<Product> _cachedProducts = [];
@@ -711,16 +687,7 @@ class ApiService {
   List<Supplier> _cachedSuppliers = [];
   List<Supplier> get cachedSuppliers => _cachedSuppliers;
 
-  final List<Supplier> _seedSuppliers = [
-    Supplier(id: 1, storeId: 1, name: 'ООО «Оби Зулол»', contact: '+992 90 000 1122', inn: '010023456', address: 'г. Душанбе'),
-    Supplier(id: 2, storeId: 1, name: 'ЧДММ «Кока-Кола Таджикистан»', contact: '+992 91 888 7766', inn: '020034567', address: 'г. Душанбе, ул. Джами'),
-    Supplier(id: 3, storeId: 1, name: 'ЧДММ «Шири Душанбе»', contact: '+992 93 555 4433', inn: '030045678', address: 'г. Душанбе'),
-    Supplier(id: 4, storeId: 1, name: 'ООО «Шоколадная Фабрика»', contact: '+992 98 777 6655', inn: '040056789', address: 'г. Худжанд'),
-    Supplier(id: 5, storeId: 1, name: 'ИП «Алиев» (Дистрибьютор бакалеи)', contact: '+992 92 111 2233', inn: '050067890', address: 'г. Душанбе'),
-    Supplier(id: 6, storeId: 1, name: 'ООО «Фаровон» (Мука и масло)', contact: '+992 93 222 3344', inn: '060078901', address: 'г. Душанбе'),
-  ];
-
-  // 4. Получение актуального списка контрагентов из базы магазина на gusar.tj
+  // 4. Получение актуального списка контрагентов из базы магазина на gusar.tj (СТРОГО из базы магазина)
   Future<List<Supplier>> getSuppliers({bool forceRefresh = false}) async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -732,13 +699,14 @@ class ApiService {
     if (localJson != null && _cachedSuppliers.isEmpty && !forceRefresh) {
       try {
         final list = jsonDecode(localJson) as List;
-        final sups = list
-            .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
-            .where((s) => s.id > 0 && s.id < 1000000)
-            .toList();
-        if (sups.isNotEmpty) {
-          _cachedSuppliers = sups;
-          return _cachedSuppliers;
+        final sups = list.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
+        // Защита от старых тестовых сидов: если обнаружены старые заглушки, очищаем кэш!
+        final hasLegacySeeds = sups.any((s) => s.name.contains('Оби Зулол') || s.name.contains('Кока-Кола Таджикистан') || s.name.contains('Шири Душанбе'));
+        if (!hasLegacySeeds && sups.isNotEmpty) {
+          _cachedSuppliers = sups.where((s) => s.storeId == currentStoreId).toList();
+          if (_cachedSuppliers.isNotEmpty) return _cachedSuppliers;
+        } else if (hasLegacySeeds) {
+          await prefs.remove('cached_suppliers_list');
         }
       } catch (_) {}
     }
@@ -747,13 +715,6 @@ class ApiService {
       Response? response;
       try {
         response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
-      } on DioException catch (e) {
-        if (e.response?.statusCode == 401) {
-          await _trySilentReLogin();
-          response = await _dio.get('/api/suppliers', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
-        } else {
-          rethrow;
-        }
       } catch (_) {
         response = await _dio.get('/api/contractors', queryParameters: {'store_id': currentStoreId}).timeout(const Duration(seconds: 8));
       }
@@ -772,10 +733,7 @@ class ApiService {
         }
 
         if (items.isNotEmpty) {
-          _cachedSuppliers = items
-              .map((s) => Supplier.fromJson(s as Map<String, dynamic>))
-              .where((s) => s.id > 0 && s.id < 1000000)
-              .toList();
+          _cachedSuppliers = items.map((s) => Supplier.fromJson(s as Map<String, dynamic>)).toList();
           await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
           return _cachedSuppliers;
         }
@@ -784,9 +742,7 @@ class ApiService {
       print('Fetch suppliers error: $e');
     }
 
-    if (_cachedSuppliers.isEmpty) {
-      _cachedSuppliers = List.from(_seedSuppliers);
-    }
+    // Никаких заглушек: строго реальные поставщики базы gusar.tj
     return _cachedSuppliers;
   }
 
@@ -808,7 +764,7 @@ class ApiService {
     return matches;
   }
 
-  // 5. Создание нового контрагента в базе магазина на gusar.tj
+  // 5. Создание нового контрагента в базе магазина на сервере gusar.tj
   Future<Supplier?> createSupplier(String name, {String? contact, String? address, String? inn}) async {
     final cleanName = name.trim();
     if (cleanName.isEmpty) return null;
@@ -824,44 +780,38 @@ class ApiService {
       }).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        if (response.data is Map<String, dynamic>) {
-          final parsed = Supplier.fromJson(response.data as Map<String, dynamic>);
-          if (parsed.id > 0 && parsed.id < 1000000) {
-            created = parsed;
-          }
+        final data = response.data is Map ? (response.data['supplier'] ?? response.data['data'] ?? response.data) : response.data;
+        if (data is Map<String, dynamic>) {
+          created = Supplier.fromJson(data);
         }
       }
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 401) {
-        final relogOk = await _trySilentReLogin();
-        if (relogOk) {
-          return createSupplier(name, contact: contact, address: address, inn: inn);
-        }
-      }
-    } catch (_) {}
-
-    // Кэшируем только реальные валидные серверные ID
-    if (created != null && created.id > 0 && created.id < 1000000) {
-      _cachedSuppliers.removeWhere((s) => s.id == created!.id || s.name.trim().toLowerCase() == cleanName.toLowerCase());
-      _cachedSuppliers.insert(0, created);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.where((s) => s.id > 0 && s.id < 1000000).map((s) => s.toJson()).toList()));
+    } catch (e) {
+      print('Create supplier server error: $e');
     }
 
+    created ??= Supplier(
+      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      storeId: currentStoreId,
+      name: cleanName,
+      contact: contact?.trim(),
+      inn: inn?.trim(),
+      address: address?.trim(),
+    );
+
+    _cachedSuppliers.removeWhere((s) => s.id == created!.id);
+    _cachedSuppliers.insert(0, created);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cached_suppliers_list', jsonEncode(_cachedSuppliers.map((s) => s.toJson()).toList()));
     return created;
   }
 
   // 6. Проверка на дубликат накладной
   Future<bool> checkInvoiceExists(String invoiceNumber, int? supplierId) async {
-    final clean = invoiceNumber.trim().toLowerCase();
-    if (clean.isEmpty) return false;
     try {
-      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': currentStoreId});
+      final response = await _dio.get('/api/purchases');
       if (response.statusCode == 200 && response.data is List) {
         for (var p in response.data) {
-          final invNum = p['invoice_number']?.toString().trim().toLowerCase() ?? '';
-          final notes = p['notes']?.toString().trim().toLowerCase() ?? '';
-          if (invNum == clean || (notes.isNotEmpty && notes.contains(clean))) {
+          if (p['notes'] != null && p['notes'].toString().contains(invoiceNumber)) {
             return true;
           }
         }
@@ -872,152 +822,41 @@ class ApiService {
     }
   }
 
-  // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj
+  // 7. Отправка приходной накладной и прямое зачисление в остатки
   Future<bool> submitPurchase(InvoiceDocument document) async {
-    lastSubmitError = null;
     try {
-      // 1. Проверяем и валидируем контрагента:
-      int? verifiedSupplierId;
-      final rawSupName = document.supplierName.trim();
-
-      // Санитизация: если в документе локальный псевдо-ID (>= 1,000,000 или <= 0), обнуляем
-      if (document.supplierId != null && (document.supplierId! <= 0 || document.supplierId! >= 1000000)) {
-        document.supplierId = null;
-      }
-
-      // Всегда опрашиваем сервер для получения актуального и достоверного списка контрагентов
-      List<Supplier> serverSuppliers = [];
-      try {
-        serverSuppliers = await getSuppliers(forceRefresh: true);
-      } catch (_) {
-        serverSuppliers = _cachedSuppliers.where((s) => s.id > 0 && s.id < 1000000).toList();
-      }
-
-      // Функция нормализации для надёжного сопоставления (без кавычек, скобок, пробелов)
-      String norm(String s) => s.toLowerCase().replaceAll(RegExp(r'["«»„“\s\-\.\,\(\)]+'), '');
-
-      // А) Если в документе уже был ID, проверяем его реальное наличие в базе магазина
-      if (document.supplierId != null && document.supplierId! > 0 && document.supplierId! < 1000000) {
-        final exists = serverSuppliers.any((s) => s.id == document.supplierId);
-        if (exists) {
-          verifiedSupplierId = document.supplierId;
-        }
-      }
-
-      // Б) Если ID не подтвержден, ищем по нормализованному названию среди контрагентов базы
-      if (verifiedSupplierId == null && rawSupName.isNotEmpty) {
-        final targetNorm = norm(rawSupName);
-        for (final s in serverSuppliers) {
-          if (s.id > 0 && s.id < 1000000) {
-            final sNorm = norm(s.name);
-            if (sNorm == targetNorm || (targetNorm.length > 3 && (sNorm.contains(targetNorm) || targetNorm.contains(sNorm)))) {
-              verifiedSupplierId = s.id;
-              document.supplierId = s.id;
-              break;
-            }
-          }
-        }
-
-        // В) Если контрагента еще нет в базе gusar.tj, создаем его на сервере прямо сейчас
-        if (verifiedSupplierId == null) {
-          try {
-            final newSup = await createSupplier(rawSupName);
-            if (newSup != null && newSup.id > 0 && newSup.id < 1000000) {
-              verifiedSupplierId = newSup.id;
-              document.supplierId = newSup.id;
-            }
-          } catch (_) {}
-        }
-      }
-
-      // Г) ЖЕЛЕЗНОЕ ПРАВИЛО: если контрагент не подтвержден в PostgreSQL, передаем null!
-      // В схеме createPurchaseSchema поле supplier_id опционально и nullable,
-      // транзакция пройдет 100% без ошибки purchases_supplier_id_fkey, остатки зачислятся,
-      // а имя поставщика будет зафиксировано в поле notes.
-
-      // 2. Гарантируем, что каждый товар привязан к реальному ID в базе магазина
-      final List<Map<String, dynamic>> itemsPayload = [];
-      for (var item in document.items) {
-        int? productId = item.matchedProductId;
-
-        // Если товар не привязан к базе gusar.tj, создаем его карточку прямо в базе!
-        if (productId == null || productId <= 0) {
-          try {
-            final newProd = await createProduct(
-              name: item.rawName.trim(),
-              barcode: item.barcode ?? item.matchedBarcode ?? '',
-              price: item.currentRetailPrice ?? (item.buyPrice > 0 ? (item.buyPrice * 1.25) : 10.0),
-              costPrice: item.buyPrice > 0 ? item.buyPrice : 1.0,
-              unit: item.unit.isNotEmpty ? item.unit : 'шт',
-            );
-            if (newProd != null && newProd.id > 0) {
-              productId = newProd.id;
-              item.matchedProductId = newProd.id;
-            }
-          } catch (createErr) {
-            print('Auto-create product error: $createErr');
-          }
-        }
-
-        if (productId != null && productId > 0) {
-          final rawQty = item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity;
-          final double cleanQty = double.tryParse(rawQty.toStringAsFixed(3)) ?? rawQty;
-          final double cleanBuy = item.buyPrice > 0 ? double.tryParse(item.buyPrice.toStringAsFixed(2)) ?? item.buyPrice : 0.01;
-          final double? cleanRetail = item.currentRetailPrice != null && item.currentRetailPrice! > 0
-              ? double.tryParse(item.currentRetailPrice!.toStringAsFixed(2))
-              : null;
-
-          itemsPayload.add({
-            'product_id': productId,
-            'quantity': cleanQty > 0 ? cleanQty : 1.0,
-            'buy_price': cleanBuy,
-            if (cleanRetail != null) 'retail_price': cleanRetail,
-            if (cleanRetail != null) 'sell_price': cleanRetail,
-          });
-        }
-      }
-
-      if (itemsPayload.isEmpty) {
-        lastSubmitError = 'Нет привязанных товаров для оприходования.';
-        return false;
-      }
-
-      final cleanInvNum = document.invoiceNumber.trim().isNotEmpty
-          ? document.invoiceNumber.trim()
-          : 'НАК-${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+      final isDebt = document.paidAmount <= 0;
+      final invNum = document.invoiceNumber.trim();
+      final double total = document.totalAmount > 0 ? document.totalAmount : document.calculatedTotal;
+      final double paid = isDebt ? 0.0 : document.paidAmount;
 
       final purchasePayload = {
         'store_id': currentStoreId,
-        'supplier_id': verifiedSupplierId,
-        'invoice_number': cleanInvNum,
-        'date': document.invoiceDate.toIso8601String(),
-        'total_amount': document.totalAmount > 0 ? document.totalAmount : document.calculatedTotal,
-        'paid_amount': document.paidAmount,
-        'notes': 'Накладная №$cleanInvNum от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName})',
-        'items': itemsPayload,
+        'supplier_id': document.supplierId,
+        // Передаем распознанный номер бумажной накладной во все возможные поля бэкенда:
+        'invoice_number': invNum,
+        'invoice_no': invNum,
+        'incoming_invoice_number': invNum,
+        'incoming_number': invNum,
+        'total_amount': total,
+        // Если выбрано в долг — ячейка оплаты пустая (null/0)
+        'paid_amount': isDebt ? null : paid,
+        'payment_status': isDebt ? 'debt' : (paid >= total ? 'paid' : 'partial'),
+        'is_debt': isDebt ? 1 : 0,
+        'notes': 'Накладная №${invNum.isNotEmpty ? invNum : "Б/Н"} от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ / НЕ ОПЛАЧЕНО" : "ОПЛАЧЕНО: " + paid.toStringAsFixed(2) + " TJS"}]',
+        'items': document.items.map((item) {
+          return {
+            'product_id': item.matchedProductId,
+            'quantity': (item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity).toInt(),
+            'buy_price': item.buyPrice,
+          };
+        }).toList(),
       };
 
       final response = await _dio.post('/api/purchases', data: purchasePayload);
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return true;
-      } else {
-        lastSubmitError = response.data?['error']?.toString() ?? response.data?['message']?.toString() ?? 'Ошибка сервера ${response.statusCode}';
-        return false;
-      }
-    } on DioException catch (dioErr) {
-      if (dioErr.response?.statusCode == 401) {
-        final relogOk = await _trySilentReLogin();
-        if (relogOk) {
-          return submitPurchase(document);
-        }
-      }
-      final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
-      lastSubmitError = serverMsg?.toString() ?? dioErr.message ?? 'Ошибка сети при отправке накладной';
-      print('Submit purchase dio error: $lastSubmitError');
-      return false;
+      return response.statusCode == 200 || response.statusCode == 201;
     } catch (e) {
-      lastSubmitError = e.toString();
       print('Submit purchase error: $e');
       return false;
     }

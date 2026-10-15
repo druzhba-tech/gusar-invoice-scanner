@@ -16,7 +16,7 @@ class OcrService {
 
   static String get defaultGeminiKey {
     try {
-      return utf8.decode(base64.decode('QVEuQWI4Uk42S0tJTElHUEVxM093TVJnNzh3TmpESkl5WGdXVmZmZ2M0aW52RldjR05yUQ=='));
+      return utf8.decode(base64.decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
     } catch (_) {
       return '';
     }
@@ -266,8 +266,6 @@ class OcrService {
 
       // Используем стабильные и скоростные модели с высоким лимитом
       final candidateModels = [
-        'gemini-3.8-flash',
-        'gemini-2.5-flash',
         'gemini-3.5-flash-lite',
         'gemini-3.1-flash-lite',
         'gemini-3.6-flash',

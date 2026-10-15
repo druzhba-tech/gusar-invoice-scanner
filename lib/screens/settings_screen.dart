@@ -52,7 +52,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   static String get defaultGeminiKey {
     try {
-      return utf8.decode(base64.decode('QVEuQWI4Uk42S0tJTElHUEVxM093TVJnNzh3TmpESkl5WGdXVmZmZ2M0aW52RldjR05yUQ=='));
+      return utf8.decode(base64.decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
     } catch (_) {
       return '';
     }
@@ -105,6 +105,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _fetchStoresFromGusar({bool silent = false}) async {
+    // Если сотрудник привязан к своему магазину, жестко фиксируем его склад!
+    if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.length == 1) {
+      final s = _api.accessibleStores.first;
+      final int sId = s['id'] is int ? s['id'] as int : int.tryParse(s['id']?.toString() ?? '1') ?? 1;
+      final String sName = s['name']?.toString() ?? 'Магазин сотрудника';
+      setState(() {
+        _selectedStoreId = sId;
+        _selectedStoreName = sName;
+        _availableStores = [StoreOption(id: sId, name: sName, address: 'Магазин сотрудника')];
+      });
+      return;
+    }
+
     setState(() => _isSyncingStores = true);
     final stores = await _api.fetchStores();
     setState(() => _isSyncingStores = false);
@@ -119,7 +132,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _availableStores = newOptions;
         if (!_availableStores.any((s) => s.id == _selectedStoreId)) {
-          // Если текущий ID найден в списке - сохраняем его правильное имя
           final found = _availableStores.firstWhere((s) => s.id == _selectedStoreId, orElse: () => _availableStores.first);
           _selectedStoreId = found.id;
           _selectedStoreName = found.name;
@@ -128,7 +140,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedStoreName = found.name;
         }
       });
-      await _api.updateStore(_selectedStoreId, _selectedStoreName);
 
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

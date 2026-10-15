@@ -1026,7 +1026,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 address: addrCtrl.text.trim(),
                 inn: innCtrl.text.trim(),
               );
-              if (created != null && created.id > 0 && created.id < 1000000) {
+              if (created != null) {
                 final oldName = _doc.supplierName;
                 setState(() {
                   _doc.supplierId = created.id;
@@ -1038,23 +1038,8 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан (ID: ${created.id})!'),
+                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан!'),
                       backgroundColor: const Color(0xFF10B981),
-                    ),
-                  );
-                }
-              } else {
-                setState(() {
-                  _doc.supplierId = null;
-                  _doc.supplierName = newName;
-                });
-                Navigator.pop(dlgCtx);
-                await _saveAndRefresh();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('✅ Поставщик сохранён: "$newName" (будет синхронизирован при оприходовании).'),
-                      backgroundColor: const Color(0xFF0284C7),
                     ),
                   );
                 }
@@ -1078,71 +1063,381 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       return;
     }
 
+    // ЖЁСТКОЕ ПРАВИЛО: Контрагент ОБЯЗАТЕЛЬНО должен быть из базы gusar.tj текущего магазина!
     if (_doc.supplierId == null) {
-      final chooseSupplier = await showDialog<bool>(
+      final pickNow = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1E293B),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Row(
             children: [
-              Icon(Icons.info_outline, color: Color(0xFFF59E0B)),
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444)),
               SizedBox(width: 8),
-              Expanded(child: Text('Контрагент не из базы', style: TextStyle(color: Colors.white, fontSize: 16))),
+              Expanded(
+                child: Text('Контрагент не из базы!', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
             ],
           ),
-          content: Text(
-            'Контрагент «${_doc.supplierName}» ещё не привязан к справочнику магазина. Рекомендуется выбрать контрагента из базы gusar.tj для точного учёта взаиморасчетов.',
-            style: const TextStyle(color: Colors.white70),
+          content: const Text(
+            'Действует строгое правило: накладную можно оприходовать ТОЛЬКО с контрагентом из базы магазина gusar.tj.\n\nПожалуйста, выберите поставщика из списка или создайте его на сервере прямо сейчас.',
+            style: TextStyle(color: Colors.white70, fontSize: 14),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Оприходовать как есть', style: TextStyle(color: Colors.white54)),
+              child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Выбрать контрагента', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Text('Выбрать / Создать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
       );
 
-      if (chooseSupplier == true) {
+      if (pickNow == true) {
         _showCounterpartyPicker();
-        return;
       }
+      return;
     }
 
-    final confirm = await showDialog<bool>(
+    final double totalInvoiceSum = _doc.totalAmount > 0 ? _doc.totalAmount : _doc.calculatedTotal;
+
+    // Модальное окно статуса оплаты: Оплачено (ввод суммы) или В долг (пустая ячейка)
+    final paymentResult = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Оприходовать в остатки?', style: TextStyle(color: Colors.white)),
-        content: Text(
-          'Товары (${_doc.items.length} поз.) на сумму ${_doc.totalAmount.toStringAsFixed(2)} TJS будут зачислены на баланс ${_api.currentStoreName} (Контрагент: ${_doc.supplierName}) в системе gusar.tj.',
-          style: const TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Подтвердить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (bSheetCtx) {
+        bool isDebtSelected = _doc.paidAmount <= 0 && _doc.status != DocumentStatus.draft;
+        final payAmountCtrl = TextEditingController(
+          text: isDebtSelected ? '' : (_doc.paidAmount > 0 ? _doc.paidAmount.toStringAsFixed(2) : totalInvoiceSum.toStringAsFixed(2)),
+        );
+        final invoiceNumCtrl = TextEditingController(text: _doc.invoiceNumber);
+
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Container(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                top: 20,
+                left: 20,
+                right: 20,
+              ),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1E293B),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(Icons.receipt_long_rounded, color: Color(0xFF10B981), size: 24),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Оприходование и статус оплаты',
+                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
+                              Text(
+                                '${_api.currentStoreName} • ${_doc.supplierName}',
+                                style: const TextStyle(color: Colors.white60, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Сводка по сумме
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Итого к оплате:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                          Text(
+                            '${totalInvoiceSum.toStringAsFixed(2)} TJS',
+                            style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Номер бумажной накладной (сохраняется в отдельной колонке рядом в gusar.tj)
+                    const Text(
+                      'Номер бумажной накладной (из сканера):',
+                      style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: invoiceNumCtrl,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFF0F172A),
+                        prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF38BDF8), size: 18),
+                        hintText: 'Например: 458-Б или №1024',
+                        hintStyle: const TextStyle(color: Colors.white38),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    const Text(
+                      'Статус расчёта с поставщиком:',
+                      style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Выбор: Оплачено или В долг
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () {
+                              setModalState(() {
+                                isDebtSelected = false;
+                                if (payAmountCtrl.text.trim().isEmpty) {
+                                  payAmountCtrl.text = totalInvoiceSum.toStringAsFixed(2);
+                                }
+                              });
+                            },
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                              decoration: BoxDecoration(
+                                color: !isDebtSelected ? const Color(0xFF10B981).withOpacity(0.18) : const Color(0xFF0F172A),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: !isDebtSelected ? const Color(0xFF10B981) : Colors.white12,
+                                  width: !isDebtSelected ? 1.8 : 1.0,
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_rounded,
+                                    color: !isDebtSelected ? const Color(0xFF10B981) : Colors.white38,
+                                    size: 24,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Накладная оплачена',
+                                    style: TextStyle(
+                                      color: !isDebtSelected ? Colors.white : Colors.white60,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () {
+                              setModalState(() {
+                                isDebtSelected = true;
+                                payAmountCtrl.clear();
+                              });
+                            },
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                              decoration: BoxDecoration(
+                                color: isDebtSelected ? const Color(0xFFEF4444).withOpacity(0.18) : const Color(0xFF0F172A),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: isDebtSelected ? const Color(0xFFEF4444) : Colors.white12,
+                                  width: isDebtSelected ? 1.8 : 1.0,
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.hourglass_bottom_rounded,
+                                    color: isDebtSelected ? const Color(0xFFEF4444) : Colors.white38,
+                                    size: 24,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Взято в долг',
+                                    style: TextStyle(
+                                      color: isDebtSelected ? Colors.white : Colors.white60,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Поле суммы оплаты (если оплачено) ИЛИ инфо о пустой ячейке (если в долг)
+                    if (!isDebtSelected) ...[
+                      const Text(
+                        'Сумма фактической оплаты (сомони):',
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: payAmountCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          prefixIcon: const Icon(Icons.payments_outlined, color: Color(0xFF10B981)),
+                          suffixText: 'сомони',
+                          suffixStyle: const TextStyle(color: Colors.white54),
+                          hintText: 'Введите сумму оплаты',
+                          hintStyle: const TextStyle(color: Colors.white38),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          InkWell(
+                            onTap: () => payAmountCtrl.text = totalInvoiceSum.toStringAsFixed(2),
+                            child: const Text('Вся сумма (100%)', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(width: 16),
+                          InkWell(
+                            onTap: () => payAmountCtrl.text = (totalInvoiceSum / 2).toStringAsFixed(2),
+                            child: const Text('Частично (50%)', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEF4444).withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.info_outline, color: Color(0xFFEF4444), size: 20),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Ячейка оплаты остаётся пустой (0.00 TJS).\nТовары поступят на баланс магазина, а долг перед контрагентом зафиксируется в gusar.tj.',
+                                style: TextStyle(color: Colors.white, fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: 24),
+
+                    // Кнопки действий
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton(
+                            onPressed: () => Navigator.pop(bSheetCtx),
+                            child: const Text('Отмена', style: TextStyle(color: Colors.white60)),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF10B981),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            onPressed: () {
+                              double finalPaid = 0.0;
+                              if (!isDebtSelected) {
+                                final text = payAmountCtrl.text.replaceAll(',', '.').trim();
+                                finalPaid = double.tryParse(text) ?? totalInvoiceSum;
+                              }
+                              Navigator.pop(bSheetCtx, {
+                                'is_debt': isDebtSelected,
+                                'paid_amount': finalPaid,
+                                'invoice_number': invoiceNumCtrl.text.trim(),
+                              });
+                            },
+                            child: const Text(
+                              'Подтвердить и оприходовать',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
 
-    if (confirm != true) return;
+    if (paymentResult == null) return;
 
-    // Гарантированная санитаризация: сбрасываем старые псевдо-ID перед отправкой
-    if (_doc.supplierId != null && (_doc.supplierId! <= 0 || _doc.supplierId! >= 1000000)) {
-      _doc.supplierId = null;
-    }
+    final String finalInvoiceNum = (paymentResult['invoice_number'] as String?) ?? '';
+    final double finalPaidAmount = (paymentResult['paid_amount'] as double?) ?? 0.0;
 
-    setState(() => _isSubmitting = true);
+    setState(() {
+      if (finalInvoiceNum.isNotEmpty) {
+        _doc.invoiceNumber = finalInvoiceNum;
+      }
+      _doc.paidAmount = finalPaidAmount;
+      _isSubmitting = true;
+    });
+
+    await _storage.saveInvoice(_doc);
     final success = await _api.submitPurchase(_doc);
     setState(() => _isSubmitting = false);
 
@@ -1195,11 +1490,9 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Text('Сохранено в офлайн-очередь', style: TextStyle(color: Colors.white, fontSize: 16)),
               ],
             ),
-            content: Text(
-              _api.lastSubmitError != null
-                  ? '${_api.lastSubmitError}\n\nНакладная сохранена локально и будет отправлена автоматически, как только появится связь.'
-                  : 'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
-              style: const TextStyle(color: Colors.white70),
+            content: const Text(
+              'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
+              style: TextStyle(color: Colors.white70),
             ),
             actions: [
               ElevatedButton(
@@ -1327,25 +1620,17 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                                           decoration: BoxDecoration(
-                                            color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
+                                            color: _doc.supplierId != null
                                                 ? const Color(0xFF10B981).withOpacity(0.2)
-                                                : (_doc.supplierName.trim().isNotEmpty)
-                                                    ? const Color(0xFF38BDF8).withOpacity(0.2)
-                                                    : const Color(0xFFF59E0B).withOpacity(0.2),
+                                                : const Color(0xFFF59E0B).withOpacity(0.2),
                                             borderRadius: BorderRadius.circular(4),
                                           ),
                                           child: Text(
-                                            (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
+                                            _doc.supplierId != null
                                                 ? 'В БАЗЕ GUSAR.TJ (ID: ${_doc.supplierId})'
-                                                : (_doc.supplierName.trim().isNotEmpty)
-                                                    ? 'АВТО-ПРИВЯЗКА В GUSAR.TJ'
-                                                    : 'НЕ ПРИВЯЗАН К БАЗЕ',
+                                                : 'НЕ ПРИВЯЗАН К БАЗЕ',
                                             style: TextStyle(
-                                              color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
-                                                  ? const Color(0xFF10B981)
-                                                  : (_doc.supplierName.trim().isNotEmpty)
-                                                      ? const Color(0xFF38BDF8)
-                                                      : const Color(0xFFF59E0B),
+                                              color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
                                             ),
@@ -1419,6 +1704,13 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                       const SizedBox(height: 12),
                       Row(
                         children: [
+                          if (_doc.isSynchronized) ...[
+                            _chip(
+                              _doc.isDebt ? '⏳ В долг (0 TJS)' : '💳 Оплачено (${_doc.paidAmount.toStringAsFixed(2)} TJS)',
+                              _doc.isDebt ? Colors.redAccent : const Color(0xFF10B981),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           _chip('${_doc.matchedCount}/${_doc.items.length} привязано',
                               _doc.unmatchedCount == 0 ? const Color(0xFF10B981) : const Color(0xFFF59E0B)),
                           const SizedBox(width: 8),

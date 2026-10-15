@@ -42,7 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
     final localDocs = await _storage.getLocalInvoices();
-    String storeName = prefs.getString('store_name') ?? _api.currentStoreName;
+    String storeName = _api.currentStoreName.isNotEmpty ? _api.currentStoreName : (prefs.getString('store_name') ?? 'Склад gusar.tj');
     final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
     final isAuth = prefs.getBool('is_authenticated') ?? false;
 
