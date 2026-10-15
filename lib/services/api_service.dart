@@ -388,7 +388,7 @@ class ApiService {
 
         // Предварительно загружаем актуальных поставщиков и каталог товаров в фоне
         getSuppliers(forceRefresh: true).catchError((_) => <Supplier>[]);
-        fetchProducts().catchError((_) => <Product>[]);
+        getProducts().catchError((_) => <Product>[]);
 
         return {
           'success': true,
