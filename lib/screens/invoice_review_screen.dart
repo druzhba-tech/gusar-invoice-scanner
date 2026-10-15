@@ -1026,7 +1026,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 address: addrCtrl.text.trim(),
                 inn: innCtrl.text.trim(),
               );
-              if (created != null) {
+              if (created != null && created.id > 0 && created.id < 1000000) {
                 final oldName = _doc.supplierName;
                 setState(() {
                   _doc.supplierId = created.id;
@@ -1038,8 +1038,23 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан!'),
+                      content: Text('✅ Контрагент "${created.name}" создан в базе и привязан (ID: ${created.id})!'),
                       backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                }
+              } else {
+                setState(() {
+                  _doc.supplierId = null;
+                  _doc.supplierName = newName;
+                });
+                Navigator.pop(dlgCtx);
+                await _saveAndRefresh();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ Поставщик сохранён: "$newName" (будет синхронизирован при оприходовании).'),
+                      backgroundColor: const Color(0xFF0284C7),
                     ),
                   );
                 }
@@ -1434,6 +1449,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         _doc.invoiceNumber = finalInvoiceNum;
       }
       _doc.paidAmount = finalPaidAmount;
+      // Гарантированная санитаризация: сбрасываем старые псевдо-ID перед отправкой
+      if (_doc.supplierId != null && (_doc.supplierId! <= 0 || _doc.supplierId! >= 1000000)) {
+        _doc.supplierId = null;
+      }
       _isSubmitting = true;
     });
 
@@ -1490,9 +1509,11 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 Text('Сохранено в офлайн-очередь', style: TextStyle(color: Colors.white, fontSize: 16)),
               ],
             ),
-            content: const Text(
-              'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
-              style: TextStyle(color: Colors.white70),
+            content: Text(
+              _api.lastSubmitError != null
+                  ? '${_api.lastSubmitError}\n\nНакладная сохранена локально и будет отправлена автоматически, как только появится связь.'
+                  : 'Связь с gusar.tj временно недоступна. Накладная сохранена локально и будет отправлена автоматически, как только появится интернет.',
+              style: const TextStyle(color: Colors.white70),
             ),
             actions: [
               ElevatedButton(
@@ -1620,17 +1641,17 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                                           decoration: BoxDecoration(
-                                            color: _doc.supplierId != null
+                                            color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
                                                 ? const Color(0xFF10B981).withOpacity(0.2)
                                                 : const Color(0xFFF59E0B).withOpacity(0.2),
                                             borderRadius: BorderRadius.circular(4),
                                           ),
                                           child: Text(
-                                            _doc.supplierId != null
+                                            (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000)
                                                 ? 'В БАЗЕ GUSAR.TJ (ID: ${_doc.supplierId})'
                                                 : 'НЕ ПРИВЯЗАН К БАЗЕ',
                                             style: TextStyle(
-                                              color: _doc.supplierId != null ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                                              color: (_doc.supplierId != null && _doc.supplierId! > 0 && _doc.supplierId! < 1000000) ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
                                             ),

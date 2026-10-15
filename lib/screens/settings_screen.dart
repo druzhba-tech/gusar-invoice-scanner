@@ -52,7 +52,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   static String get defaultGeminiKey {
     try {
-      return utf8.decode(base64.decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
+      return utf8.decode(base64.decode('QVEuQWI4Uk42S0tJTElHUEVxM093TVJnNzh3TmpESkl5WGdXVmZmZ2M0aW52RldjR05yUQ=='));
     } catch (_) {
       return '';
     }
