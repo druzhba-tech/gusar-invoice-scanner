@@ -39,7 +39,7 @@ class ImageUtils {
     try {
       int rotateAngle = 0;
 
-      // 1. Быстрая проверка угла строк текста через нативный C++ ML Kit (без декодирования пикселей в Dart)
+      // 1. Проверка угла строк текста через нативный ML Kit
       if (recognizer != null) {
         try {
           final inputImage = InputImage.fromFile(sourceFile);
@@ -53,9 +53,9 @@ class ImageUtils {
           for (final block in recognizedText.blocks) {
             for (final line in block.lines) {
               final box = line.boundingBox;
-              if (box.width > box.height * 1.25) {
+              if (box.width > box.height * 1.3) {
                 horizontalLines++;
-              } else if (box.height > box.width * 1.25) {
+              } else if (box.height > box.width * 1.3) {
                 verticalLines++;
               }
 
@@ -66,46 +66,26 @@ class ImageUtils {
             }
           }
 
-          double avgAngle = 0;
           if (angleCount > 0) {
-            avgAngle = (totalAngle / angleCount) % 360;
-          }
-
-          // FAST-PATH ПРАВИЛО БАЙПАСА:
-          // Если подавляющее большинство строк горизонтальные (horizontalLines >= verticalLines * 1.3)
-          // и средний угол наклона не требует поворота на 90/180/270 (отклонение < 25° от нуля),
-          // значит документ УЖЕ правильно сфотографирован!
-          // Пропускаем медленное декодирование и ре-энкодинг целиком!
-          final bool isNearHorizontal = (avgAngle < 25 || avgAngle > 335);
-          final bool hasMostlyHorizontalLines = (horizontalLines >= verticalLines * 1.3) || (horizontalLines >= 5 && verticalLines <= 2);
-
-          if (isNearHorizontal && hasMostlyHorizontalLines) {
-            // Документ сканирован правильно! Шаг авторегулировки полностью пропускается (0 сек)!
-            return sourceFile;
-          }
-
-          // Если же снимок сделан боком или перевернут (требуется реальный поворот):
-          if (angleCount > 0) {
-            final normAngle = avgAngle;
-            if (normAngle >= 45 && normAngle < 135) {
+            final avgAngle = (totalAngle / angleCount) % 360;
+            if (avgAngle >= 45 && avgAngle < 135) {
               rotateAngle = 270;
-            } else if (normAngle >= 135 && normAngle < 225) {
+            } else if (avgAngle >= 135 && avgAngle < 225) {
               rotateAngle = 180;
-            } else if (normAngle >= 225 && normAngle < 315) {
+            } else if (avgAngle >= 225 && avgAngle < 315) {
               rotateAngle = 90;
             }
-          } else if (verticalLines > horizontalLines * 1.5 && verticalLines >= 4) {
+          } else if (verticalLines > horizontalLines * 1.3 && verticalLines >= 3) {
             rotateAngle = 90;
           }
         } catch (_) {}
       }
 
-      // Если поворот не требуется, не тратим процессорное время на пережатие
+      // Если поворот не требуется, возвращаем исходный файл без лишнего пережатия
       if (rotateAngle == 0) {
         return sourceFile;
       }
 
-      // Только если документ РЕАЛЬНО повернут боком (90/180/270) — декодируем и поворачиваем
       final bytes = await sourceFile.readAsBytes();
       img.Image? image = img.decodeImage(bytes);
       if (image == null) return sourceFile;

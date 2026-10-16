@@ -133,6 +133,10 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       // 1. Авто-выравнивание и распознавание накладной / чека через ИИ
       final doc = await _ocr.parseInvoiceWithVisionAi(_capturedPages);
 
+      if (doc != null && doc.pagePhotos.isNotEmpty) {
+        _capturedPages = List<String>.from(doc.pagePhotos);
+      }
+
       if (doc == null || doc.items.isEmpty) {
         setState(() => _isProcessing = false);
         if (mounted) {

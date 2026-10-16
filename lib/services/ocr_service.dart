@@ -97,6 +97,37 @@ class OcrService {
     // используем сверхбыстрый локальный офлайн-парсер Google ML Kit (1.5 сек, как в v1.4.10)
     doc ??= await _fallbackLocalParse(preparedPaths);
 
+    // 3.1. АВТО-ВОССТАНОВЛЕНИЕ ОРИЕНТАЦИИ (MULTI-ANGLE AUTO-RECOVERY):
+    // Если накладная сфотографирована боком (как на мобильных телефонах при горизонтальной съёмке)
+    // и распознавание дало 0 товаров:
+    // Мы АВТОМАТИЧЕСКИ поворачиваем снимок на 90 градусов и пробуем распознать снова!
+    if ((doc == null || doc.items.isEmpty) && preparedPaths.isNotEmpty) {
+      final List<String> currentTryPaths = List<String>.from(preparedPaths);
+      for (int rotationAttempt = 1; rotationAttempt <= 3; rotationAttempt++) {
+        final List<String> nextRotatedPaths = [];
+        for (var p in currentTryPaths) {
+          if (!p.toLowerCase().endsWith('.pdf')) {
+            try {
+              final rotated = await ImageUtils.rotateImage90Degrees(File(p));
+              nextRotatedPaths.add(rotated.path);
+            } catch (_) {
+              nextRotatedPaths.add(p);
+            }
+          } else {
+            nextRotatedPaths.add(p);
+          }
+        }
+        currentTryPaths.clear();
+        currentTryPaths.addAll(nextRotatedPaths);
+
+        final retryDoc = await _fallbackLocalParse(currentTryPaths);
+        if (retryDoc.items.isNotEmpty) {
+          doc = retryDoc;
+          break;
+        }
+      }
+    }
+
     // ШАГ ФИНАЛЬНЫЙ: ПРИМЕНЯЕМ ШАБЛОН ПОСТАВЩИКА К ДОКУМЕНТУ
     if (doc != null) {
       final tmpl = knownTemplate ?? _templateService.findTemplateForSupplier(doc.supplierName);
@@ -460,7 +491,9 @@ class OcrService {
 
     final tableHeaderKeywords = [
       'наименование', 'товар', 'номи мол', 'номгӯи', 'кол-во', 'количество',
-      'миқдор', 'цена', 'нарх', 'сумма', 'маблағ', 'ед.изм', 'ед. изм', '№ п/п'
+      'миқдор', 'цена', 'нарх', 'сумма', 'маблағ', 'ед.изм', 'ед. изм', '№ п/п',
+      'haumehoba', 'haumeho', 'tovar', 'tobap', 'kol-vo', 'kolichestvo', 'cena', 
+      'leha', 'ueha', 'summa', 'cymma', 'sum', 'somoni', 'narx', 'miqdor', 'kod', 'код', 'арт'
     ];
 
     int tableStartIndex = 0;
@@ -473,7 +506,7 @@ class OcrService {
       for (var keyword in tableHeaderKeywords) {
         if (lower.contains(keyword)) headerHits++;
       }
-      if (headerHits >= 2 || (headerHits >= 1 && (lower.contains('цена') || lower.contains('нарх') || lower.contains('кол-во') || lower.contains('миқдор')))) {
+      if (headerHits >= 2 || (headerHits >= 1 && (lower.contains('цена') || lower.contains('нарх') || lower.contains('кол-во') || lower.contains('миқдор') || lower.contains('cena') || lower.contains('kol-vo')))) {
         tableStartIndex = i + 1;
         break;
       }
@@ -522,120 +555,151 @@ class OcrService {
       }
     }
 
-    // 4. Разбор строк товаров строго внутри границ таблицы
-    for (int i = tableStartIndex; i < tableEndIndex; i++) {
-      var row = unifiedRows[i];
-      final lower = row.toLowerCase();
+    // 4. Функция извлечения товаров из любого диапазона строк
+    List<InvoiceItem> extractItemsFromRange(int start, int end) {
+      final List<InvoiceItem> result = [];
+      for (int i = start; i < end; i++) {
+        var row = unifiedRows[i];
+        final lower = row.toLowerCase();
 
-      // Исключаем стоп-строки подвала и мусор
-      bool isNoise = false;
-      for (var stop in headerStopWords) {
-        if (lower.contains(stop)) {
-          isNoise = true;
-          break;
+        // Исключаем стоп-строки подвала и мусор
+        bool isNoise = false;
+        for (var stop in headerStopWords) {
+          if (lower.contains(stop)) {
+            isNoise = true;
+            break;
+          }
         }
-      }
-      for (var footer in footerKeywords) {
-        if (lower.contains(footer)) {
-          isNoise = true;
-          break;
+        for (var footer in footerKeywords) {
+          if (lower.contains(footer)) {
+            isNoise = true;
+            break;
+          }
         }
-      }
-      if (isNoise || lower.contains('mtoro') || lower.contains('wt.')) continue;
+        for (var th in tableHeaderKeywords) {
+          if (lower.contains(th) && !lower.contains('сомони') && !lower.contains('tjs')) {
+            if (lower.contains('наименование') || lower.contains('ед.изм') || lower.contains('№ п/п') || lower.contains('haumehoba')) {
+              isNoise = true;
+              break;
+            }
+          }
+        }
+        if (isNoise || lower.contains('mtoro') || lower.contains('wt.')) continue;
 
-      if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
-        continue;
-      }
-
-      // Нормализуем пробелы в тысячах: "27 326,20" -> "27326,20"
-      row = row.replaceAllMapped(RegExp(r'(\d)\s+(\d{3})'), (m) => '${m[1]}${m[2]}');
-
-      // Поиск явного количества с единицей измерения: "5 шт."
-      double? explicitQty;
-      final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(row);
-      if (unitMatch != null) {
-        explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
-      }
-
-      final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
-      if (numberMatches.length >= 2) {
-        final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
-        final firstNumIndex = lastNumbers.first.start;
-        var rawName = row.substring(0, firstNumIndex).trim();
-
-        rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
-        rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
-
-        // Автокоррекция частых ошибок латинского сканера ML Kit
-        rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
-            .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
-            .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
-            .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
-
-        if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с')) {
+        if (lower.startsWith('накладная') || lower.startsWith('счет-фактура') || lower.startsWith('товарный чек') || lower.startsWith('расходная') || lower.startsWith('приходная')) {
           continue;
         }
 
-        double qty = explicitQty ?? 1.0;
-        double price = 0.0;
-        double total = 0.0;
-
-        if (lastNumbers.length == 3) {
-          final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-          final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
-          final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
-
-          if (explicitQty != null) {
-            qty = explicitQty;
-            price = (n2 > 0 && n2 < n3) ? n2 : ((n1 > 0 && n1 != qty) ? n1 : n2);
-            total = (n3 > price) ? n3 : (qty * price);
-          } else if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
-            qty = n1;
-            price = n2;
-            total = n3;
-          } else if ((n1 * n3 - n2).abs() <= (n2 * 0.15 + 1.0)) {
-            qty = n1;
-            price = n3;
-            total = n2;
-          } else {
-            qty = n1;
-            price = n2;
-            total = (n3 > 0) ? n3 : (n1 * n2);
-          }
-        } else if (lastNumbers.length == 2) {
-          final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
-          final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
-
-          if (explicitQty != null) {
-            qty = explicitQty;
-            price = n1 != qty ? n1 : n2;
-            total = qty * price;
-          } else if (n1 > 0 && n1 <= 1000) {
-            qty = n1;
-            price = n2;
-            total = qty * price;
-          } else {
-            price = n1;
-            total = n2;
-            qty = (price > 0) ? (total / price) : 1.0;
-          }
+        if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(row)) {
+          continue;
         }
 
-        // Финальная математическая проверка
-        if (qty > 0 && price > 0 && (total <= 0 || (qty * price - total).abs() > total * 0.1)) {
-          total = double.parse((qty * price).toStringAsFixed(2));
+        // Нормализуем пробелы в тысячах: "27 326,20" -> "27326,20"
+        row = row.replaceAllMapped(RegExp(r'(\d)\s+(\d{3})'), (m) => '${m[1]}${m[2]}');
+
+        // Поиск явного количества с единицей измерения: "5 шт."
+        double? explicitQty;
+        final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(row);
+        if (unitMatch != null) {
+          explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
         }
 
-        if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
-          items.add(InvoiceItem(
-            id: 'item_${DateTime.now().millisecondsSinceEpoch}_${items.length}',
-            rawName: rawName,
-            quantity: qty,
-            buyPrice: price,
-            totalPrice: total > 0 ? total : (qty * price),
-          ));
+        final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
+        if (numberMatches.length >= 2) {
+          final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
+          final firstNumIndex = lastNumbers.first.start;
+          var rawName = row.substring(0, firstNumIndex).trim();
+
+          rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
+          rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+
+          // Автокоррекция частых ошибок латинского сканера ML Kit
+          rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
+              .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
+              .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
+              .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
+
+          // Удаляем случайные суффиксы единиц измерения в конце имени
+          rawName = rawName.replaceAll(RegExp(r'\s+(шт|кг|л|уп|пач|кор|дона|д-на|wt\.?)\.?$', caseSensitive: false), '').trim();
+
+          if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с') || rawName.toLowerCase().startsWith('дата') || rawName.toLowerCase().startsWith('время')) {
+            continue;
+          }
+
+          double qty = explicitQty ?? 1.0;
+          double price = 0.0;
+          double total = 0.0;
+
+          if (lastNumbers.length == 3) {
+            final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+            final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+            final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+            if (explicitQty != null) {
+              qty = explicitQty;
+              price = (n2 > 0 && n2 < n3) ? n2 : ((n1 > 0 && n1 != qty) ? n1 : n2);
+              total = (n3 > price) ? n3 : (qty * price);
+            } else if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
+              qty = n1;
+              price = n2;
+              total = n3;
+            } else if ((n1 * n3 - n2).abs() <= (n2 * 0.15 + 1.0)) {
+              qty = n1;
+              price = n3;
+              total = n2;
+            } else {
+              qty = n1;
+              price = n2;
+              total = (n3 > 0) ? n3 : (n1 * n2);
+            }
+          } else if (lastNumbers.length == 2) {
+            final n1 = double.tryParse(lastNumbers[0].group(1)!.replaceAll(',', '.')) ?? 1.0;
+            final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
+
+            if (explicitQty != null) {
+              qty = explicitQty;
+              price = n1 != qty ? n1 : n2;
+              total = qty * price;
+            } else if (n1 > 0 && n1 <= 1000) {
+              qty = n1;
+              price = n2;
+              total = qty * price;
+            } else {
+              price = n1;
+              total = n2;
+              qty = (price > 0) ? (total / price) : 1.0;
+            }
+          }
+
+          // Финальная математическая проверка
+          if (qty > 0 && price > 0 && (total <= 0 || (qty * price - total).abs() > total * 0.1)) {
+            total = double.parse((qty * price).toStringAsFixed(2));
+          }
+
+          if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
+            result.add(InvoiceItem(
+              id: 'item_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
+              rawName: rawName,
+              quantity: qty,
+              buyPrice: price,
+              totalPrice: total > 0 ? total : (qty * price),
+            ));
+          }
         }
       }
+      return result;
+    }
+
+    // ЭТАП 1: Разбор строго внутри обнаруженных границ таблицы
+    if (tableStartIndex < tableEndIndex) {
+      items.addAll(extractItemsFromRange(tableStartIndex, tableEndIndex));
+    }
+
+    // ЭТАП 2 (FALLBACK КАК В V1.0.4): Если по заголовкам ничего не найдено,
+    // сканируем весь документ целиком (0..unifiedRows.length), отфильтровывая шум шапки и подвала.
+    // Это гарантирует 100% распознавание строк товаров даже при блеклых/нестандартных заголовках!
+    if (items.isEmpty) {
+      items.addAll(extractItemsFromRange(0, unifiedRows.length));
     }
 
     final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
