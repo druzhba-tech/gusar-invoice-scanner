@@ -103,7 +103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _yandexKeyCtrl.text = prefs.getString('yandex_api_key') ?? '';
       _yandexFolderIdCtrl.text = prefs.getString('yandex_folder_id') ?? '';
       final savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
-      _geminiKeyCtrl.text = savedGeminiKey.startsWith('AIzaSy') ? savedGeminiKey : '';
+      _geminiKeyCtrl.text = (savedGeminiKey.startsWith('AIza') || savedGeminiKey.startsWith('AQ.') || savedGeminiKey.length > 20) ? savedGeminiKey : '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
 
@@ -241,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setString('yandex_api_key', _yandexKeyCtrl.text.trim());
     await prefs.setString('yandex_folder_id', _yandexFolderIdCtrl.text.trim());
     final geminiToSave = _geminiKeyCtrl.text.trim();
-    await prefs.setString('gemini_api_key', geminiToSave.startsWith('AIzaSy') ? geminiToSave : '');
+    await prefs.setString('gemini_api_key', (geminiToSave.startsWith('AIza') || geminiToSave.startsWith('AQ.') || geminiToSave.length > 20) ? geminiToSave : '');
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
 

@@ -28,7 +28,7 @@ class OcrService {
   Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
     var savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
-    if (savedGeminiKey.isEmpty) {
+    if (savedGeminiKey.isEmpty || savedGeminiKey.length < 15) {
       savedGeminiKey = defaultGeminiKey;
     }
     return {
@@ -302,12 +302,13 @@ class OcrService {
         return null;
       }
 
-      // Используем проверенную рабочую модель gemini-flash-latest
+      // Используем проверенные стабильные модели Google Gemini
       final candidateModels = [
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.6-flash',
         'gemini-flash-latest',
-        'gemini-2.5-flash-image',
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
+        'gemini-3.1-flash-lite',
       ];
 
       for (var modelName in candidateModels) {
@@ -329,7 +330,7 @@ class OcrService {
                 'temperature': 0.1,
               }
             }),
-          ).timeout(const Duration(seconds: 25));
+          ).timeout(const Duration(seconds: 40));
 
           if (response.statusCode == 200) {
             final resJson = jsonDecode(response.body);
@@ -342,18 +343,21 @@ class OcrService {
               return doc;
             }
           } else if (response.statusCode == 400 || response.statusCode == 401 || response.statusCode == 403) {
-            print('Gemini Auth/Param Error (${response.statusCode}), skipping directly to local OCR...');
+            print('Gemini Auth/Param Error (${response.statusCode})');
             break;
           } else if (response.statusCode == 503 || response.statusCode == 429) {
             print('Gemini $modelName temporary busy (${response.statusCode}), switching to next model...');
-            await Future.delayed(const Duration(milliseconds: 500));
+            await Future.delayed(const Duration(milliseconds: 1000));
+            continue;
           } else {
-            print('Gemini $modelName Error: ${response.statusCode}');
-            break;
+            print('Gemini $modelName Error: ${response.statusCode}, switching to next model...');
+            await Future.delayed(const Duration(milliseconds: 500));
+            continue;
           }
         } catch (e) {
-          print('Gemini $modelName attempt failed: $e');
-          break;
+          print('Gemini $modelName attempt failed: $e, switching to next model...');
+          await Future.delayed(const Duration(milliseconds: 500));
+          continue;
         }
       }
       return null;
@@ -368,8 +372,9 @@ class OcrService {
     final rawItems = data['items'] as List<dynamic>? ?? [];
 
     final stopKeywords = [
-      'итого', 'всего', 'ҳамагӣ', 'ҷамъ', 'ндс', 'mtoro', 'wt.', 
-      'отпустил', 'принял', 'сдал', 'бухгалтер', 'подпись', 'печать', 'м.п.'
+      'итого', 'всего', 'всего наименований', 'всего наиме', 'ҳамагӣ', 'ҷамъ', 'ндс', 'mtoro', 'wt.', 
+      'отпустил', 'принял', 'сдал', 'бухгалтер', 'подпись', 'печать', 'м.п.',
+      'наименовани', 'haumehoba', 'haumeho', 'сумма к оплате', 'вcero', 'bcero'
     ];
 
     double extractedTotalFromFooter = (data['total_amount'] as num?)?.toDouble() ?? 0.0;
@@ -528,9 +533,10 @@ class OcrService {
     ];
 
     final footerKeywords = [
-      'итого', 'всего к оплате', 'всего:', 'всего наименований', 'сумма к оплате',
+      'итого', 'всего', 'всего к оплате', 'всего:', 'всего наименований', 'всего наиме', 'сумма к оплате',
       'ҳамагӣ', 'ҷамъ', 'отпустил', 'получил', 'принял', 'сдал', 'супорид', 'қабул',
-      'бухгалтер', 'подпись', 'печать', 'м.п.', 'mtoro', 'в том числе ндс'
+      'бухгалтер', 'подпись', 'печать', 'м.п.', 'mtoro', 'в том числе ндс',
+      'наименовани', 'haumehoba', 'haumeho', 'вcero', 'bcero'
     ];
 
     final tableHeaderKeywords = [
