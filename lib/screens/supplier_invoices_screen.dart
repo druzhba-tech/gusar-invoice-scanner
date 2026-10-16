@@ -520,30 +520,32 @@ class _SupplierInvoicesScreenState extends State<SupplierInvoicesScreen> {
                       SizedBox(
                         width: double.infinity,
                         height: 50,
-                        child: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF10B981),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                          elevation: 3,
-                        ),
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          _openPaymentSheet(
-                            purchaseId: item.purchaseId,
-                            invoiceNumber: item.invoiceNumber,
-                            debt: item.debtAmount,
-                          );
-                        },
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.payment_rounded, size: 20),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Погасить долг (${item.debtAmount.toStringAsFixed(2)} TJS)',
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                            ),
-                          ],
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF10B981),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            elevation: 3,
+                          ),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _openPaymentSheet(
+                              purchaseId: item.purchaseId,
+                              invoiceNumber: item.invoiceNumber,
+                              debt: item.debtAmount,
+                            );
+                          },
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.payment_rounded, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Погасить долг (${item.debtAmount.toStringAsFixed(2)} TJS)',
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ],
@@ -690,21 +692,23 @@ class _SupplierInvoicesScreenState extends State<SupplierInvoicesScreen> {
                             ),
                           ],
                         ),
-                        ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF10B981),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          elevation: 2,
-                        ),
-                        onPressed: () => _openPaymentSheet(),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.payment_rounded, size: 16),
-                            SizedBox(width: 6),
-                            Text('Оплата', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                          ],
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF10B981),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            elevation: 2,
+                          ),
+                          onPressed: () => _openPaymentSheet(),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.payment_rounded, size: 16),
+                              SizedBox(width: 6),
+                              Text('Оплата', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
                         ),
                       ],
                     ),

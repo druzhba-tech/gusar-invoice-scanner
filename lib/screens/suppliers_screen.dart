@@ -313,21 +313,23 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
                         ),
 
                         // Кнопка оплаты поставщику вверху экрана
-                        ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF10B981),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          elevation: 3,
-                        ),
-                        onPressed: _openGeneralPaymentSheet,
-                        child: const Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.payment_rounded, size: 20),
-                            SizedBox(height: 2),
-                            Text('Оплата', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          ],
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF10B981),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            elevation: 3,
+                          ),
+                          onPressed: _openGeneralPaymentSheet,
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.payment_rounded, size: 20),
+                              SizedBox(height: 2),
+                              Text('Оплата', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
                         ),
                       ],
                     ),
