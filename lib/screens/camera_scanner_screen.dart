@@ -134,7 +134,8 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       final doc = await _ocr.parseInvoiceWithVisionAi(_capturedPages);
 
       if (doc != null && doc.pagePhotos.isNotEmpty) {
-        _capturedPages = List<String>.from(doc.pagePhotos);
+        _capturedPages.clear();
+        _capturedPages.addAll(doc.pagePhotos);
       }
 
       if (doc == null || doc.items.isEmpty) {
