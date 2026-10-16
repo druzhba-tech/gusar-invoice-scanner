@@ -824,13 +824,29 @@ class ApiService {
       }
 
       if (response != null && (response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
-        final serverUrl = response.data['image_url'] ??
+        dynamic serverUrl = response.data['image_url'] ??
             response.data['url'] ??
             response.data['image'] ??
-            response.data['product']?['image_url'];
+            response.data['imageBase64'] ??
+            response.data['product']?['image_url'] ??
+            response.data['product']?['image'];
+        String? finalImageUrl;
+        if (serverUrl != null && serverUrl.toString().trim().isNotEmpty && serverUrl.toString().trim() != 'null') {
+          String s = serverUrl.toString().trim();
+          if (s.startsWith('/')) {
+            finalImageUrl = 'https://gusar.tj$s';
+          } else if (s.startsWith('uploads/') || s.startsWith('images/')) {
+            finalImageUrl = 'https://gusar.tj/$s';
+          } else {
+            finalImageUrl = s;
+          }
+        } else {
+          finalImageUrl = base64Image;
+        }
+
         if (idx >= 0) {
           updatedProd = _cachedProducts[idx].copyWith(
-            imageUrl: serverUrl?.toString() ?? _cachedProducts[idx].imageUrl,
+            imageUrl: finalImageUrl,
             localImagePath: imagePath,
           );
         }
@@ -840,7 +856,10 @@ class ApiService {
     }
 
     if (updatedProd == null && idx >= 0) {
-      updatedProd = _cachedProducts[idx].copyWith(localImagePath: imagePath);
+      updatedProd = _cachedProducts[idx].copyWith(
+        imageUrl: _cachedProducts[idx].imageUrl ?? imagePath,
+        localImagePath: imagePath,
+      );
     }
 
     if (updatedProd != null) {

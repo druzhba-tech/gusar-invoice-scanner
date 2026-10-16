@@ -401,9 +401,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _isLoading = false;
     });
 
-    // Фоновое обновление каталога с gusar.tj
+    // Фоновое обновление каталога с gusar.tj (с подтягиванием актуальных фото)
     try {
-      final products = await _api.getProducts();
+      final products = await _api.getProducts(forceRefresh: true);
       if (products.isNotEmpty) {
         await _storage.cacheProducts(products);
       }

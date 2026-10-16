@@ -8,6 +8,7 @@ import '../services/api_service.dart';
 import '../utils/image_utils.dart';
 import '../utils/top_notification.dart';
 import '../widgets/barcode_scanner_dialog.dart';
+import '../widgets/product_image_widget.dart';
 
 class ProductPhotoManagerScreen extends StatefulWidget {
   const ProductPhotoManagerScreen({super.key});
@@ -47,9 +48,9 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
     super.dispose();
   }
 
-  Future<void> _loadProducts() async {
+  Future<void> _loadProducts({bool forceRefresh = false}) async {
     setState(() => _isLoading = true);
-    final prods = await _api.getProducts();
+    final prods = await _api.getProducts(forceRefresh: forceRefresh);
     setState(() {
       _allProducts = List.from(prods);
       _isLoading = false;
@@ -139,8 +140,8 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
-            tooltip: 'Обновить каталог',
-            onPressed: () => _loadProducts(),
+            tooltip: 'Обновить фото с gusar.tj',
+            onPressed: () => _loadProducts(forceRefresh: true),
           ),
         ],
       ),
@@ -246,13 +247,18 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
                           ],
                         ),
                       )
-                    : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        itemCount: _filteredProducts.length,
-                        itemBuilder: (ctx, idx) {
-                          final prod = _filteredProducts[idx];
-                          return _buildProductListItem(prod);
-                        },
+                    : RefreshIndicator(
+                        color: const Color(0xFF10B981),
+                        backgroundColor: const Color(0xFF1E293B),
+                        onRefresh: () => _loadProducts(forceRefresh: true),
+                        child: ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          itemCount: _filteredProducts.length,
+                          itemBuilder: (ctx, idx) {
+                            final prod = _filteredProducts[idx];
+                            return _buildProductListItem(prod);
+                          },
+                        ),
                       ),
           ),
         ],
@@ -315,11 +321,16 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
             width: 48,
             height: 48,
             color: const Color(0xFF0F172A),
-            child: hasLocalPhoto
-                ? Image.file(File(prod.localImagePath!), fit: BoxFit.cover)
-                : hasServerPhoto
-                    ? Image.network(prod.imageUrl!, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white24))
-                    : const Icon(Icons.add_a_photo_outlined, color: Color(0xFF10B981), size: 22),
+            child: hasPhoto
+                ? ProductImageWidget(
+                    imageUrl: prod.imageUrl,
+                    localImagePath: prod.localImagePath,
+                    fit: BoxFit.cover,
+                    width: 48,
+                    height: 48,
+                    placeholder: const Icon(Icons.add_a_photo_outlined, color: Color(0xFF10B981), size: 22),
+                  )
+                : const Icon(Icons.add_a_photo_outlined, color: Color(0xFF10B981), size: 22),
           ),
         ),
         title: Text(
@@ -563,7 +574,19 @@ class _ProductPhotoSheetState extends State<_ProductPhotoSheet> {
                         ],
                       )
                     : (widget.product.imageUrl != null && widget.product.imageUrl!.isNotEmpty)
-                        ? Image.network(widget.product.imageUrl!, fit: BoxFit.contain)
+                        ? ProductImageWidget(
+                            imageUrl: widget.product.imageUrl,
+                            localImagePath: widget.product.localImagePath,
+                            fit: BoxFit.contain,
+                            placeholder: const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.no_photography_outlined, color: Colors.white24, size: 48),
+                                SizedBox(height: 8),
+                                Text('Фотография ещё не привязана', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                              ],
+                            ),
+                          )
                         : const Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [

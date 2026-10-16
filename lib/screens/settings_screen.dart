@@ -35,8 +35,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final UpdaterService _updater = UpdaterService();
 
   List<StoreOption> _availableStores = [];
-  int _selectedStoreId = 1;
-  String _selectedStoreName = 'База gusar.tj (Основной склад)';
+  int _selectedStoreId = 0;
+  String _selectedStoreName = '';
   bool _isSyncingStores = false;
 
   final TextEditingController _usernameCtrl = TextEditingController();
@@ -58,6 +58,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedStoreId = _api.currentStoreId;
+    _selectedStoreName = _api.currentStoreName;
     _loadSettings();
   }
 
@@ -68,8 +70,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     String savedName = prefs.getString('store_name') ?? _api.currentStoreName;
 
     if (savedId <= 0 || savedName.trim().isEmpty) {
-      savedId = 3;
-      savedName = 'Мағозаи намунавӣ (Тестӣ #3)';
+      savedId = _api.currentStoreId > 0 ? _api.currentStoreId : 3;
+      savedName = _api.currentStoreName.trim().isNotEmpty ? _api.currentStoreName : 'Мағозаи намунавӣ (Тестӣ #3)';
     }
 
     if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.any((s) => (s['id'] ?? 0) > 0)) {
@@ -87,10 +89,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ];
     }
 
+    // Если сохраненного магазина пользователя нет в списке, добавляем его в начало, но ни в коем случае не сбрасываем!
     if (!_availableStores.any((s) => s.id == savedId)) {
-      final valid = _availableStores.firstWhere((s) => s.id > 0, orElse: () => _availableStores.first);
-      savedId = valid.id;
-      savedName = valid.name;
+      _availableStores.insert(0, StoreOption(id: savedId, name: savedName, address: 'Подразделение сотрудника'));
     }
 
     setState(() {
@@ -125,20 +126,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         address: s['address'] as String,
       )).toList();
 
+      // Гарантируем сохранение активного магазина пользователя
+      if (!newOptions.any((s) => s.id == _selectedStoreId) && _selectedStoreId > 0) {
+        newOptions.insert(0, StoreOption(id: _selectedStoreId, name: _selectedStoreName, address: 'Подразделение сотрудника'));
+      }
+
       setState(() {
         _availableStores = newOptions;
-        if (_selectedStoreId <= 0 || _selectedStoreName.trim().isEmpty || !_availableStores.any((s) => s.id == _selectedStoreId)) {
-          // Если магазин не выбран, отдаем приоритет магазину #3
-          final found = _availableStores.firstWhere((s) => s.id == 3, orElse: () => _availableStores.first);
-          _selectedStoreId = found.id;
-          _selectedStoreName = found.name;
-        } else {
+        if (_selectedStoreId > 0 && _availableStores.any((s) => s.id == _selectedStoreId)) {
           final found = _availableStores.firstWhere((s) => s.id == _selectedStoreId);
           _selectedStoreName = found.name;
         }
       });
-      await _api.updateStore(_selectedStoreId, _selectedStoreName);
 
+      // НЕ вызываем _api.updateStore автоматически! Магазин меняется только по явному выбору пользователя.
       if (!silent && mounted) {
         TopNotification.showSuccess(context, 'Доступные магазины gusar.tj обновлены (${_availableStores.length} точек)');
       }

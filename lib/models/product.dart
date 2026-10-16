@@ -145,6 +145,33 @@ class Product {
 
     final parsedUnit = json['unit']?.toString() ?? (parsedType == ProductType.weight ? 'кг' : 'шт');
 
+    String? resolvedImageUrl;
+    dynamic rawImage = json['image_url'] ??
+        json['image'] ??
+        json['imageUrl'] ??
+        json['imageBase64'] ??
+        json['photo'] ??
+        json['photo_url'] ??
+        json['img'] ??
+        json['thumbnail'];
+
+    if (rawImage == null && json['images'] is List && (json['images'] as List).isNotEmpty) {
+      rawImage = (json['images'] as List).first;
+    }
+
+    if (rawImage != null) {
+      final imgStr = rawImage.toString().trim();
+      if (imgStr.isNotEmpty && imgStr != 'null') {
+        if (imgStr.startsWith('/')) {
+          resolvedImageUrl = 'https://gusar.tj$imgStr';
+        } else if (imgStr.startsWith('uploads/') || imgStr.startsWith('images/')) {
+          resolvedImageUrl = 'https://gusar.tj/$imgStr';
+        } else {
+          resolvedImageUrl = imgStr;
+        }
+      }
+    }
+
     return Product(
       id: json['id'] is int ? json['id'] : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
       storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
@@ -155,7 +182,7 @@ class Product {
       costPrice: costPrice,
       stockQuantity: stock,
       category: json['category']?.toString(),
-      imageUrl: json['image_url']?.toString() ?? json['image']?.toString(),
+      imageUrl: resolvedImageUrl,
       productType: parsedType,
       unit: parsedUnit,
       pluCode: json['plu_code']?.toString() ?? json['plu']?.toString(),
