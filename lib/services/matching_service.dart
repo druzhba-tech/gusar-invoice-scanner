@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_item.dart';
 import '../models/invoice_document.dart';
 import '../models/product.dart';
+import '../utils/cyrillic_decoder.dart';
 import 'invoice_template_service.dart';
 
 class MatchCandidate {
@@ -235,7 +236,7 @@ class MatchingService {
 
       // Шаг 3: Нечеткое семантическое сопоставление (Fuzzy Match)
       final candidates = getCandidates(item.rawName, catalog, limit: 1);
-      if (candidates.isNotEmpty && candidates.first.score >= 0.75) {
+      if (candidates.isNotEmpty && candidates.first.score >= 0.45) {
         applyMatch(item, candidates.first.product, confidence: candidates.first.score);
       }
     }
@@ -283,7 +284,8 @@ class MatchingService {
   }
 
   String _normalizeText(String text) {
-    return text
+    final decoded = CyrillicDecoder.decode(text);
+    return decoded
         .toLowerCase()
         .replaceAll(RegExp(r'[^\w\s\d]', unicode: true), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')

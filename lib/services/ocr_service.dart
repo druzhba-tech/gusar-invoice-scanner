@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 import '../utils/image_utils.dart';
+import '../utils/cyrillic_decoder.dart';
 import 'invoice_template_service.dart';
 
 class OcrService {
@@ -541,14 +542,14 @@ class OcrService {
     // 3. Извлечение метаданных документа (поставщик, номер, дата)
     for (var row in unifiedRows) {
       final lower = row.toLowerCase();
-      if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда')) {
-        final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|фурӯшанда)[:\s]+', caseSensitive: false), '').trim();
+      if (lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('фурӯшанда') || lower.contains('noctabwuk') || lower.contains('noctab') || lower.contains('postavshik') || lower.contains('4dmm') || lower.contains('ooo')) {
+        final cleaned = row.replaceAll(RegExp(r'^(поставщик|чдмм|ооо|ooo|фурӯшанда|noctabwuk|noctab|postavshik|4dmm)[:\s]+', caseSensitive: false), '').trim();
         if (cleaned.length > 2 && detectedSupplier == 'Поставщик') {
-          detectedSupplier = cleaned;
+          detectedSupplier = CyrillicDecoder.decode(cleaned);
         }
       }
-      if (lower.contains('накладная') || lower.contains('чек') || row.contains('№')) {
-        final numMatch = RegExp(r'№\s*([0-9a-zA-Z\-_/]+)').firstMatch(row);
+      if (lower.contains('накладная') || lower.contains('чек') || row.contains('№') || lower.contains('naklad') || lower.contains('no.')) {
+        final numMatch = RegExp(r'(?:№|no\.?|n\s*)\s*([0-9a-zA-Z\-_/]+)', caseSensitive: false).firstMatch(row);
         if (numMatch != null && detectedInvoiceNum == 'б/н') {
           detectedInvoiceNum = numMatch.group(1)!;
         }
@@ -676,10 +677,13 @@ class OcrService {
             total = double.parse((qty * price).toStringAsFixed(2));
           }
 
+          // Интеллектуальное декодирование псевдо-латиницы в человеческий русский язык и срез артикулов
+          final decodedName = CyrillicDecoder.decode(rawName);
+
           if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
             result.add(InvoiceItem(
               id: 'item_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
-              rawName: rawName,
+              rawName: decodedName.isNotEmpty ? decodedName : rawName,
               quantity: qty,
               buyPrice: price,
               totalPrice: total > 0 ? total : (qty * price),
