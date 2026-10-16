@@ -1183,7 +1183,7 @@ class ApiService {
         'date': document.invoiceDate.toIso8601String(),
         'total_amount': double.parse(total.toStringAsFixed(2)),
         // Сумма оплаты и остаток долга по накладной
-        'paid_amount': isDebt ? null : double.parse(paid.toStringAsFixed(2)),
+        'paid_amount': isDebt ? 0.0 : double.parse(paid.toStringAsFixed(2)),
         'amount_paid': isDebt ? 0.0 : double.parse(paid.toStringAsFixed(2)),
         'debt_amount': double.parse(debtAmount.toStringAsFixed(2)),
         'remaining_amount': double.parse(debtAmount.toStringAsFixed(2)),
