@@ -73,10 +73,54 @@ class _MatchingScreenState extends State<MatchingScreen> {
   }
 
   void _bindProduct(InvoiceItem item, Product product) async {
+    InvoiceItem? alreadyBoundItem;
+    int alreadyBoundIndex = -1;
+    for (int i = 0; i < widget.document.items.length; i++) {
+      if (widget.document.items[i].matchedProductId == product.id && widget.document.items[i] != item) {
+        alreadyBoundItem = widget.document.items[i];
+        alreadyBoundIndex = i + 1;
+        break;
+      }
+    }
+
+    if (alreadyBoundItem != null) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          title: const Text('Товар уже используется', style: TextStyle(color: Colors.white)),
+          content: Text(
+            'Товар "${product.name}" уже привязан к строке #$alreadyBoundIndex ("${alreadyBoundItem!.rawName}").\n\nПерепривязать к "${item.rawName}"?',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Перепривязать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      alreadyBoundItem.matchedProductId = null;
+      alreadyBoundItem.matchedProductName = null;
+      alreadyBoundItem.matchedBarcode = null;
+    }
+
     _matcher.applyMatch(item, product, confidence: 1.0);
     await _matcher.saveAlias(widget.document.supplierName, item.rawName, product.id);
 
-    TopNotification.showSuccess(context, 'Связано с "${product.name}". В следующий раз свяжется автоматически!');
+    TopNotification.showSuccess(
+      context,
+      alreadyBoundItem != null
+          ? 'Товар привязан к "${product.name}" (перенесен со строки #$alreadyBoundIndex)!'
+          : 'Связано с "${product.name}". В следующий раз свяжется автоматически!',
+    );
 
     setState(() {
       if (_currentIndex >= _unmatchedItems.length && _currentIndex > 0) {
@@ -274,27 +318,172 @@ class _MatchingScreenState extends State<MatchingScreen> {
         else
           ...candidates.map((cand) {
             final percent = (cand.score * 100).toInt();
+            int boundIndex = -1;
+            for (int idx = 0; idx < widget.document.items.length; idx++) {
+              if (widget.document.items[idx].matchedProductId == cand.product.id) {
+                boundIndex = idx + 1;
+                break;
+              }
+            }
+            final bool isBoundToOther = boundIndex > 0;
+
             return Card(
               color: const Color(0xFF1E293B),
               margin: const EdgeInsets.only(bottom: 10),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               child: ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                title: Text(cand.product.name, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                title: Row(
+                  children: [
+                    Expanded(
+                      child: Text(cand.product.name, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                    ),
+                    if (isBoundToOther)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.amber.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+                        child: Text('Уже в накл. #$boundIndex', style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
+                  ],
+                ),
                 subtitle: Text('Штрихкод: ${cand.product.barcode ?? "—"} • Розница: ${cand.product.price} TJS',
                     style: const TextStyle(color: Colors.white54, fontSize: 11)),
                 trailing: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
+                    backgroundColor: isBoundToOther ? Colors.amber.shade700 : const Color(0xFF10B981),
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
                   onPressed: () => _bindProduct(item, cand.product),
-                  child: Text('$percent% Привязать', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text(isBoundToOther ? 'Занят (#$boundIndex)' : '$percent% Привязать',
+                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
               ),
             );
           }),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: Colors.white24),
+            minimumSize: const Size(double.infinity, 44),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          icon: const Icon(Icons.search, color: Color(0xFF38BDF8), size: 18),
+          label: const Text('Поиск по всему каталогу магазина', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+          onPressed: () => _openCatalogSearchModal(item),
+        ),
       ],
+    );
+  }
+
+  void _openCatalogSearchModal(InvoiceItem item) {
+    final searchCtrl = TextEditingController();
+    List<Product> searchResults = List.from(_catalog);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (modalCtx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.82,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Поиск по каталогу магазина', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(modalCtx),
+                    ),
+                  ],
+                ),
+                Text('Привязка позиции: "${item.rawName}"', style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: searchCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Поиск по названию или штрихкоду...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
+                    filled: true,
+                    fillColor: const Color(0xFF0F172A),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                  ),
+                  onChanged: (val) {
+                    final q = val.toLowerCase().trim();
+                    setModalState(() {
+                      if (q.isEmpty) {
+                        searchResults = List.from(_catalog);
+                      } else {
+                        searchResults = _catalog.where((p) => p.name.toLowerCase().contains(q) || (p.barcode != null && p.barcode!.contains(q))).toList();
+                      }
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: searchResults.isEmpty
+                      ? const Center(child: Text('Товары не найдены', style: TextStyle(color: Colors.white54)))
+                      : ListView.separated(
+                          itemCount: searchResults.length,
+                          separatorBuilder: (_, __) => const Divider(color: Colors.white10),
+                          itemBuilder: (ctx, i) {
+                            final p = searchResults[i];
+                            int boundIndex = -1;
+                            InvoiceItem? boundItem;
+                            for (int idx = 0; idx < widget.document.items.length; idx++) {
+                              if (widget.document.items[idx].matchedProductId == p.id) {
+                                boundIndex = idx + 1;
+                                boundItem = widget.document.items[idx];
+                                break;
+                              }
+                            }
+                            final bool isBoundToOther = boundIndex > 0;
+
+                            return ListTile(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              title: Row(
+                                children: [
+                                  Expanded(child: Text(p.name, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600))),
+                                  if (isBoundToOther)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(color: Colors.amber.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+                                      child: Text('Уже в накл. #$boundIndex', style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold)),
+                                    ),
+                                ],
+                              ),
+                              subtitle: Text(
+                                'Штрихкод: ${p.barcode ?? "—"} • Розница: ${p.price.toStringAsFixed(2)} TJS'
+                                '${isBoundToOther ? '\n⚠️ Привязан к строке #$boundIndex: "${boundItem?.rawName}"' : ''}',
+                                style: const TextStyle(color: Colors.white54, fontSize: 12),
+                              ),
+                              trailing: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: isBoundToOther ? Colors.amber.shade700 : const Color(0xFF10B981),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(modalCtx);
+                                  _bindProduct(item, p);
+                                },
+                                child: Text(isBoundToOther ? 'Занят (#$boundIndex)' : 'Привязать', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 

@@ -68,21 +68,13 @@ class LocalStorageService {
   Future<void> saveInvoice(InvoiceDocument doc) async {
     final db = await database;
 
-    // Сжимаем прикрепленные оригиналы страниц накладной строго до 40 КБ
+    // Сохраняем фотографии страниц накладной в высоком оригинальном качестве (без сжатия в 40 КБ)
     final List<String> optimizedPhotos = [];
     for (final photoPath in doc.pagePhotos) {
-      if (photoPath.isNotEmpty) {
-        try {
-          final file = File(photoPath);
-          if (file.existsSync()) {
-            final compressed = await ImageUtils.compressFileToMaxKb(file, maxKb: 40);
-            optimizedPhotos.add(compressed.path);
-          } else {
-            optimizedPhotos.add(photoPath);
-          }
-        } catch (_) {
-          optimizedPhotos.add(photoPath);
-        }
+      if (photoPath.isNotEmpty && File(photoPath).existsSync()) {
+        optimizedPhotos.add(photoPath);
+      } else if (photoPath.isNotEmpty) {
+        optimizedPhotos.add(photoPath);
       }
     }
     doc.pagePhotos = optimizedPhotos;

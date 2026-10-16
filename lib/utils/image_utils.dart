@@ -294,4 +294,45 @@ class ImageUtils {
       return sourceFile;
     }
   }
+
+  /// Ручная обрезка полей листа накладной в процентах (0.0 - 45.0)
+  static Future<File> cropImageMargins(
+    File sourceFile, {
+    double topPercent = 0.0,
+    double bottomPercent = 0.0,
+    double leftPercent = 0.0,
+    double rightPercent = 0.0,
+    int quality = 92,
+  }) async {
+    try {
+      final bytes = await sourceFile.readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+      if (image == null) return sourceFile;
+
+      image = img.bakeOrientation(image);
+
+      final leftClamped = leftPercent.clamp(0.0, 45.0) / 100.0;
+      final rightClamped = rightPercent.clamp(0.0, 45.0) / 100.0;
+      final topClamped = topPercent.clamp(0.0, 45.0) / 100.0;
+      final bottomClamped = bottomPercent.clamp(0.0, 45.0) / 100.0;
+
+      int cropX = (image.width * leftClamped).round();
+      int cropY = (image.height * topClamped).round();
+      int cropW = (image.width * (1.0 - leftClamped - rightClamped)).round();
+      int cropH = (image.height * (1.0 - topClamped - bottomClamped)).round();
+
+      if (cropW < 50 || cropH < 50) return sourceFile;
+
+      final cropped = img.copyCrop(image, x: cropX, y: cropY, width: cropW, height: cropH);
+      final jpgBytes = Uint8List.fromList(img.encodeJpg(cropped, quality: quality));
+
+      final outPath = '${sourceFile.parent.path}/crop_${DateTime.now().millisecondsSinceEpoch}_${sourceFile.uri.pathSegments.last}';
+      final outFile = File(outPath);
+      await outFile.writeAsBytes(jpgBytes);
+      return outFile;
+    } catch (e) {
+      print('cropImageMargins error: $e');
+      return sourceFile;
+    }
+  }
 }

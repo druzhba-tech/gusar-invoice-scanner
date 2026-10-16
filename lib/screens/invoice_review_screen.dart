@@ -281,28 +281,150 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                               separatorBuilder: (_, __) => const Divider(color: Colors.white10),
                               itemBuilder: (ctx, i) {
                                 final p = searchResults[i];
-                                return ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  title: Text(p.name, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                                  subtitle: Text(
-                                    'Штрихкод: ${p.barcode ?? 'нет'} • Розница: ${p.price.toStringAsFixed(2)} TJS • Остаток: ${p.stockQuantity}',
-                                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+
+                                InvoiceItem? boundItem;
+                                int boundIndex = -1;
+                                for (int idx = 0; idx < _doc.items.length; idx++) {
+                                  if (_doc.items[idx].matchedProductId == p.id) {
+                                    boundItem = _doc.items[idx];
+                                    boundIndex = idx + 1;
+                                    break;
+                                  }
+                                }
+
+                                final bool isBoundToThis = item.matchedProductId == p.id;
+                                final bool isBoundToOther = boundItem != null && !isBoundToThis;
+
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: isBoundToThis
+                                        ? const Color(0xFF10B981).withOpacity(0.12)
+                                        : isBoundToOther
+                                            ? Colors.amber.withOpacity(0.08)
+                                            : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
-                                  trailing: ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF38BDF8),
-                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                  child: ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    title: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            p.name,
+                                            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                        if (isBoundToThis)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF10B981).withOpacity(0.25),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                                            ),
+                                            child: const Text('Текущий выбор', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.bold)),
+                                          )
+                                        else if (isBoundToOther)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: Colors.amber.withOpacity(0.2),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                            ),
+                                            child: Text('Уже в накл. #$boundIndex', style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold)),
+                                          ),
+                                      ],
                                     ),
-                                    onPressed: () async {
-                                      _matcher.applyMatch(item, p, confidence: 1.0);
-                                      await _matcher.saveAlias(_doc.supplierName, item.rawName, p.id);
-                                      Navigator.pop(modalCtx);
-                                      await _saveAndRefresh();
-                                      if (mounted) {
-                                        TopNotification.showSuccess(context, 'Позиция привязана к "${p.name}"!');
-                                      }
-                                    },
-                                    child: const Text('Связать', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Штрихкод: ${p.barcode ?? 'нет'} • Розница: ${p.price.toStringAsFixed(2)} TJS • Остаток: ${p.stockQuantity}',
+                                          style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                        ),
+                                        if (isBoundToOther && boundItem != null) ...[
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '⚠️ Привязан к строке #$boundIndex: "${boundItem.rawName}"',
+                                            style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.w500),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    trailing: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: isBoundToThis
+                                            ? const Color(0xFF10B981)
+                                            : isBoundToOther
+                                                ? Colors.amber.shade700
+                                                : const Color(0xFF38BDF8),
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      ),
+                                      onPressed: () async {
+                                        if (isBoundToThis) {
+                                          Navigator.pop(modalCtx);
+                                          return;
+                                        }
+
+                                        if (isBoundToOther && boundItem != null) {
+                                          final confirm = await showDialog<bool>(
+                                            context: modalCtx,
+                                            builder: (c) => AlertDialog(
+                                              backgroundColor: const Color(0xFF1E293B),
+                                              title: const Text('Товар уже используется', style: TextStyle(color: Colors.white)),
+                                              content: Text(
+                                                'Товар "${p.name}" уже привязан к строке #$boundIndex ("${boundItem!.rawName}").\n\nПерепривязать к "${item.rawName}"?',
+                                                style: const TextStyle(color: Colors.white70),
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(c, false),
+                                                  child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+                                                ),
+                                                ElevatedButton(
+                                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                                                  onPressed: () => Navigator.pop(c, true),
+                                                  child: const Text('Перепривязать', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm != true) return;
+                                          boundItem!.matchedProductId = null;
+                                          boundItem!.matchedProductName = null;
+                                          boundItem!.matchedBarcode = null;
+                                        }
+
+                                        _matcher.applyMatch(item, p, confidence: 1.0);
+                                        await _matcher.saveAlias(_doc.supplierName, item.rawName, p.id);
+                                        Navigator.pop(modalCtx);
+                                        await _saveAndRefresh();
+                                        if (mounted) {
+                                          TopNotification.showSuccess(
+                                            context,
+                                            isBoundToOther
+                                                ? 'Товар привязан к "${p.name}" (перенесен со строки #$boundIndex)!'
+                                                : 'Позиция привязана к "${p.name}"!',
+                                          );
+                                        }
+                                      },
+                                      child: Text(
+                                        isBoundToThis
+                                            ? 'Выбран'
+                                            : isBoundToOther
+                                                ? 'Занят (#$boundIndex)'
+                                                : 'Связать',
+                                        style: TextStyle(
+                                          color: isBoundToOther || isBoundToThis ? Colors.white : Colors.black,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 );
                               },

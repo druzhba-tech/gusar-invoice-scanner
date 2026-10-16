@@ -511,6 +511,13 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                         ],
                       ),
                     ),
+                    // Кнопка ручной обрезки полей листа
+                    if (!path.toLowerCase().endsWith('.pdf'))
+                      IconButton(
+                        icon: const Icon(Icons.crop_rounded, color: Color(0xFF10B981)),
+                        tooltip: 'Обрезать поля',
+                        onPressed: () => _showManualCropDialog(index),
+                      ),
                     // Кнопка ручного поворота листа на 90°
                     if (!path.toLowerCase().endsWith('.pdf'))
                       IconButton(
@@ -542,6 +549,272 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  // Диалог ручной обрезки и выравнивания листа
+  void _showManualCropDialog(int index) {
+    if (index >= _capturedPages.length) return;
+    String currentPath = _capturedPages[index];
+    if (currentPath.toLowerCase().endsWith('.pdf')) {
+      TopNotification.showInfo(context, 'PDF-документы не требуют обрезки.');
+      return;
+    }
+
+    double topMargin = 0.0;
+    double bottomMargin = 0.0;
+    double leftMargin = 0.0;
+    double rightMargin = 0.0;
+    bool isSaving = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0F172A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (modalCtx) => StatefulBuilder(
+        builder: (ctx, setCropState) {
+          final file = File(currentPath);
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.90,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Лист #${index + 1}: Ручная обрезка и выравнивание',
+                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(modalCtx),
+                    ),
+                  ],
+                ),
+                const Text(
+                  'Настройте поля для удаления темных краев, стола или лишнего фона:',
+                  style: TextStyle(color: Colors.white60, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+
+                Expanded(
+                  child: Center(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Image.file(
+                            file,
+                            fit: BoxFit.contain,
+                            key: ValueKey(currentPath),
+                          ),
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            height: (topMargin * 2.5),
+                            child: Container(color: Colors.redAccent.withOpacity(0.35)),
+                          ),
+                          Positioned(
+                            bottom: 0,
+                            left: 0,
+                            right: 0,
+                            height: (bottomMargin * 2.5),
+                            child: Container(color: Colors.redAccent.withOpacity(0.35)),
+                          ),
+                          Positioned(
+                            top: (topMargin * 2.5),
+                            bottom: (bottomMargin * 2.5),
+                            left: 0,
+                            width: (leftMargin * 2.5),
+                            child: Container(color: Colors.redAccent.withOpacity(0.35)),
+                          ),
+                          Positioned(
+                            top: (topMargin * 2.5),
+                            bottom: (bottomMargin * 2.5),
+                            right: 0,
+                            width: (rightMargin * 2.5),
+                            child: Container(color: Colors.redAccent.withOpacity(0.35)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFF38BDF8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8), size: 18),
+                      label: const Text('Повернуть 90°', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12)),
+                      onPressed: () async {
+                        final rotated = await ImageUtils.rotateImage90Degrees(File(currentPath));
+                        await FileImage(File(currentPath)).evict();
+                        setCropState(() {
+                          currentPath = rotated.path;
+                        });
+                        setState(() {
+                          _capturedPages[index] = currentPath;
+                        });
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 18),
+                      label: const Text('Сбросить поля', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                      onPressed: () {
+                        setCropState(() {
+                          topMargin = 0;
+                          bottomMargin = 0;
+                          leftMargin = 0;
+                          rightMargin = 0;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Сверху: ${topMargin.toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                          Slider(
+                            value: topMargin,
+                            min: 0,
+                            max: 30,
+                            activeColor: const Color(0xFF10B981),
+                            onChanged: (v) => setCropState(() => topMargin = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Снизу: ${bottomMargin.toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                          Slider(
+                            value: bottomMargin,
+                            min: 0,
+                            max: 30,
+                            activeColor: const Color(0xFF10B981),
+                            onChanged: (v) => setCropState(() => bottomMargin = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Слева: ${leftMargin.toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                          Slider(
+                            value: leftMargin,
+                            min: 0,
+                            max: 30,
+                            activeColor: const Color(0xFF10B981),
+                            onChanged: (v) => setCropState(() => leftMargin = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Справа: ${rightMargin.toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                          Slider(
+                            value: rightMargin,
+                            min: 0,
+                            max: 30,
+                            activeColor: const Color(0xFF10B981),
+                            onChanged: (v) => setCropState(() => rightMargin = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
+
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    minimumSize: const Size(double.infinity, 46),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: isSaving
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.crop_rounded, color: Colors.white),
+                  label: Text(
+                    isSaving ? 'Сохранение...' : 'Применить обрезку',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          if (topMargin == 0 && bottomMargin == 0 && leftMargin == 0 && rightMargin == 0) {
+                            Navigator.pop(modalCtx);
+                            return;
+                          }
+
+                          setCropState(() => isSaving = true);
+                          final cropped = await ImageUtils.cropImageMargins(
+                            File(currentPath),
+                            topPercent: topMargin,
+                            bottomPercent: bottomMargin,
+                            leftPercent: leftMargin,
+                            rightPercent: rightMargin,
+                          );
+                          await FileImage(File(currentPath)).evict();
+                          await FileImage(cropped).evict();
+
+                          if (mounted) {
+                            setState(() {
+                              _capturedPages[index] = cropped.path;
+                            });
+                          }
+                          Navigator.pop(modalCtx);
+                          TopNotification.showSuccess(context, 'Лист #${index + 1} успешно обрезан!');
+                        },
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 

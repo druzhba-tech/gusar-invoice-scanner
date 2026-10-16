@@ -46,24 +46,10 @@ class OcrService {
     }
   }
 
-  // 2. Интеллектуальный разбор накладных через Vision AI (с быстрым пропуском авто-выравнивания)
+  // 2. Интеллектуальный разбор накладных через Vision AI / ML Kit
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
-    // ШАГ 0: АВТО-ВЫРАВНИВАНИЕ (FAST-PATH: если снимок ровный, поворот мгновенно пропускается)
-    final List<String> preparedPaths = [];
-
-    for (var path in imagePaths) {
-      if (path.toLowerCase().endsWith('.pdf')) {
-        preparedPaths.add(path);
-      } else {
-        try {
-          final straightened = await ImageUtils.autoStraightenInvoiceImage(File(path), recognizer: _mlKitRecognizer);
-          preparedPaths.add(straightened.path);
-        } catch (e) {
-          print('Auto-straighten page error: $e');
-          preparedPaths.add(path);
-        }
-      }
-    }
+    // Используем фотографии в их исходном разрешении и ориентации (ручное выравнивание)
+    final List<String> preparedPaths = List<String>.from(imagePaths);
 
     // ШАГ 0.5: ПРОВЕРКА ЗАПОМНЕННОГО ШАБЛОНА ПОСТАВЩИКА
     await _templateService.init();

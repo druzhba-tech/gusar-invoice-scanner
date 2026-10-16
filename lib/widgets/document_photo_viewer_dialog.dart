@@ -125,15 +125,17 @@ class _DocumentPhotoViewerDialogState extends State<DocumentPhotoViewerDialog> {
                             if (fileSizeKb > 0) ...[
                               const SizedBox(width: 6),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                                 decoration: BoxDecoration(
-                                  color: fileSizeKb <= 45 ? const Color(0xFF10B981).withOpacity(0.2) : Colors.orangeAccent.withOpacity(0.2),
+                                  color: const Color(0xFF10B981).withOpacity(0.2),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
-                                  '${fileSizeKb.toStringAsFixed(1)} КБ (≤40КБ)',
-                                  style: TextStyle(
-                                    color: fileSizeKb <= 45 ? const Color(0xFF10B981) : Colors.orangeAccent,
+                                  fileSizeKb > 1024
+                                      ? '${(fileSizeKb / 1024).toStringAsFixed(1)} МБ • Оригинал HD'
+                                      : '${fileSizeKb.toStringAsFixed(0)} КБ • Оригинал HD',
+                                  style: const TextStyle(
+                                    color: Color(0xFF10B981),
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
                                   ),
