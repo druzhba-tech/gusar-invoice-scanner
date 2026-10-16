@@ -57,7 +57,7 @@ class Supplier {
 
     final address = json['address']?.toString() ?? json['city']?.toString() ?? json['legal_address']?.toString();
 
-    final rawBalance = json['balance'] ?? json['debt'] ?? 0.0;
+    final rawBalance = json['balance'] ?? json['debt'] ?? json['debt_amount'] ?? json['total_debt'] ?? json['unpaid'] ?? 0.0;
     final balance = (rawBalance is num) ? rawBalance.toDouble() : double.tryParse(rawBalance.toString()) ?? 0.0;
 
     return Supplier(

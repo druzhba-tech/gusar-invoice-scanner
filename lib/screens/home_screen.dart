@@ -11,6 +11,7 @@ import 'invoice_review_screen.dart';
 import 'settings_screen.dart';
 import 'add_product_screen.dart';
 import 'product_photo_manager_screen.dart';
+import 'suppliers_screen.dart';
 import '../widgets/document_photo_viewer_dialog.dart';
 import '../utils/top_notification.dart';
 
@@ -837,16 +838,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 12),
 
-            // Кнопка быстрого добавления нового товара в каталог
+            // Кнопка перехода к списку поставщиков и взаиморасчетам
             InkWell(
               borderRadius: BorderRadius.circular(16),
               onTap: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const AddProductScreen()),
-                ).then((created) {
-                  if (created != null) _loadData();
-                });
+                  MaterialPageRoute(builder: (_) => const SuppliersScreen()),
+                ).then((_) => _loadData());
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -858,17 +857,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.35)),
+                  border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
                 ),
                 child: Row(
                   children: [
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF10B981).withOpacity(0.18),
+                        color: const Color(0xFF38BDF8).withOpacity(0.18),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Icon(Icons.add_business_rounded, color: Color(0xFF10B981), size: 22),
+                      child: const Icon(Icons.storefront_rounded, color: Color(0xFF38BDF8), size: 22),
                     ),
                     const SizedBox(width: 12),
                     const Expanded(
@@ -876,12 +875,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '+ Добавить новый товар',
+                            'Поставщики и взаиморасчёты',
                             style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Штрихкод, весовой (кг) или внутренний артикул с фото',
+                            'Долги, накладные (новые сверху), сверка и оплата',
                             style: TextStyle(color: Colors.white54, fontSize: 11),
                           ),
                         ],

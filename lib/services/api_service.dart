@@ -994,6 +994,146 @@ class ApiService {
     return matches;
   }
 
+  // Получение накладных конкретного поставщика из базы gusar.tj (отсортированных от новых к старым)
+  Future<List<Map<String, dynamic>>> fetchSupplierPurchases(int supplierId, {int? storeId}) async {
+    final sId = storeId ?? currentStoreId;
+    try {
+      final response = await _dio.get(
+        '/api/purchases',
+        queryParameters: {
+          'supplier_id': supplierId,
+          if (sId > 0) 'store_id': sId,
+          'limit': 100,
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> items = [];
+        if (raw is List) {
+          items = raw;
+        } else if (raw is Map && raw['purchases'] is List) {
+          items = raw['purchases'];
+        } else if (raw is Map && raw['data'] is List) {
+          items = raw['data'];
+        }
+
+        final list = items.whereType<Map<String, dynamic>>().toList();
+
+        // Сортируем: сверху самые последние/свежие, снизу более ранние
+        list.sort((a, b) {
+          final dateA = DateTime.tryParse(a['purchase_date']?.toString() ?? a['created_at']?.toString() ?? '') ?? DateTime(2000);
+          final dateB = DateTime.tryParse(b['purchase_date']?.toString() ?? b['created_at']?.toString() ?? '') ?? DateTime(2000);
+          return dateB.compareTo(dateA);
+        });
+
+        return list;
+      }
+    } catch (e) {
+      print('fetchSupplierPurchases error: $e');
+    }
+    return [];
+  }
+
+  // Проведение оплаты поставщику в базе gusar.tj (как на сайте)
+  Future<Map<String, dynamic>> paySupplierDebt({
+    required int supplierId,
+    int? purchaseId,
+    required double amount,
+    String source = 'cash',
+    String? notes,
+    String? receiptPhotoPath,
+  }) async {
+    if (amount <= 0) {
+      return {'success': false, 'message': 'Сумма оплаты должна быть больше 0'};
+    }
+
+    String? base64Receipt;
+    if (receiptPhotoPath != null && receiptPhotoPath.isNotEmpty) {
+      final f = File(receiptPhotoPath);
+      if (f.existsSync()) {
+        try {
+          final compressed = await ImageUtils.compressFileToMaxKb(f, maxKb: 50);
+          final bytes = await compressed.readAsBytes();
+          base64Receipt = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+        } catch (_) {}
+      }
+    }
+
+    final payload = {
+      'amount': amount,
+      'source': source,
+      'store_id': currentStoreId,
+      if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      if (base64Receipt != null) 'receipt_base64': base64Receipt,
+    };
+
+    // 1. Если оплата по конкретной накладной
+    if (purchaseId != null && purchaseId > 0) {
+      try {
+        final resp = await _dio.post(
+          '/api/purchases/$purchaseId/pay-debt',
+          data: payload,
+        ).timeout(const Duration(seconds: 12));
+
+        if (resp.statusCode == 200 || resp.statusCode == 201) {
+          await getSuppliers(forceRefresh: true);
+          return {
+            'success': true,
+            'message': 'Оплата накладной №$purchaseId на сумму ${amount.toStringAsFixed(2)} TJS успешно проведена!',
+          };
+        }
+      } catch (e) {
+        print('pay-debt by purchase error: $e');
+      }
+    }
+
+    // 2. Общая выплата поставщику через /api/suppliers/:id/pay
+    try {
+      final resp = await _dio.post(
+        '/api/suppliers/$supplierId/pay',
+        data: payload,
+      ).timeout(const Duration(seconds: 12));
+
+      if (resp.statusCode == 200 || resp.statusCode == 201) {
+        await getSuppliers(forceRefresh: true);
+        return {
+          'success': true,
+          'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS зафиксирована в базе gusar.tj!',
+        };
+      }
+    } catch (e) {
+      // 3. Запасной эндпоинт взаиморасчетов
+      try {
+        final altResp = await _dio.post(
+          '/api/v2/counterparties/payment',
+          data: {
+            'supplier_id': supplierId,
+            ...payload,
+          },
+        ).timeout(const Duration(seconds: 10));
+
+        if (altResp.statusCode == 200 || altResp.statusCode == 201) {
+          await getSuppliers(forceRefresh: true);
+          return {
+            'success': true,
+            'message': 'Оплата на сумму ${amount.toStringAsFixed(2)} TJS проведена!',
+          };
+        }
+      } catch (altErr) {
+        return {
+          'success': false,
+          'message': 'Ошибка сервера gusar.tj при проведении оплаты: $altErr',
+        };
+      }
+    }
+
+    return {
+      'success': false,
+      'message': 'Не удалось провести оплату поставщику на сервере gusar.tj',
+    };
+  }
+
   // 5. Создание нового контрагента в базе магазина на сервере gusar.tj (с защитой от дубликатов)
   Future<Supplier?> createSupplier(String name, {String? contact, String? address, String? inn}) async {
     final cleanName = name.trim();

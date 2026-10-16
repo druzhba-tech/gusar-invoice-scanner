@@ -31,6 +31,13 @@ class InvoiceItem {
   // Статус
   ItemStatus status;
 
+  // Поля распаковки (коробки / штуки)
+  bool isPieceBreakdown;
+  double? unitsPerPackage;
+  double? packageQuantity;
+  double? packageBuyPrice;
+  String? pieceBarcode;
+
   InvoiceItem({
     required this.id,
     required this.rawName,
@@ -49,6 +56,11 @@ class InvoiceItem {
     this.defectiveQuantity = 0.0,
     this.defectNotes,
     this.status = ItemStatus.pending,
+    this.isPieceBreakdown = false,
+    this.unitsPerPackage,
+    this.packageQuantity,
+    this.packageBuyPrice,
+    this.pieceBarcode,
   });
 
   bool get isMathValid {
@@ -96,6 +108,11 @@ class InvoiceItem {
       'defective_quantity': defectiveQuantity,
       'defect_notes': defectNotes,
       'status': status.name,
+      'is_piece_breakdown': isPieceBreakdown,
+      'units_per_package': unitsPerPackage,
+      'package_quantity': packageQuantity,
+      'package_buy_price': packageBuyPrice,
+      'piece_barcode': pieceBarcode,
     };
   }
 
@@ -121,6 +138,11 @@ class InvoiceItem {
         (e) => e.name == json['status'],
         orElse: () => ItemStatus.pending,
       ),
+      isPieceBreakdown: json['is_piece_breakdown'] == true,
+      unitsPerPackage: (json['units_per_package'] as num?)?.toDouble(),
+      packageQuantity: (json['package_quantity'] as num?)?.toDouble(),
+      packageBuyPrice: (json['package_buy_price'] as num?)?.toDouble(),
+      pieceBarcode: json['piece_barcode']?.toString(),
     );
   }
 }

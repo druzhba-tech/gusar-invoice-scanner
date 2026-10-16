@@ -15,6 +15,8 @@ import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
 import 'add_product_screen.dart';
 import '../widgets/document_photo_viewer_dialog.dart';
+import '../widgets/barcode_scanner_dialog.dart';
+import '../services/packaging_service.dart';
 import '../utils/top_notification.dart';
 
 class InvoiceReviewScreen extends StatefulWidget {
@@ -537,12 +539,25 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     );
   }
 
-  // 4. Редактирование строки накладной с самообучением и живым подсчетом
-  void _editItem(InvoiceItem item) {
+  // 4. Редактирование строки накладной с самообучением, живым подсчетом и распаковкой пачек/коробок
+  void _editItem(InvoiceItem item) async {
     final nameCtrl = TextEditingController(text: item.rawName);
     final qtyCtrl = TextEditingController(text: item.quantity.toString());
     final unitCtrl = TextEditingController(text: item.unit);
     final priceCtrl = TextEditingController(text: item.buyPrice.toStringAsFixed(2));
+    final barcodeCtrl = TextEditingController(text: item.barcode ?? item.pieceBarcode ?? '');
+
+    // Проверяем память фасовки или детектим из названия
+    final rememberedUnits = await PackagingService().getUnitsPerPackage(barcode: item.barcode, name: item.rawName);
+    double initialUnits = item.unitsPerPackage ?? rememberedUnits ?? 10.0;
+    if (initialUnits <= 1) initialUnits = 10.0;
+    final unitsCtrl = TextEditingController(text: initialUnits.toStringAsFixed(0));
+
+    bool isPiece = item.isPieceBreakdown;
+    double packageQty = item.packageQuantity ?? (isPiece ? (item.quantity / initialUnits) : item.quantity);
+    double packagePrice = item.packageBuyPrice ?? (isPiece ? (item.buyPrice * initialUnits) : item.buyPrice);
+
+    if (!mounted) return;
 
     showDialog(
       context: context,
@@ -575,8 +590,182 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                       labelStyle: TextStyle(color: Colors.white60),
                       border: OutlineInputBorder(),
                     ),
+                    onChanged: (val) {
+                      final auto = PackagingService.detectUnitsFromText(val);
+                      if (auto != null && auto > 1 && !isPiece) {
+                        setDlgState(() {
+                          initialUnits = auto;
+                          unitsCtrl.text = auto.toStringAsFixed(0);
+                        });
+                      }
+                    },
                   ),
                   const SizedBox(height: 12),
+
+                  // Секция штрихкода (с возможностью пикнуть штучный штрихкод)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: barcodeCtrl,
+                          style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 13),
+                          decoration: InputDecoration(
+                            labelText: isPiece ? 'Штрихкод штуки' : 'Штрихкод товара',
+                            labelStyle: const TextStyle(color: Colors.white60),
+                            prefixIcon: const Icon(Icons.qr_code, color: Color(0xFF38BDF8), size: 18),
+                            border: const OutlineInputBorder(),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFF0F172A),
+                          padding: const EdgeInsets.all(12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: const BorderSide(color: Color(0xFF38BDF8), width: 1.2),
+                          ),
+                        ),
+                        icon: const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF38BDF8), size: 20),
+                        tooltip: 'Пикнуть штрихкод штуки',
+                        onPressed: () async {
+                          final scanned = await BarcodeScannerDialog.scan(context);
+                          if (scanned != null && scanned.isNotEmpty) {
+                            setDlgState(() {
+                              barcodeCtrl.text = scanned;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Тумблер распаковки (коробка -> штуки)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: isPiece ? const Color(0xFFF59E0B).withOpacity(0.12) : const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: isPiece ? const Color(0xFFF59E0B).withOpacity(0.4) : Colors.white12,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.inventory_2_outlined,
+                                size: 18, color: isPiece ? const Color(0xFFFBBF24) : Colors.white54),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Принять поштучно (распаковать)',
+                                style: TextStyle(
+                                  color: isPiece ? Colors.white : Colors.white70,
+                                  fontSize: 13,
+                                  fontWeight: isPiece ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                            Switch(
+                              value: isPiece,
+                              activeColor: const Color(0xFFFBBF24),
+                              onChanged: (val) {
+                                setDlgState(() {
+                                  isPiece = val;
+                                  final units = double.tryParse(unitsCtrl.text) ?? 10.0;
+                                  if (isPiece) {
+                                    // Переключаем в штучный вид:
+                                    packageQty = double.tryParse(qtyCtrl.text) ?? packageQty;
+                                    packagePrice = double.tryParse(priceCtrl.text) ?? packagePrice;
+                                    final total = packageQty * packagePrice;
+                                    final newPieceQty = packageQty * units;
+                                    final newPiecePrice = newPieceQty > 0 ? (total / newPieceQty) : 0.0;
+
+                                    qtyCtrl.text = newPieceQty.toStringAsFixed(newPieceQty.truncateToDouble() == newPieceQty ? 0 : 2);
+                                    priceCtrl.text = newPiecePrice.toStringAsFixed(4);
+                                    unitCtrl.text = 'шт';
+                                  } else {
+                                    // Возвращаем в вид упаковки:
+                                    qtyCtrl.text = packageQty.toStringAsFixed(packageQty.truncateToDouble() == packageQty ? 0 : 2);
+                                    priceCtrl.text = packagePrice.toStringAsFixed(2);
+                                    unitCtrl.text = 'уп';
+                                  }
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                        if (isPiece) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: TextField(
+                                  controller: unitsCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                                  decoration: const InputDecoration(
+                                    labelText: 'Штук в упаковке',
+                                    labelStyle: TextStyle(color: Color(0xFFFBBF24), fontSize: 12),
+                                    border: OutlineInputBorder(),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                  ),
+                                  onChanged: (val) {
+                                    final u = double.tryParse(val);
+                                    if (u != null && u > 0) {
+                                      setDlgState(() {
+                                        final total = packageQty * packagePrice;
+                                        final newPieceQty = packageQty * u;
+                                        final newPiecePrice = newPieceQty > 0 ? (total / newPieceQty) : 0.0;
+                                        qtyCtrl.text = newPieceQty.toStringAsFixed(newPieceQty.truncateToDouble() == newPieceQty ? 0 : 2);
+                                        priceCtrl.text = newPiecePrice.toStringAsFixed(4);
+                                      });
+                                    }
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                flex: 4,
+                                child: Text(
+                                  'Исходно: ${packageQty.toStringAsFixed(0)} уп. × ${packagePrice.toStringAsFixed(2)} TJS',
+                                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.calculate_outlined, color: Color(0xFF10B981), size: 14),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'Итог строки ${curTotal.toStringAsFixed(2)} TJS строго сохраняется',
+                                    style: const TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
                   Row(
                     children: [
                       Expanded(
@@ -585,10 +774,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                           controller: qtyCtrl,
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            labelText: 'Кол-во',
-                            labelStyle: TextStyle(color: Colors.white60),
-                            border: OutlineInputBorder(),
+                          decoration: InputDecoration(
+                            labelText: isPiece ? 'Итого штук' : 'Кол-во',
+                            labelStyle: const TextStyle(color: Colors.white60),
+                            border: const OutlineInputBorder(),
                           ),
                           onChanged: (_) => setDlgState(() {}),
                         ),
@@ -613,10 +802,10 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                           controller: priceCtrl,
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            labelText: 'Цена, TJS',
-                            labelStyle: TextStyle(color: Colors.white60),
-                            border: OutlineInputBorder(),
+                          decoration: InputDecoration(
+                            labelText: isPiece ? 'Цена за шт' : 'Цена, TJS',
+                            labelStyle: const TextStyle(color: Colors.white60),
+                            border: const OutlineInputBorder(),
                           ),
                           onChanged: (_) => setDlgState(() {}),
                         ),
@@ -650,7 +839,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                       SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          'Приложение запомнит это исправление для последующих накладных',
+                          'Приложение запомнит фасовку и исправление для последующих накладных',
                           style: TextStyle(color: Colors.white38, fontSize: 11),
                         ),
                       ),
@@ -677,6 +866,8 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                   final newName = nameCtrl.text.trim();
                   final newQty = double.tryParse(qtyCtrl.text) ?? item.quantity;
                   final newPrice = double.tryParse(priceCtrl.text) ?? item.buyPrice;
+                  final newBarcode = barcodeCtrl.text.trim();
+                  final enteredUnits = double.tryParse(unitsCtrl.text) ?? 10.0;
 
                   if (newName.isNotEmpty) {
                     item.rawName = newName;
@@ -684,6 +875,28 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     item.unit = unitCtrl.text.trim().isNotEmpty ? unitCtrl.text.trim() : item.unit;
                     item.buyPrice = newPrice;
                     item.totalPrice = newQty * newPrice;
+
+                    // Сохраняем состояние фасовки
+                    item.isPieceBreakdown = isPiece;
+                    if (isPiece) {
+                      item.unitsPerPackage = enteredUnits;
+                      item.packageQuantity = packageQty;
+                      item.packageBuyPrice = packagePrice;
+                      item.pieceBarcode = newBarcode.isNotEmpty ? newBarcode : item.barcode;
+                      if (newBarcode.isNotEmpty) {
+                        item.barcode = newBarcode;
+                      }
+                      // Запоминаем в постоянный справочник фасовок
+                      await PackagingService().saveUnitsPerPackage(
+                        barcode: item.barcode,
+                        name: newName,
+                        units: enteredUnits,
+                      );
+                    } else {
+                      if (newBarcode.isNotEmpty) {
+                        item.barcode = newBarcode;
+                      }
+                    }
 
                     // 1. Пересчет точного итога накладной
                     _doc.totalAmount = _doc.items.fold(0.0, (sum, i) => sum + i.totalPrice);
@@ -1949,6 +2162,28 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
             ),
             const SizedBox(height: 8),
 
+            if (item.isPieceBreakdown) ...[
+              Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.4)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.inventory_2_outlined, size: 12, color: Color(0xFFFBBF24)),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Распаковано: ${item.packageQuantity ?? 1} уп. × ${(item.unitsPerPackage ?? item.quantity).toStringAsFixed(0)} шт = ${item.quantity} шт',
+                      style: const TextStyle(color: Color(0xFFFBBF24), fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             // Количество и Суммы
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
