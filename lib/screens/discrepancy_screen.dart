@@ -64,7 +64,7 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
     }
   }
 
-  // Диалог выбора товара из накладной и фиксации брака/недостачи
+  // Диалог выбора товара из накладной и фиксации брака/недостачи/излишка
   void _showAddDiscrepancyDialog() {
     showModalBottomSheet(
       context: context,
@@ -89,7 +89,7 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   ),
                 ],
               ),
-              const Text('Укажите позицию, по которой обнаружен брак, бой или недовоз:',
+              const Text('Укажите позицию, по которой обнаружен брак, бой, недовоз или излишек:',
                   style: TextStyle(color: Colors.white60, fontSize: 12)),
               const SizedBox(height: 12),
               Expanded(
@@ -98,15 +98,20 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   separatorBuilder: (_, __) => const Divider(color: Colors.white10),
                   itemBuilder: (ctx, i) {
                     final item = widget.document.items[i];
-                    final hasIssue = item.defectiveQuantity > 0 || (item.verifiedQuantity > 0 && item.verifiedQuantity != item.quantity);
+                    final isSurplus = (item.verifiedQuantity > item.quantity) || (item.defectNotes != null && item.defectNotes!.startsWith('Излишек'));
+                    final hasIssue = item.defectiveQuantity > 0 || (item.verifiedQuantity > 0 && item.verifiedQuantity != item.quantity) || isSurplus;
 
                     return ListTile(
                       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       leading: CircleAvatar(
-                        backgroundColor: hasIssue ? Colors.redAccent.withOpacity(0.2) : const Color(0xFF0F172A),
+                        backgroundColor: isSurplus
+                            ? const Color(0xFF38BDF8).withOpacity(0.2)
+                            : (hasIssue ? Colors.redAccent.withOpacity(0.2) : const Color(0xFF0F172A)),
                         child: Text('#${i + 1}',
                             style: TextStyle(
-                              color: hasIssue ? Colors.redAccent : const Color(0xFF38BDF8),
+                              color: isSurplus
+                                  ? const Color(0xFF38BDF8)
+                                  : (hasIssue ? Colors.redAccent : const Color(0xFF38BDF8)),
                               fontWeight: FontWeight.bold,
                               fontSize: 12,
                             )),
@@ -115,12 +120,19 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                           style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
                       subtitle: Text(
                         'По накладной: ${item.quantity} ${item.unit} • Цена: ${item.buyPrice.toStringAsFixed(2)} TJS'
-                        '${hasIssue ? ' • [Уже в акте: ${item.defectiveQuantity > 0 ? item.defectiveQuantity : (item.quantity - item.verifiedQuantity)} ${item.unit}]' : ''}',
-                        style: TextStyle(color: hasIssue ? Colors.orangeAccent : Colors.white54, fontSize: 11),
+                        '${hasIssue ? (isSurplus ? ' • [В акте: Излишек +${(item.verifiedQuantity - item.quantity > 0 ? item.verifiedQuantity - item.quantity : 0).toStringAsFixed(1)} ${item.unit}]' : ' • [В акте: ${item.defectiveQuantity > 0 ? item.defectiveQuantity : (item.quantity - item.verifiedQuantity)} ${item.unit}]') : ''}',
+                        style: TextStyle(
+                          color: isSurplus
+                              ? const Color(0xFF38BDF8)
+                              : (hasIssue ? Colors.orangeAccent : Colors.white54),
+                          fontSize: 11,
+                        ),
                       ),
                       trailing: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: hasIssue ? Colors.orangeAccent : const Color(0xFF10B981),
+                          backgroundColor: isSurplus
+                              ? const Color(0xFF0284C7)
+                              : (hasIssue ? Colors.orangeAccent : const Color(0xFF10B981)),
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         ),
                         onPressed: () {
@@ -141,12 +153,19 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
     );
   }
 
-  // Диалог ввода параметров брака или недостачи по выбранному товару
+  // Диалог ввода параметров брака, недостачи или излишка по выбранному товару
   void _showEditItemDiscrepancyDialog(InvoiceItem item, int itemIndex) {
-    String problemType = item.defectiveQuantity > 0 ? 'Брак' : 'Недостача';
-    double count = item.defectiveQuantity > 0
-        ? item.defectiveQuantity
-        : ((item.quantity - item.verifiedQuantity) > 0 ? (item.quantity - item.verifiedQuantity) : 1.0);
+    final isAlreadySurplus = (item.verifiedQuantity > item.quantity) || (item.defectNotes != null && item.defectNotes!.startsWith('Излишек'));
+    String problemType = isAlreadySurplus
+        ? 'Излишек'
+        : (item.defectiveQuantity > 0 ? 'Брак' : 'Недостача');
+
+    double count = isAlreadySurplus
+        ? (item.verifiedQuantity - item.quantity > 0 ? item.verifiedQuantity - item.quantity : 1.0)
+        : (item.defectiveQuantity > 0
+            ? item.defectiveQuantity
+            : ((item.quantity - item.verifiedQuantity) > 0 ? (item.quantity - item.verifiedQuantity) : 1.0));
+
     final countCtrl = TextEditingController(text: count.toStringAsFixed(count.truncateToDouble() == count ? 0 : 2));
     final noteCtrl = TextEditingController(text: item.defectNotes ?? '');
 
@@ -154,17 +173,23 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
       context: context,
       builder: (dlgCtx) => StatefulBuilder(
         builder: (ctx, setDlgState) {
-          final claimSum = (double.tryParse(countCtrl.text.replaceAll(',', '.')) ?? 0.0) * item.buyPrice;
+          final isSurplusType = problemType == 'Излишек';
+          final parsedCount = double.tryParse(countCtrl.text.replaceAll(',', '.')) ?? 0.0;
+          final claimSum = parsedCount * item.buyPrice;
 
           return AlertDialog(
             backgroundColor: const Color(0xFF1E293B),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: Row(
               children: [
-                const Icon(Icons.report_problem_rounded, color: Colors.redAccent, size: 24),
+                Icon(
+                  isSurplusType ? Icons.add_circle_outline_rounded : Icons.report_problem_rounded,
+                  color: isSurplusType ? const Color(0xFF38BDF8) : Colors.redAccent,
+                  size: 24,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text('Позиция #$itemIndex: Расхождение',
+                  child: Text('Позиция #$itemIndex: ${isSurplusType ? "Излишек" : "Расхождение"}',
                       style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
                 ),
               ],
@@ -185,14 +210,20 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
-                    children: ['Недостача', 'Брак', 'Бой', 'Срок годности'].map((type) {
+                    runSpacing: 6,
+                    children: ['Недостача', 'Брак', 'Бой', 'Срок годности', 'Излишек'].map((type) {
                       final isSelected = problemType == type;
+                      final isSurplusChip = type == 'Излишек';
                       return ChoiceChip(
                         label: Text(type),
                         selected: isSelected,
-                        selectedColor: Colors.redAccent.withOpacity(0.3),
+                        selectedColor: isSurplusChip
+                            ? const Color(0xFF0284C7).withOpacity(0.35)
+                            : Colors.redAccent.withOpacity(0.3),
                         labelStyle: TextStyle(
-                          color: isSelected ? Colors.redAccent : Colors.white70,
+                          color: isSelected
+                              ? (isSurplusChip ? const Color(0xFF38BDF8) : Colors.redAccent)
+                              : Colors.white70,
                           fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                           fontSize: 11,
                         ),
@@ -205,8 +236,10 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  Text('Количество расхождения (${item.unit}):',
-                      style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text(
+                    isSurplusType ? 'Количество излишка (+${item.unit}):' : 'Количество расхождения (${item.unit}):',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
                   const SizedBox(height: 6),
                   Row(
                     children: [
@@ -225,7 +258,11 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                           controller: countCtrl,
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                          style: TextStyle(
+                            color: isSurplusType ? const Color(0xFF38BDF8) : Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
                           decoration: InputDecoration(
                             filled: true,
                             fillColor: const Color(0xFF0F172A),
@@ -247,13 +284,16 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  const Text('Причина / Примечание для экспедитора:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text(
+                    isSurplusType ? 'Примечание по излишку:' : 'Причина / Примечание для экспедитора:',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
                   const SizedBox(height: 6),
                   TextField(
                     controller: noteCtrl,
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
-                      hintText: 'Например: разбита банка, порвана упаковка...',
+                      hintText: isSurplusType ? 'Например: лишняя коробка в паллете...' : 'Например: разбита банка, порвана упаковка...',
                       hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
                       filled: true,
                       fillColor: const Color(0xFF0F172A),
@@ -266,16 +306,31 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Colors.red.shade900.withOpacity(0.2),
+                      color: isSurplusType
+                          ? const Color(0xFF0284C7).withOpacity(0.2)
+                          : Colors.red.shade900.withOpacity(0.2),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
+                      border: Border.all(
+                        color: isSurplusType
+                            ? const Color(0xFF38BDF8).withOpacity(0.4)
+                            : Colors.redAccent.withOpacity(0.3),
+                      ),
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Сумма претензии:', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                        Text('${claimSum.toStringAsFixed(2)} TJS',
-                            style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(
+                          isSurplusType ? 'Сумма излишка (сверх накл.):' : 'Сумма претензии:',
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                        Text(
+                          '${isSurplusType ? "+" : ""}${claimSum.toStringAsFixed(2)} TJS',
+                          style: TextStyle(
+                            color: isSurplusType ? const Color(0xFF38BDF8) : Colors.redAccent,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -297,20 +352,34 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   }
 
                   setState(() {
-                    if (problemType == 'Брак' || problemType == 'Бой' || problemType == 'Срок годности') {
+                    if (problemType == 'Излишек') {
+                      item.defectiveQuantity = 0.0;
+                      item.verifiedQuantity = item.quantity + val;
+                      item.defectNotes = noteCtrl.text.trim().isNotEmpty
+                          ? 'Излишек: ${noteCtrl.text.trim()}'
+                          : 'Излишек (+${val.toStringAsFixed(val.truncateToDouble() == val ? 0 : 2)} ${item.unit})';
+                    } else if (problemType == 'Брак' || problemType == 'Бой' || problemType == 'Срок годности') {
                       item.defectiveQuantity = val;
                       item.verifiedQuantity = (item.quantity - val).clamp(0.0, item.quantity);
+                      item.defectNotes = noteCtrl.text.trim().isNotEmpty
+                          ? '$problemType: ${noteCtrl.text.trim()}'
+                          : problemType;
                     } else {
                       item.defectiveQuantity = 0.0;
                       item.verifiedQuantity = (item.quantity - val).clamp(0.0, item.quantity);
+                      item.defectNotes = noteCtrl.text.trim().isNotEmpty
+                          ? 'Недостача: ${noteCtrl.text.trim()}'
+                          : 'Недостача';
                     }
-                    item.defectNotes = noteCtrl.text.trim().isNotEmpty
-                        ? '$problemType: ${noteCtrl.text.trim()}'
-                        : problemType;
                   });
 
                   Navigator.pop(dlgCtx);
-                  TopNotification.showSuccess(context, 'Расхождение по позиции #${itemIndex} зафиксировано!');
+                  TopNotification.showSuccess(
+                    context,
+                    problemType == 'Излишек'
+                        ? 'Излишек по позиции #$itemIndex зафиксирован (+${val} ${item.unit})!'
+                        : 'Расхождение по позиции #$itemIndex зафиксировано!',
+                  );
                 },
                 child: const Text('Сохранить', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
@@ -336,7 +405,7 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
     }).toList();
 
     if (discrepancyItems.isEmpty) {
-      TopNotification.showWarning(context, 'Добавьте хотя бы один товар с браком или недостачей!');
+      TopNotification.showWarning(context, 'Добавьте хотя бы один товар с браком, недостачей или излишком!');
       return;
     }
 
@@ -367,10 +436,17 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
       return i.defectiveQuantity > 0 || (i.verifiedQuantity > 0 && i.verifiedQuantity != i.quantity);
     }).toList();
 
-    double totalClaim = 0.0;
+    double totalShortageClaim = 0.0;
+    double totalSurplusAmount = 0.0;
     for (var it in discrepancyItems) {
-      final diff = it.defectiveQuantity > 0 ? it.defectiveQuantity : (it.quantity - it.verifiedQuantity);
-      totalClaim += (diff > 0 ? diff : 0.0) * it.buyPrice;
+      final isSurplus = (it.verifiedQuantity > it.quantity) || (it.defectNotes?.startsWith('Излишек') ?? false);
+      if (isSurplus) {
+        final diff = (it.verifiedQuantity - it.quantity).clamp(0.0, double.infinity);
+        totalSurplusAmount += diff * it.buyPrice;
+      } else {
+        final diff = it.defectiveQuantity > 0 ? it.defectiveQuantity : (it.quantity - it.verifiedQuantity);
+        totalShortageClaim += (diff > 0 ? diff : 0.0) * it.buyPrice;
+      }
     }
 
     return Scaffold(
@@ -403,14 +479,18 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Сводный блок претензии
+                  // Сводный блок претензии / излишков
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: discrepancyItems.isNotEmpty ? Colors.red.shade900.withOpacity(0.3) : const Color(0xFF1E293B),
+                      color: discrepancyItems.isNotEmpty
+                          ? (totalShortageClaim > 0 ? Colors.red.shade900.withOpacity(0.3) : const Color(0xFF0284C7).withOpacity(0.2))
+                          : const Color(0xFF1E293B),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: discrepancyItems.isNotEmpty ? Colors.redAccent.withOpacity(0.5) : Colors.white12,
+                        color: discrepancyItems.isNotEmpty
+                            ? (totalShortageClaim > 0 ? Colors.redAccent.withOpacity(0.5) : const Color(0xFF38BDF8).withOpacity(0.5))
+                            : Colors.white12,
                       ),
                     ),
                     child: Column(
@@ -418,8 +498,12 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                         Row(
                           children: [
                             Icon(
-                              discrepancyItems.isNotEmpty ? Icons.report_problem_rounded : Icons.info_outline,
-                              color: discrepancyItems.isNotEmpty ? Colors.redAccent : const Color(0xFF38BDF8),
+                              discrepancyItems.isNotEmpty
+                                  ? (totalShortageClaim > 0 ? Icons.report_problem_rounded : Icons.add_box_rounded)
+                                  : Icons.info_outline,
+                              color: discrepancyItems.isNotEmpty
+                                  ? (totalShortageClaim > 0 ? Colors.redAccent : const Color(0xFF38BDF8))
+                                  : const Color(0xFF38BDF8),
                               size: 26,
                             ),
                             const SizedBox(width: 12),
@@ -447,14 +531,32 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                           const SizedBox(height: 10),
                           const Divider(color: Colors.white12, height: 1),
                           const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('ОБЩАЯ СУММА ПРЕТЕНЗИИ:', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
-                              Text('${totalClaim.toStringAsFixed(2)} TJS',
-                                  style: const TextStyle(color: Colors.redAccent, fontSize: 15, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
+                          if (totalShortageClaim > 0)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('К УДЕРЖАНИЮ (НЕДОВОЗ / БРАК):',
+                                      style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
+                                  Text('${totalShortageClaim.toStringAsFixed(2)} TJS',
+                                      style: const TextStyle(color: Colors.redAccent, fontSize: 15, fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                            ),
+                          if (totalSurplusAmount > 0)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('ИЗЛИШКИ (СВЕРХ НАКЛАДНОЙ):',
+                                      style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
+                                  Text('+${totalSurplusAmount.toStringAsFixed(2)} TJS',
+                                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 15, fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                            ),
                         ],
                       ],
                     ),
@@ -504,7 +606,7 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                           SizedBox(height: 8),
                           Text('Расхождений нет', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
                           SizedBox(height: 4),
-                          Text('Нажмите кнопку выше, чтобы добавить позицию с браком, боем или недостачей',
+                          Text('Нажмите кнопку выше, чтобы добавить позицию с браком, боем, недостачей или излишком',
                               textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
                         ],
                       ),
@@ -512,16 +614,24 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                   else
                     ...discrepancyItems.map((item) {
                       final itemIndex = widget.document.items.indexOf(item) + 1;
+                      final isSurplus = (item.verifiedQuantity > item.quantity) || (item.defectNotes?.startsWith('Излишек') ?? false);
                       final shortage = item.quantity - item.verifiedQuantity;
-                      final diff = item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0);
-                      final claimAmount = diff * item.buyPrice;
+                      final surplus = item.verifiedQuantity - item.quantity;
+                      final diff = isSurplus
+                          ? (surplus > 0 ? surplus : 0.0)
+                          : (item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0));
+                      final itemAmount = diff * item.buyPrice;
 
                       return Container(
                         margin: const EdgeInsets.only(bottom: 10),
                         decoration: BoxDecoration(
                           color: const Color(0xFF1E293B),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+                          border: Border.all(
+                            color: isSurplus
+                                ? const Color(0xFF38BDF8).withOpacity(0.5)
+                                : Colors.redAccent.withOpacity(0.4),
+                          ),
                         ),
                         child: Padding(
                           padding: const EdgeInsets.all(12),
@@ -533,9 +643,17 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                                 children: [
                                   CircleAvatar(
                                     radius: 12,
-                                    backgroundColor: Colors.redAccent.withOpacity(0.2),
-                                    child: Text('#$itemIndex',
-                                        style: const TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                                    backgroundColor: isSurplus
+                                        ? const Color(0xFF0284C7).withOpacity(0.25)
+                                        : Colors.redAccent.withOpacity(0.2),
+                                    child: Text(
+                                      '#$itemIndex',
+                                      style: TextStyle(
+                                        color: isSurplus ? const Color(0xFF38BDF8) : Colors.redAccent,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
@@ -568,8 +686,12 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                                     style: const TextStyle(color: Colors.white70, fontSize: 11),
                                   ),
                                   Text(
-                                    'Брак/Недовоз: $diff ${item.unit}',
-                                    style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                                    isSurplus ? 'Излишек: +$diff ${item.unit}' : 'Брак/Недовоз: $diff ${item.unit}',
+                                    style: TextStyle(
+                                      color: isSurplus ? const Color(0xFF38BDF8) : Colors.redAccent,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -581,11 +703,20 @@ class _DiscrepancyScreenState extends State<DiscrepancyScreen> {
                                     item.defectNotes != null && item.defectNotes!.isNotEmpty
                                         ? 'Причина: ${item.defectNotes}'
                                         : 'Причина: Не указана',
-                                    style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
+                                    style: TextStyle(
+                                      color: isSurplus ? const Color(0xFF38BDF8) : Colors.orangeAccent,
+                                      fontSize: 11,
+                                    ),
                                   ),
                                   Text(
-                                    'Претензия: ${claimAmount.toStringAsFixed(2)} TJS',
-                                    style: const TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold, fontSize: 12),
+                                    isSurplus
+                                        ? 'Сверх накл.: +${itemAmount.toStringAsFixed(2)} TJS'
+                                        : 'Претензия: ${itemAmount.toStringAsFixed(2)} TJS',
+                                    style: TextStyle(
+                                      color: isSurplus ? const Color(0xFF38BDF8) : const Color(0xFF10B981),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
                                   ),
                                 ],
                               ),

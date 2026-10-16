@@ -1,34 +1,103 @@
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
+
+/// Фоновый воркер поворота изображения в отдельном изоляте (не блокирует UI)
+Uint8List? _rotateComputeWorker(Map<String, dynamic> args) {
+  try {
+    final Uint8List bytes = args['bytes'];
+    final int angle = args['angle'];
+    img.Image? image = img.decodeImage(bytes);
+    if (image == null) return null;
+    image = img.bakeOrientation(image);
+    final rotated = img.copyRotate(image, angle: angle);
+    return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+  } catch (e) {
+    print('_rotateComputeWorker error: $e');
+    return null;
+  }
+}
+
+/// Фоновый воркер обрезки и поворота изображения в отдельном изоляте
+Uint8List? _cropComputeWorker(Map<String, dynamic> args) {
+  try {
+    final Uint8List bytes = args['bytes'];
+    final double leftFraction = args['leftFraction'];
+    final double rightFraction = args['rightFraction'];
+    final double topFraction = args['topFraction'];
+    final double bottomFraction = args['bottomFraction'];
+    final int quarterTurns = args['quarterTurns'] ?? 0;
+    final int quality = args['quality'] ?? 92;
+
+    img.Image? image = img.decodeImage(bytes);
+    if (image == null) return null;
+
+    image = img.bakeOrientation(image);
+
+    final normalizedTurns = ((quarterTurns % 4) + 4) % 4;
+    if (normalizedTurns != 0) {
+      image = img.copyRotate(image, angle: normalizedTurns * 90);
+    }
+
+    int cropX = (image.width * leftFraction).round();
+    int cropY = (image.height * topFraction).round();
+    int cropW = (image.width * (1.0 - leftFraction - rightFraction)).round();
+    int cropH = (image.height * (1.0 - topFraction - bottomFraction)).round();
+
+    if (cropW >= 50 && cropH >= 50 && (leftFraction > 0 || rightFraction > 0 || topFraction > 0 || bottomFraction > 0)) {
+      image = img.copyCrop(image, x: cropX, y: cropY, width: cropW, height: cropH);
+    }
+
+    return Uint8List.fromList(img.encodeJpg(image, quality: quality));
+  } catch (e) {
+    print('_cropComputeWorker error: $e');
+    return null;
+  }
+}
 
 /// Утилита для обработки фотографий товаров и документов:
 /// 1. Приведение к квадратному формату 1:1 (центр-кроп) для товаров
 /// 2. Коррекция EXIF-ориентации снимков с камеры
-/// 3. Физический поворот фото на 90°
+/// 3. Физический поворот фото на 90° в обе стороны
 /// 4. Авто-выравнивание (auto-orientation/deskew) накладных перед чтением нейросетью
 /// 5. Быстрое сжатие до оптимального размера без потери качества
 class ImageUtils {
-  /// Физический поворот файла изображения на 90 градусов по часовой стрелке
-  static Future<File> rotateImage90Degrees(File sourceFile, {String? targetPath}) async {
+  /// Быстрый поворот файла изображения в фоновом изоляте compute()
+  /// quarterTurns: 1 = +90° (вправо), 2 = 180°, 3 = +270° (или -90° влево)
+  static Future<File> rotateImageByQuarterTurns(File sourceFile, int quarterTurns, {String? targetPath}) async {
+    final turns = ((quarterTurns % 4) + 4) % 4;
+    if (turns == 0) return sourceFile;
+
     try {
       final outPath = targetPath ?? sourceFile.path;
       final bytes = await sourceFile.readAsBytes();
-      img.Image? image = img.decodeImage(bytes);
-      if (image == null) return sourceFile;
 
-      image = img.bakeOrientation(image);
-      final rotated = img.copyRotate(image, angle: 90);
-      final jpgBytes = Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+      final rotatedBytes = await compute(_rotateComputeWorker, {
+        'bytes': bytes,
+        'angle': turns * 90,
+      });
+
+      if (rotatedBytes == null) return sourceFile;
       final outFile = File(outPath);
-      await outFile.writeAsBytes(jpgBytes);
+      await outFile.writeAsBytes(rotatedBytes);
       return outFile;
     } catch (e) {
-      print('rotateImage90Degrees error: $e');
+      print('rotateImageByQuarterTurns error: $e');
       return sourceFile;
     }
+  }
+
+  /// Физический поворот файла изображения на 90 градусов по часовой стрелке (вправо)
+  static Future<File> rotateImage90Degrees(File sourceFile, {String? targetPath}) async {
+    return rotateImageByQuarterTurns(sourceFile, 1, targetPath: targetPath);
+  }
+
+  /// Физический поворот файла изображения на 90 градусов против часовой стрелки (влево)
+  static Future<File> rotateImageMinus90Degrees(File sourceFile, {String? targetPath}) async {
+    return rotateImageByQuarterTurns(sourceFile, 3, targetPath: targetPath);
   }
 
   /// Автоматическое выравнивание листа накладной:
@@ -295,40 +364,33 @@ class ImageUtils {
     }
   }
 
-  /// Ручная обрезка полей листа накладной в процентах (0.0 - 45.0)
+  /// Ручная обрезка полей листа накладной в процентах (0.0 - 45.0) с опциональным поворотом
   static Future<File> cropImageMargins(
     File sourceFile, {
     double topPercent = 0.0,
     double bottomPercent = 0.0,
     double leftPercent = 0.0,
     double rightPercent = 0.0,
+    int quarterTurns = 0,
     int quality = 92,
   }) async {
     try {
       final bytes = await sourceFile.readAsBytes();
-      img.Image? image = img.decodeImage(bytes);
-      if (image == null) return sourceFile;
+      final croppedBytes = await compute(_cropComputeWorker, {
+        'bytes': bytes,
+        'topFraction': topPercent.clamp(0.0, 45.0) / 100.0,
+        'bottomFraction': bottomPercent.clamp(0.0, 45.0) / 100.0,
+        'leftFraction': leftPercent.clamp(0.0, 45.0) / 100.0,
+        'rightFraction': rightPercent.clamp(0.0, 45.0) / 100.0,
+        'quarterTurns': quarterTurns,
+        'quality': quality,
+      });
 
-      image = img.bakeOrientation(image);
-
-      final leftClamped = leftPercent.clamp(0.0, 45.0) / 100.0;
-      final rightClamped = rightPercent.clamp(0.0, 45.0) / 100.0;
-      final topClamped = topPercent.clamp(0.0, 45.0) / 100.0;
-      final bottomClamped = bottomPercent.clamp(0.0, 45.0) / 100.0;
-
-      int cropX = (image.width * leftClamped).round();
-      int cropY = (image.height * topClamped).round();
-      int cropW = (image.width * (1.0 - leftClamped - rightClamped)).round();
-      int cropH = (image.height * (1.0 - topClamped - bottomClamped)).round();
-
-      if (cropW < 50 || cropH < 50) return sourceFile;
-
-      final cropped = img.copyCrop(image, x: cropX, y: cropY, width: cropW, height: cropH);
-      final jpgBytes = Uint8List.fromList(img.encodeJpg(cropped, quality: quality));
+      if (croppedBytes == null) return sourceFile;
 
       final outPath = '${sourceFile.parent.path}/crop_${DateTime.now().millisecondsSinceEpoch}_${sourceFile.uri.pathSegments.last}';
       final outFile = File(outPath);
-      await outFile.writeAsBytes(jpgBytes);
+      await outFile.writeAsBytes(croppedBytes);
       return outFile;
     } catch (e) {
       print('cropImageMargins error: $e');

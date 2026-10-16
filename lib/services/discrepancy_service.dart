@@ -38,16 +38,25 @@ class DiscrepancyService {
     final pdf = pw.Document(theme: theme);
 
     final discrepancyItems = document.items.where((i) {
-      return i.defectiveQuantity > 0 || (i.verifiedQuantity > 0 && i.verifiedQuantity != i.quantity);
+      return i.defectiveQuantity > 0 ||
+          (i.verifiedQuantity > 0 && i.verifiedQuantity != i.quantity) ||
+          (i.defectNotes != null && i.defectNotes!.startsWith('Излишек'));
     }).toList();
 
     final dateFormat = DateFormat('dd.MM.yyyy HH:mm');
     double totalClaimAmount = 0.0;
+    double totalSurplusAmount = 0.0;
 
     for (var item in discrepancyItems) {
-      final shortage = item.quantity - item.verifiedQuantity;
-      final totalDiff = item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0);
-      totalClaimAmount += (totalDiff * item.buyPrice);
+      final isSurplus = (item.verifiedQuantity > item.quantity) || (item.defectNotes != null && item.defectNotes!.startsWith('Излишек'));
+      if (isSurplus) {
+        final diff = item.verifiedQuantity - item.quantity > 0 ? (item.verifiedQuantity - item.quantity) : 0.0;
+        totalSurplusAmount += (diff * item.buyPrice);
+      } else {
+        final shortage = item.quantity - item.verifiedQuantity;
+        final totalDiff = item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0);
+        totalClaimAmount += (totalDiff * item.buyPrice);
+      }
     }
 
     pdf.addPage(
@@ -166,7 +175,7 @@ class DiscrepancyService {
                       _cell('Наименование товара', isHeader: true),
                       _cell('По накл.', isHeader: true),
                       _cell('Факт', isHeader: true),
-                      _cell('Брак / Недовоз', isHeader: true),
+                      _cell('Брак / Недовоз / Излишек', isHeader: true),
                       _cell('Цена', isHeader: true),
                       _cell('Сумма', isHeader: true),
                     ],
@@ -175,11 +184,14 @@ class DiscrepancyService {
                   ...discrepancyItems.asMap().entries.map((entry) {
                     final idx = entry.key + 1;
                     final item = entry.value;
+                    final isSurplus = (item.verifiedQuantity > item.quantity) || (item.defectNotes != null && item.defectNotes!.startsWith('Излишек'));
                     final shortage = item.quantity - item.verifiedQuantity;
-                    final totalDiff = item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0);
-                    final claimAmount = totalDiff * item.buyPrice;
+                    final totalDiff = isSurplus
+                        ? (item.verifiedQuantity - item.quantity > 0 ? (item.verifiedQuantity - item.quantity) : 0.0)
+                        : (item.defectiveQuantity > 0 ? item.defectiveQuantity : (shortage > 0 ? shortage : 0.0));
+                    final lineAmount = totalDiff * item.buyPrice;
 
-                    String reason = item.defectNotes ?? (item.defectiveQuantity > 0 ? 'Брак' : 'Недостача');
+                    String reason = item.defectNotes ?? (item.defectiveQuantity > 0 ? 'Брак' : (isSurplus ? 'Излишек' : 'Недостача'));
 
                     return pw.TableRow(
                       children: [
@@ -187,9 +199,9 @@ class DiscrepancyService {
                         _cell(item.matchedProductName ?? item.rawName),
                         _cell('${item.quantity} ${item.unit}'),
                         _cell('${item.verifiedQuantity} ${item.unit}'),
-                        _cell('$totalDiff ${item.unit}\n($reason)'),
+                        _cell('${isSurplus ? "+" : ""}$totalDiff ${item.unit}\n($reason)'),
                         _cell('${item.buyPrice.toStringAsFixed(2)}'),
-                        _cell('${claimAmount.toStringAsFixed(2)} TJS'),
+                        _cell('${isSurplus ? "+" : ""}${lineAmount.toStringAsFixed(2)} TJS'),
                       ],
                     );
                   }),
@@ -198,20 +210,40 @@ class DiscrepancyService {
 
               pw.SizedBox(height: 10),
 
-              // Итого претензия
+              // Итого претензия и излишки
               pw.Align(
                 alignment: pw.Alignment.centerRight,
-                child: pw.Container(
-                  padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: pw.BoxDecoration(
-                    color: PdfColors.grey100,
-                    borderRadius: pw.BorderRadius.circular(4),
-                    border: pw.Border.all(color: PdfColors.grey300),
-                  ),
-                  child: pw.Text(
-                    'ВСЕГО К УДЕРЖАНИЮ: ${totalClaimAmount.toStringAsFixed(2)} TJS',
-                    style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.red800),
-                  ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    if (totalClaimAmount > 0)
+                      pw.Container(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        margin: const pw.EdgeInsets.only(bottom: 4),
+                        decoration: pw.BoxDecoration(
+                          color: PdfColors.red50,
+                          borderRadius: pw.BorderRadius.circular(4),
+                          border: pw.Border.all(color: PdfColors.red200),
+                        ),
+                        child: pw.Text(
+                          'К УДЕРЖАНИЮ (НЕДОВОЗ / БРАК): ${totalClaimAmount.toStringAsFixed(2)} TJS',
+                          style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.red800),
+                        ),
+                      ),
+                    if (totalSurplusAmount > 0)
+                      pw.Container(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        decoration: pw.BoxDecoration(
+                          color: PdfColors.blue50,
+                          borderRadius: pw.BorderRadius.circular(4),
+                          border: pw.Border.all(color: PdfColors.blue200),
+                        ),
+                        child: pw.Text(
+                          'ИЗЛИШКИ (СВЕРХ НАКЛАДНОЙ): +${totalSurplusAmount.toStringAsFixed(2)} TJS',
+                          style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+                        ),
+                      ),
+                  ],
                 ),
               ),
 

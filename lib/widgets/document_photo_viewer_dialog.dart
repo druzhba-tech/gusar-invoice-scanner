@@ -147,17 +147,27 @@ class _DocumentPhotoViewerDialogState extends State<DocumentPhotoViewerDialog> {
                       ],
                     ),
                   ),
-                  // Кнопка поворота
-                  if (fileExists)
+                  // Кнопки поворота влево и вправо
+                  if (fileExists) ...[
+                    IconButton(
+                      icon: const Icon(Icons.rotate_left_rounded, color: Color(0xFF38BDF8), size: 22),
+                      tooltip: 'Повернуть влево (-90°)',
+                      onPressed: () {
+                        setState(() {
+                          _rotationQuarterTurns = (_rotationQuarterTurns + 3) % 4;
+                        });
+                      },
+                    ),
                     IconButton(
                       icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8), size: 22),
-                      tooltip: 'Повернуть на 90°',
+                      tooltip: 'Повернуть вправо (+90°)',
                       onPressed: () {
                         setState(() {
                           _rotationQuarterTurns = (_rotationQuarterTurns + 1) % 4;
                         });
                       },
                     ),
+                  ],
                   // Кнопка закрытия
                   IconButton(
                     icon: const Icon(Icons.close_rounded, color: Colors.white70),

@@ -29,6 +29,7 @@ class CameraScannerScreen extends StatefulWidget {
 
 class _CameraScannerScreenState extends State<CameraScannerScreen> {
   final List<String> _capturedPages = [];
+  final Map<String, int> _pageRotations = {};
   bool _isProcessing = false;
   String _processingStatus = 'Анализ документа...';
 
@@ -126,11 +127,23 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
 
     setState(() {
       _isProcessing = true;
-      _processingStatus = 'Авто-выравнивание, поворот и оцифровка накладной...';
+      _processingStatus = 'Подготовка и оцифровка накладной...';
     });
 
     try {
-      // 1. Авто-выравнивание и распознавание накладной / чека через ИИ
+      // 0. Если пользователь повернул какие-то страницы в UI, применяем поворот в фоне
+      for (int i = 0; i < _capturedPages.length; i++) {
+        final path = _capturedPages[i];
+        final turns = _pageRotations[path] ?? 0;
+        if (turns % 4 != 0 && !path.toLowerCase().endsWith('.pdf')) {
+          final rotated = await ImageUtils.rotateImageByQuarterTurns(File(path), turns);
+          _capturedPages[i] = rotated.path;
+          _pageRotations.remove(path);
+          _pageRotations[rotated.path] = 0;
+        }
+      }
+
+      // 1. Распознавание накладной / чека через ИИ
       final doc = await _ocr.parseInvoiceWithVisionAi(_capturedPages);
 
       if (doc != null && doc.pagePhotos.isNotEmpty) {
@@ -485,10 +498,13 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                         color: Colors.black45,
                         child: path.toLowerCase().endsWith('.pdf')
                             ? const Icon(Icons.picture_as_pdf, color: Colors.redAccent, size: 36)
-                            : Image.file(
-                                File(path),
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white30),
+                            : RotatedBox(
+                                quarterTurns: _pageRotations[path] ?? 0,
+                                child: Image.file(
+                                  File(path),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white30),
+                                ),
                               ),
                       ),
                     ),
@@ -514,30 +530,49 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                     // Кнопка ручной обрезки полей листа
                     if (!path.toLowerCase().endsWith('.pdf'))
                       IconButton(
-                        icon: const Icon(Icons.crop_rounded, color: Color(0xFF10B981)),
+                        padding: const EdgeInsets.all(6),
+                        constraints: const BoxConstraints(),
+                        icon: const Icon(Icons.crop_rounded, color: Color(0xFF10B981), size: 20),
                         tooltip: 'Обрезать поля',
                         onPressed: () => _showManualCropDialog(index),
                       ),
-                    // Кнопка ручного поворота листа на 90°
+                    // Кнопка мгновенного поворота листа влево (-90°)
                     if (!path.toLowerCase().endsWith('.pdf'))
                       IconButton(
-                        icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8)),
-                        tooltip: 'Повернуть на 90°',
-                        onPressed: () async {
-                          final rotated = await ImageUtils.rotateImage90Degrees(File(path));
-                          await FileImage(File(path)).evict();
+                        padding: const EdgeInsets.all(6),
+                        constraints: const BoxConstraints(),
+                        icon: const Icon(Icons.rotate_left_rounded, color: Color(0xFF38BDF8), size: 22),
+                        tooltip: 'Повернуть влево (-90°)',
+                        onPressed: () {
                           setState(() {
-                            _capturedPages[index] = rotated.path;
+                            _pageRotations[path] = ((_pageRotations[path] ?? 0) + 3) % 4;
+                          });
+                          HapticFeedback.selectionClick();
+                        },
+                      ),
+                    // Кнопка мгновенного поворота листа вправо (+90°)
+                    if (!path.toLowerCase().endsWith('.pdf'))
+                      IconButton(
+                        padding: const EdgeInsets.all(6),
+                        constraints: const BoxConstraints(),
+                        icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8), size: 22),
+                        tooltip: 'Повернуть вправо (+90°)',
+                        onPressed: () {
+                          setState(() {
+                            _pageRotations[path] = ((_pageRotations[path] ?? 0) + 1) % 4;
                           });
                           HapticFeedback.selectionClick();
                         },
                       ),
                     // Кнопка удаления листа
                     IconButton(
-                      icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                      padding: const EdgeInsets.all(6),
+                      constraints: const BoxConstraints(),
+                      icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                       tooltip: 'Удалить лист',
                       onPressed: () {
                         setState(() {
+                          _pageRotations.remove(_capturedPages[index]);
                           _capturedPages.removeAt(index);
                         });
                       },
@@ -565,6 +600,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
     double bottomMargin = 0.0;
     double leftMargin = 0.0;
     double rightMargin = 0.0;
+    int dialogRotationTurns = _pageRotations[currentPath] ?? 0;
     bool isSaving = false;
 
     showModalBottomSheet(
@@ -615,10 +651,13 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                       child: Stack(
                         alignment: Alignment.center,
                         children: [
-                          Image.file(
-                            file,
-                            fit: BoxFit.contain,
-                            key: ValueKey(currentPath),
+                          RotatedBox(
+                            quarterTurns: dialogRotationTurns,
+                            child: Image.file(
+                              file,
+                              fit: BoxFit.contain,
+                              key: ValueKey(currentPath),
+                            ),
                           ),
                           Positioned(
                             top: 0,
@@ -662,34 +701,43 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Color(0xFF38BDF8)),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      ),
+                      icon: const Icon(Icons.rotate_left_rounded, color: Color(0xFF38BDF8), size: 18),
+                      label: const Text('Влево 90°', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12)),
+                      onPressed: () {
+                        setCropState(() {
+                          dialogRotationTurns = ((dialogRotationTurns + 3) % 4);
+                        });
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFF38BDF8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                       ),
                       icon: const Icon(Icons.rotate_right_rounded, color: Color(0xFF38BDF8), size: 18),
-                      label: const Text('Повернуть 90°', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12)),
-                      onPressed: () async {
-                        final rotated = await ImageUtils.rotateImage90Degrees(File(currentPath));
-                        await FileImage(File(currentPath)).evict();
+                      label: const Text('Вправо 90°', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 12)),
+                      onPressed: () {
                         setCropState(() {
-                          currentPath = rotated.path;
-                        });
-                        setState(() {
-                          _capturedPages[index] = currentPath;
+                          dialogRotationTurns = ((dialogRotationTurns + 1) % 4);
                         });
                       },
                     ),
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Colors.white24),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                       ),
                       icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 18),
-                      label: const Text('Сбросить поля', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                      label: const Text('Сбросить', style: TextStyle(color: Colors.white70, fontSize: 12)),
                       onPressed: () {
                         setCropState(() {
                           topMargin = 0;
                           bottomMargin = 0;
                           leftMargin = 0;
                           rightMargin = 0;
+                          dialogRotationTurns = 0;
                         });
                       },
                     ),
@@ -779,13 +827,16 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.crop_rounded, color: Colors.white),
                   label: Text(
-                    isSaving ? 'Сохранение...' : 'Применить обрезку',
+                    isSaving ? 'Сохранение...' : 'Применить обрезку и поворот',
                     style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   onPressed: isSaving
                       ? null
                       : () async {
-                          if (topMargin == 0 && bottomMargin == 0 && leftMargin == 0 && rightMargin == 0) {
+                          final hasCrop = topMargin > 0 || bottomMargin > 0 || leftMargin > 0 || rightMargin > 0;
+                          final hasRotation = dialogRotationTurns % 4 != 0;
+
+                          if (!hasCrop && !hasRotation) {
                             Navigator.pop(modalCtx);
                             return;
                           }
@@ -797,6 +848,7 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                             bottomPercent: bottomMargin,
                             leftPercent: leftMargin,
                             rightPercent: rightMargin,
+                            quarterTurns: dialogRotationTurns,
                           );
                           await FileImage(File(currentPath)).evict();
                           await FileImage(cropped).evict();
@@ -804,10 +856,12 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
                           if (mounted) {
                             setState(() {
                               _capturedPages[index] = cropped.path;
+                              _pageRotations.remove(currentPath);
+                              _pageRotations[cropped.path] = 0;
                             });
                           }
                           Navigator.pop(modalCtx);
-                          TopNotification.showSuccess(context, 'Лист #${index + 1} успешно обрезан!');
+                          TopNotification.showSuccess(context, 'Лист #${index + 1} успешно сохранен!');
                         },
                 ),
               ],
