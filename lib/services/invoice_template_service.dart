@@ -247,12 +247,22 @@ class InvoiceTemplateService {
       final norm = _normalize(item.rawName);
       SupplierTemplateItem? found = template.items[norm];
 
-      // Если точного совпадения нет, ищем по подстроке
+      // Если точного совпадения нет, ищем по высокой токенной схожести (>= 85%)
       if (found == null) {
-        for (var entry in template.items.entries) {
-          if (entry.key.length >= 4 && (norm.contains(entry.key) || entry.key.contains(norm))) {
-            found = entry.value;
-            break;
+        final itemTokens = norm.split(' ').where((t) => t.length > 2).toSet();
+        if (itemTokens.length >= 2) {
+          double bestScore = 0.0;
+          for (var entry in template.items.entries) {
+            final entryTokens = entry.key.split(' ').where((t) => t.length > 2).toSet();
+            if (entryTokens.length >= 2) {
+              final inter = itemTokens.intersection(entryTokens).length;
+              final union = itemTokens.union(entryTokens).length;
+              final sim = union > 0 ? (inter / union) : 0.0;
+              if (sim >= 0.85 && sim > bestScore) {
+                bestScore = sim;
+                found = entry.value;
+              }
+            }
           }
         }
       }

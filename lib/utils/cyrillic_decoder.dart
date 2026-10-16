@@ -23,9 +23,37 @@ class CyrillicDecoder {
     'krokaht': 'Крокант',
     'kpokant': 'Крокант',
     'krokant': 'Крокант',
+    'крокант': 'Крокант',
     'lepebehckve': 'деревенские',
     'derevenskie': 'деревенские',
     'lepebehckue': 'деревенские',
+    'iepebehckue': 'деревенские',
+    'lepebehckoe': 'деревенское',
+    'iepebehckoe': 'деревенское',
+    'iеревенские': 'деревенские',
+    'деревенские': 'деревенские',
+    'aukmho': 'АКТИВНО',
+    'aukvho': 'АКТИВНО',
+    'aukmuo': 'АКТИВНО',
+    'cbipom': 'сыром',
+    'cblpom': 'сыром',
+    'cbip': 'сыр',
+    'cblp': 'сыр',
+    'syr': 'сыр',
+    'conblo': 'солью',
+    'conbio': 'солью',
+    'сопыо': 'солью',
+    'conb': 'соль',
+    'mahro': 'Манго',
+    'mango': 'Манго',
+    'mapakyum': 'Маракуйя',
+    'маракуйм': 'Маракуйя',
+    'marakuya': 'Маракуйя',
+    'nepcmka': 'персика',
+    'nepcuka': 'персика',
+    'персмка': 'персика',
+    'batohymk': 'Батончик',
+    'batonchik': 'Батончик',
     'cnmbkm': 'сливки',
     'cnubku': 'сливки',
     'slivki': 'сливки',
@@ -40,9 +68,6 @@ class CyrillicDecoder {
     'maclo': 'масло',
     'caxap': 'сахар',
     'saxar': 'сахар',
-    'cblp': 'сыр',
-    'cbip': 'сыр',
-    'syr': 'сыр',
     'uau': 'чай',
     'chay': 'чай',
     'kooe': 'кофе',
@@ -102,19 +127,28 @@ class CyrillicDecoder {
 
     var t = raw.trim();
 
-    // 1. Срезаем лидирующий артикул поставщика (HK555102, YK409137, АРТ123, 12345678)
-    t = t.replaceAll(RegExp(r'^[A-Za-zА-Яа-я]{1,4}\d{4,9}\s+'), '');
+    // 1. Срезаем лидирующий артикул поставщика (HK931, PBK475, BR120, АРТ123, 12345678)
+    t = t.replaceAll(RegExp(r'^[A-Za-zА-Яа-я]{1,4}\d{2,9}\s+'), '');
     t = t.replaceAll(RegExp(r'^[0-9]{6,14}\s+'), '');
 
-    // 2. Срезаем цифры количества мест в конце строки перед ценой: " 2", " 1"
+    // 2. Срезаем цифры количества мест в конце строки перед ценой или дублирующийся артикул: " 2", " 1", "(HK931) 2100"
+    t = t.replaceAll(RegExp(r'\s+\([A-Za-zА-Яа-я0-9\-_]+\)\s+\d+$'), '');
     t = t.replaceAll(RegExp(r'\s+\d{1,2}$'), '');
 
-    // 3. Нормализация опечаток единиц измерения (1OuT -> 10 шт, 500rp -> 500 гр)
+    // 3. Нормализация опечаток единиц измерения (1OuT -> 10 шт, 24uT -> 24 шт, 500rp -> 500 гр)
     t = t.replaceAllMapped(RegExp(r'(\d+)[Oo]u[Tt]\b', caseSensitive: false), (m) => '${m[1]}0 шт');
+    t = t.replaceAllMapped(RegExp(r'(\d+)\s*[uU][tT]\b'), (m) => '${m[1]} шт');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*[wW][tT]\.?\b', caseSensitive: false), (m) => '${m[1]} шт');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*rp\b', caseSensitive: false), (m) => '${m[1]} гр');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*kr\b', caseSensitive: false), (m) => '${m[1]} кг');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*k[rg]\b', caseSensitive: false), (m) => '${m[1]} кг');
+
+    // 3.1 Замена латинских связок и префиксов:
+    // "Маракуйя n персика" -> "Маракуйя и персика"
+    t = t.replaceAllMapped(RegExp(r'([а-яА-ЯёЁa-zA-Z]{2,})\s+[nN]\s+([а-яА-ЯёЁa-zA-Z]{2,})'), (m) => '${m[1]} и ${m[2]}');
+    // "Iере..." -> "Дере..."
+    t = t.replaceAll(RegExp(r'\b[iI|l]ере', caseSensitive: false), 'дере');
+    t = t.replaceAll(RegExp(r'\b[iI|l]еревен', caseSensitive: false), 'деревен');
 
     // 4. Пословная нормализация
     final words = t.split(RegExp(r'\s+'));

@@ -453,10 +453,62 @@ class OcrService {
     );
   }
 
+  List<String> _splitGluedRow(String rawRow) {
+    var trimmed = rawRow.trim();
+    if (trimmed.isEmpty) return [];
+
+    final List<String> subRows = [];
+    if (trimmed.contains('|')) {
+      final parts = trimmed.split('|');
+      for (var p in parts) {
+        final pt = p.trim();
+        if (pt.length >= 2) {
+          subRows.add(pt);
+        }
+      }
+    } else {
+      subRows.add(trimmed);
+    }
+
+    final List<String> result = [];
+    for (var sr in subRows) {
+      // Ищем склейку нескольких товаров: "(Код) Кол-во НовоеИмя"
+      // например: "(Br120) 1 MaHro..."
+      final splitPattern = RegExp(r'(\([A-Za-zА-Яа-я0-9\-_]+\)\s+\d+(?:[\.,]\d+)?)\s+(?=[A-ZА-ЯЁ][a-zа-яA-ZА-Я])');
+      final matches = splitPattern.allMatches(sr).toList();
+      if (matches.isNotEmpty) {
+        int lastPos = 0;
+        for (var m in matches) {
+          final endOfItem = m.end;
+          final part = sr.substring(lastPos, endOfItem).trim();
+          if (part.isNotEmpty) {
+            result.add(part);
+          }
+          lastPos = endOfItem;
+        }
+        if (lastPos < sr.length) {
+          final remainder = sr.substring(lastPos).trim();
+          if (remainder.isNotEmpty) {
+            result.add(remainder);
+          }
+        }
+      } else {
+        result.add(sr);
+      }
+    }
+    return result;
+  }
+
   // =========================================================================
   // УНИФИЦИРОВАННЫЙ РАЗБОР СТРОК ТАБЛИЦЫ ДЛЯ КИРИЛЛИЦЫ
   // =========================================================================
-  InvoiceDocument _parseUnifiedLines(List<String> unifiedRows, List<String> imagePaths) {
+  InvoiceDocument _parseUnifiedLines(List<String> rawUnifiedRows, List<String> imagePaths) {
+    // 0. Предварительная нормализация: разъединяем склеенные в одну строку товары
+    final List<String> unifiedRows = [];
+    for (var r in rawUnifiedRows) {
+      unifiedRows.addAll(_splitGluedRow(r));
+    }
+
     final List<InvoiceItem> items = [];
     double detectedTotal = 0.0;
     String detectedSupplier = 'Поставщик';
@@ -548,6 +600,14 @@ class OcrService {
       for (int i = start; i < end; i++) {
         var row = unifiedRows[i];
         final lower = row.toLowerCase();
+
+        // Пропускаем строки, состоящие исключительно из одиночного артикула в скобках: "(AB166)"
+        if (RegExp(r'^\s*\([A-Za-zА-Яа-я0-9\-_]+\)\s*$').hasMatch(row)) {
+          if (result.isNotEmpty && !result.last.rawName.contains(row.trim())) {
+            result.last.rawName = '${result.last.rawName} ${row.trim()}';
+          }
+          continue;
+        }
 
         // Исключаем стоп-строки подвала и мусор
         bool isNoise = false;
@@ -685,9 +745,7 @@ class OcrService {
       items.addAll(extractItemsFromRange(tableStartIndex, tableEndIndex));
     }
 
-    // ЭТАП 2 (FALLBACK КАК В V1.0.4): Если по заголовкам ничего не найдено,
-    // сканируем весь документ целиком (0..unifiedRows.length), отфильтровывая шум шапки и подвала.
-    // Это гарантирует 100% распознавание строк товаров даже при блеклых/нестандартных заголовках!
+    // ЭТАП 2: Fallback если по заголовкам ничего не найдено
     if (items.isEmpty) {
       items.addAll(extractItemsFromRange(0, unifiedRows.length));
     }
@@ -735,21 +793,53 @@ class OcrService {
           }
         }
 
-        rawLines.sort((a, b) => a.top.compareTo(b.top));
+        // Сортируем блоки по вертикали (top), затем по горизонтали (left)
+        rawLines.sort((a, b) {
+          final topDiff = a.top.compareTo(b.top);
+          return topDiff != 0 ? topDiff : a.left.compareTo(b.left);
+        });
 
+        // СТРОГАЯ ГРУППИРОВКА СТРОК ТАБЛИЦЫ:
+        // 1. Горизонтальная исключительность: элементы одной строки находятся в разных колонках (не перекрываются по X).
+        // 2. Вертикальное соответствие: элементы должны реально лежать в одной горизонтальной полосе таблицы (перекрытие по Y).
+        // Это предотвращает объединение разных товаров в одну мега-строку!
         final List<List<_OcrLineBox>> rows = [];
         for (var line in rawLines) {
-          bool addedToExisting = false;
+          List<_OcrLineBox>? bestRow;
+          double bestOverlapY = 0.0;
+
           for (var row in rows) {
-            final rowCenterY = row.map((l) => l.centerY).reduce((a, b) => a + b) / row.length;
-            final tolerance = (line.height * 0.75).clamp(12.0, 30.0);
-            if ((line.centerY - rowCenterY).abs() <= tolerance) {
-              row.add(line);
-              addedToExisting = true;
-              break;
+            // Проверка 1: нет ли горизонтального перекрытия с элементами строки (два товара в одной колонке)
+            bool hasHorizontalOverlap = false;
+            for (var existing in row) {
+              final overlapX = (line.right < existing.right ? line.right : existing.right) -
+                  (line.left > existing.left ? line.left : existing.left);
+              final minW = line.width < existing.width ? line.width : existing.width;
+              if (minW > 0 && (overlapX / minW) > 0.25) {
+                hasHorizontalOverlap = true;
+                break;
+              }
+            }
+            if (hasHorizontalOverlap) continue;
+
+            // Проверка 2: реальное вертикальное перекрытие строк таблицы
+            final rowTop = row.map((b) => b.top).reduce((a, b) => a < b ? a : b);
+            final rowBottom = row.map((b) => b.bottom).reduce((a, b) => a > b ? a : b);
+            final overlapY = (line.bottom < rowBottom ? line.bottom : rowBottom) -
+                (line.top > rowTop ? line.top : rowTop);
+            final minH = line.height < (rowBottom - rowTop) ? line.height : (rowBottom - rowTop);
+
+            if (minH > 0 && (overlapY / minH) >= 0.38) {
+              if (overlapY > bestOverlapY) {
+                bestOverlapY = overlapY;
+                bestRow = row;
+              }
             }
           }
-          if (!addedToExisting) {
+
+          if (bestRow != null) {
+            bestRow.add(line);
+          } else {
             rows.add([line]);
           }
         }
@@ -819,5 +909,6 @@ class _OcrLineBox {
   });
 
   double get height => (bottom - top).abs();
+  double get width => (right - left).abs();
   double get centerY => top + height / 2;
 }

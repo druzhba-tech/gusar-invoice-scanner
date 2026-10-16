@@ -34,6 +34,13 @@ class MatchingService {
       try {
         final decoded = jsonDecode(rawDict) as Map<String, dynamic>;
         _aliasDictionary = decoded.map((k, v) => MapEntry(k, v as int));
+        // Очищаем любые поврежденные / слишком короткие или общие ключи
+        _aliasDictionary.removeWhere((k, v) {
+          final cleanKey = k.replaceAll('global::', '').replaceAll(RegExp(r'^.*?::'), '').trim();
+          if (cleanKey.length < 5) return true;
+          const genericWords = {'сливки', 'со вкусом', 'сыр', 'соль', 'шоколад', 'конфеты', 'печенье', 'молоко', 'масло', 'сахар'};
+          return genericWords.contains(cleanKey);
+        });
       } catch (_) {}
     }
 
@@ -203,15 +210,23 @@ class MatchingService {
 
       int? savedId = _aliasDictionary[key] ?? _aliasDictionary[globalKey];
 
-      // Если прямого совпадения нет, ищем среди сохраненных связок по высокому сходству
+      // Если прямого совпадения нет, ищем среди сохраненных связок по высокой токенной схожести (>= 85%)
       if (savedId == null) {
         final normItem = _normalizeText(item.rawName);
-        for (var entry in _aliasDictionary.entries) {
-          if (entry.key.startsWith('global::')) {
-            final savedNorm = entry.key.substring(8);
-            if (savedNorm.length > 3 && (normItem.contains(savedNorm) || savedNorm.contains(normItem))) {
-              savedId = entry.value;
-              break;
+        final itemTokens = normItem.split(' ').where((t) => t.length > 2).toSet();
+        if (itemTokens.length >= 2) {
+          double bestScore = 0.0;
+          for (var entry in _aliasDictionary.entries) {
+            final keyStr = entry.key.startsWith('global::') ? entry.key.substring(8) : entry.key.split('::').last;
+            final keyTokens = keyStr.split(' ').where((t) => t.length > 2).toSet();
+            if (keyTokens.length >= 2) {
+              final inter = itemTokens.intersection(keyTokens).length;
+              final union = itemTokens.union(keyTokens).length;
+              final sim = union > 0 ? (inter / union) : 0.0;
+              if (sim >= 0.85 && sim > bestScore) {
+                bestScore = sim;
+                savedId = entry.value;
+              }
             }
           }
         }
@@ -235,8 +250,9 @@ class MatchingService {
       }
 
       // Шаг 3: Нечеткое семантическое сопоставление (Fuzzy Match)
+      // В приёмке товаров строго требуется точность >= 85%, чтобы конфеты не матчились на шоколад
       final candidates = getCandidates(item.rawName, catalog, limit: 1);
-      if (candidates.isNotEmpty && candidates.first.score >= 0.45) {
+      if (candidates.isNotEmpty && candidates.first.score >= 0.85) {
         applyMatch(item, candidates.first.product, confidence: candidates.first.score);
       }
     }
@@ -269,9 +285,15 @@ class MatchingService {
       final union = inputTokens.union(targetTokens).length;
       double score = union > 0 ? (intersection / union) : 0.0;
 
-      // Бонус за точное вхождение подстроки
-      if (cleanTarget.contains(cleanInput) || cleanInput.contains(cleanTarget)) {
-        score = (score + 0.4).clamp(0.0, 1.0);
+      // Бонус за точное вхождение подстроки дается только если короткая строка составляет не менее 65% длины длинной
+      if (cleanTarget.length >= 8 && cleanInput.length >= 8) {
+        if (cleanTarget.contains(cleanInput) || cleanInput.contains(cleanTarget)) {
+          final shorter = cleanTarget.length < cleanInput.length ? cleanTarget.length : cleanInput.length;
+          final longer = cleanTarget.length > cleanInput.length ? cleanTarget.length : cleanInput.length;
+          if (shorter / longer >= 0.65) {
+            score = (score + 0.3).clamp(0.0, 1.0);
+          }
+        }
       }
 
       if (score > 0.25) {
