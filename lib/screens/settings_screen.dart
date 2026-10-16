@@ -51,13 +51,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isAuthenticated = false;
   String? _currentUsername;
 
-  static String get defaultGeminiKey {
-    try {
-      return utf8.decode(base64.decode('QVEuQWI4Uk42S0tJTElHUEVxM093TVJnNzh3TmpESkl5WGdXVmZmZ2M0aW52RldjR05yUQ=='));
-    } catch (_) {
-      return '';
-    }
-  }
+  static String get defaultGeminiKey => '';
+  bool _showGeminiKeyField = false;
 
   @override
   void initState() {
@@ -107,7 +102,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _aiProvider = prefs.getString('ai_provider') ?? 'gemini';
       _yandexKeyCtrl.text = prefs.getString('yandex_api_key') ?? '';
       _yandexFolderIdCtrl.text = prefs.getString('yandex_folder_id') ?? '';
-      _geminiKeyCtrl.text = prefs.getString('gemini_api_key') ?? defaultGeminiKey;
+      final savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
+      _geminiKeyCtrl.text = savedGeminiKey.startsWith('AIzaSy') ? savedGeminiKey : '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     });
 
@@ -244,7 +240,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setString('ai_provider', _aiProvider);
     await prefs.setString('yandex_api_key', _yandexKeyCtrl.text.trim());
     await prefs.setString('yandex_folder_id', _yandexFolderIdCtrl.text.trim());
-    await prefs.setString('gemini_api_key', defaultGeminiKey);
+    final geminiToSave = _geminiKeyCtrl.text.trim();
+    await prefs.setString('gemini_api_key', geminiToSave.startsWith('AIzaSy') ? geminiToSave : '');
     await prefs.setString('api_base_url', _urlCtrl.text.trim());
     _api.updateBaseUrl(_urlCtrl.text.trim());
 
@@ -733,49 +730,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ] else ...[
                     Container(
-                      padding: const EdgeInsets.all(10),
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: const Color(0xFF0F172A),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
                       ),
-                      child: const Row(
+                      child: Row(
                         children: [
-                          Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 18),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Google Gemini Vision AI настроен и активен. Сканер автоматически распознаёт кириллицу, таблицы, количества и цены прямо по фото накладных.',
-                              style: TextStyle(color: Colors.white70, fontSize: 11),
-                            ),
+                          Icon(
+                            _geminiKeyCtrl.text.trim().startsWith('AIzaSy')
+                                ? Icons.verified_rounded
+                                : Icons.bolt_rounded,
+                            color: const Color(0xFF10B981),
+                            size: 22,
                           ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.lock_rounded, color: Color(0xFF10B981), size: 18),
-                          SizedBox(width: 10),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'Ключ Gemini Vision AI активен',
-                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                  _geminiKeyCtrl.text.trim().startsWith('AIzaSy')
+                                      ? 'Google Gemini Vision AI подключен'
+                                      : '⚡ Быстрый режим (Google ML Kit)',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                                 ),
-                                SizedBox(height: 2),
+                                const SizedBox(height: 2),
                                 Text(
-                                  'Ключ защищен от изменений и встроен в приложение.',
-                                  style: TextStyle(color: Colors.white54, fontSize: 11),
+                                  _geminiKeyCtrl.text.trim().startsWith('AIzaSy')
+                                      ? 'Автоматический разбор таблиц через облачную нейросеть Google.'
+                                      : 'Молниеносное распознавание за 1.5 сек. Работает офлайн без интернета!',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 11),
                                 ),
                               ],
                             ),
@@ -783,6 +769,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    if (!_showGeminiKeyField) ...[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => setState(() => _showGeminiKeyField = true),
+                          icon: const Icon(Icons.key_rounded, size: 16, color: Color(0xFF38BDF8)),
+                          label: Text(
+                            _geminiKeyCtrl.text.trim().startsWith('AIzaSy')
+                                ? 'Сменить ключ Gemini API'
+                                : 'Ввести свой ключ Google Gemini API...',
+                            style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
+                          ),
+                        ),
+                      ),
+                    ] else ...[
+                      TextField(
+                        controller: _geminiKeyCtrl,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Google Gemini API Key (необязательно)',
+                          hintText: 'AIzaSy...',
+                          labelStyle: const TextStyle(color: Colors.white54),
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          border: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.close_rounded, color: Colors.white54),
+                            onPressed: () => setState(() => _showGeminiKeyField = false),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        '💡 Без ключа сканер работает в автономном режиме Google ML Kit (1.5 сек, как в v1.4.10).',
+                        style: TextStyle(color: Colors.white54, fontSize: 11),
+                      ),
+                    ],
                   ],
                 ],
               ),

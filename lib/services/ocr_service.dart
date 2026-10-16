@@ -16,24 +16,20 @@ class OcrService {
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   final InvoiceTemplateService _templateService = InvoiceTemplateService();
 
-  static String get defaultGeminiKey {
-    try {
-      return utf8.decode(base64.decode('QVEuQWI4Uk42S0tJTElHUEVxM093TVJnNzh3TmpESkl5WGdXVmZmZ2M0aW52RldjR05yUQ=='));
-    } catch (_) {
-      return '';
-    }
-  }
+  static String get defaultGeminiKey => '';
 
   Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedGeminiKey = prefs.getString('gemini_api_key');
+    var savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
+    // Очищаем старые невалидные ключи или фиктивные строки
+    if (!savedGeminiKey.startsWith('AIzaSy')) {
+      savedGeminiKey = '';
+    }
     return {
       'provider': prefs.getString('ai_provider') ?? 'gemini',
-      'gemini_key': (savedGeminiKey != null && savedGeminiKey.trim().isNotEmpty)
-          ? savedGeminiKey.trim()
-          : defaultGeminiKey,
-      'yandex_key': prefs.getString('yandex_api_key') ?? '',
-      'yandex_folder_id': prefs.getString('yandex_folder_id') ?? '',
+      'gemini_key': savedGeminiKey,
+      'yandex_key': prefs.getString('yandex_api_key')?.trim() ?? '',
+      'yandex_folder_id': prefs.getString('yandex_folder_id')?.trim() ?? '',
     };
   }
 
@@ -53,23 +49,17 @@ class OcrService {
   Future<InvoiceDocument?> parseInvoiceWithVisionAi(List<String> imagePaths) async {
     // ШАГ 0: АВТО-ВЫРАВНИВАНИЕ (FAST-PATH: если снимок ровный, поворот мгновенно пропускается)
     final List<String> preparedPaths = [];
-    final List<String> networkUploadPaths = [];
 
     for (var path in imagePaths) {
       if (path.toLowerCase().endsWith('.pdf')) {
         preparedPaths.add(path);
-        networkUploadPaths.add(path);
       } else {
         try {
           final straightened = await ImageUtils.autoStraightenInvoiceImage(File(path), recognizer: _mlKitRecognizer);
           preparedPaths.add(straightened.path);
-          // Оптимизируем размер снимка перед отправкой в сеть (ускоряет отправку в 10 раз)
-          final aiFile = await ImageUtils.prepareImageForAiUpload(straightened);
-          networkUploadPaths.add(aiFile.path);
         } catch (e) {
           print('Auto-straighten page error: $e');
           preparedPaths.add(path);
-          networkUploadPaths.add(path);
         }
       }
     }
@@ -87,32 +77,24 @@ class OcrService {
     final config = await _getAiConfig();
     final provider = config['provider'] ?? 'gemini';
     final yandexKey = config['yandex_key'] ?? '';
-    final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
+    final geminiKey = config['gemini_key'] ?? '';
     final yandexFolderId = config['yandex_folder_id'] ?? '';
 
     InvoiceDocument? doc;
 
     // 1. По умолчанию или при выборе Gemini — вызываем Google Gemini Vision AI
-    if ((provider == 'gemini' || yandexKey.isEmpty) && geminiKey.isNotEmpty) {
-      doc = await _parseWithGemini(networkUploadPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+    // СТРОГОЕ ПРАВИЛО: вызываем только при наличии настоящего ключа Google (начинается с AIzaSy)
+    if (provider == 'gemini' && geminiKey.startsWith('AIzaSy')) {
+      doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate);
     }
 
     // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
     if ((doc == null || doc.items.isEmpty) && provider == 'yandex' && yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, folderId: yandexFolderId, originalPaths: preparedPaths);
+      doc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, folderId: yandexFolderId);
     }
 
-    // 3. Fallback к Gemini, если Яндекс не сработал
-    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty) {
-      doc = await _parseWithGemini(networkUploadPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
-    }
-
-    // 4. Если есть ключ Яндекс, но был выбран другой провайдер
-    if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(networkUploadPaths, yandexKey, folderId: yandexFolderId, originalPaths: preparedPaths);
-    }
-
-    // 5. Если облачные нейросети не ответили, используем эвристический локальный парсер
+    // 3. Fallback: если облачные нейросети не настроены или не ответили —
+    // используем сверхбыстрый локальный офлайн-парсер Google ML Kit (1.5 сек, как в v1.4.10)
     doc ??= await _fallbackLocalParse(preparedPaths);
 
     // ШАГ ФИНАЛЬНЫЙ: ПРИМЕНЯЕМ ШАБЛОН ПОСТАВЩИКА К ДОКУМЕНТУ
@@ -295,11 +277,14 @@ class OcrService {
       }
 
       // Используем стабильные, актуальные и самые скоростные модели Flash
+      if (!apiKey.trim().startsWith('AIzaSy')) {
+        return null;
+      }
+
+      // Используем стабильную и самую скоростную модель Flash
       final candidateModels = [
-        'gemini-2.0-flash',
         'gemini-1.5-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-flash-latest',
+        'gemini-2.0-flash',
       ];
 
       for (var modelName in candidateModels) {
@@ -321,7 +306,7 @@ class OcrService {
                 'temperature': 0.1,
               }
             }),
-          ).timeout(const Duration(seconds: 40));
+          ).timeout(const Duration(seconds: 8));
 
           if (response.statusCode == 200) {
             final resJson = jsonDecode(response.body);
@@ -333,14 +318,19 @@ class OcrService {
             if (doc.items.isNotEmpty) {
               return doc;
             }
+          } else if (response.statusCode == 400 || response.statusCode == 401 || response.statusCode == 403) {
+            print('Gemini Auth/Param Error (${response.statusCode}), skipping directly to local OCR...');
+            break;
           } else if (response.statusCode == 503 || response.statusCode == 429) {
             print('Gemini $modelName temporary busy (${response.statusCode}), switching to next model...');
-            await Future.delayed(const Duration(milliseconds: 1000));
+            await Future.delayed(const Duration(milliseconds: 500));
           } else {
-            print('Gemini $modelName Error: ${response.statusCode} - ${response.body}');
+            print('Gemini $modelName Error: ${response.statusCode}');
+            break;
           }
         } catch (e) {
           print('Gemini $modelName attempt failed: $e');
+          break;
         }
       }
       return null;
