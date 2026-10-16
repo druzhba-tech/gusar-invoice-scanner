@@ -99,9 +99,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passwordCtrl.text = prefs.getString('saved_password') ?? '';
       _currentUsername = prefs.getString('logged_username') ?? prefs.getString('saved_username');
       _isAuthenticated = prefs.getBool('is_authenticated') ?? false;
-      _aiProvider = prefs.getString('ai_provider') ?? 'gemini';
-      _yandexKeyCtrl.text = prefs.getString('yandex_api_key') ?? '';
-      _yandexFolderIdCtrl.text = prefs.getString('yandex_folder_id') ?? '';
+      _aiProvider = prefs.getString('ai_provider') ?? 'yandex';
+      final savedYandexKey = prefs.getString('yandex_api_key')?.trim() ?? '';
+      _yandexKeyCtrl.text = savedYandexKey.isNotEmpty ? savedYandexKey : OcrService.defaultYandexKey;
+      final savedYandexFolder = prefs.getString('yandex_folder_id')?.trim() ?? '';
+      _yandexFolderIdCtrl.text = savedYandexFolder.isNotEmpty ? savedYandexFolder : OcrService.defaultYandexFolderId;
       final savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
       _geminiKeyCtrl.text = (savedGeminiKey.startsWith('AIza') || savedGeminiKey.startsWith('AQ.') || savedGeminiKey.length > 20) ? savedGeminiKey : '';
       _urlCtrl.text = prefs.getString('api_base_url') ?? 'https://gusar.tj';

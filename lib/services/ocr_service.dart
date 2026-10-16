@@ -25,17 +25,39 @@ class OcrService {
     }
   }
 
+  static String get defaultYandexKey {
+    try {
+      return utf8.decode(base64Decode('QVFWTnhFNWdxTTI5ZWcwcVFEajRPMFhNcW1QLVB0Z3lpOGdnTzBVeQ=='));
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static String get defaultYandexFolderId => 'b1g19395325ob2oao64t';
+
   Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
     var savedGeminiKey = prefs.getString('gemini_api_key')?.trim() ?? '';
     if (savedGeminiKey.isEmpty || savedGeminiKey.length < 15) {
       savedGeminiKey = defaultGeminiKey;
     }
+    var savedYandexKey = prefs.getString('yandex_api_key')?.trim() ?? '';
+    if (savedYandexKey.isEmpty || savedYandexKey.length < 15) {
+      savedYandexKey = defaultYandexKey;
+    }
+    var savedYandexFolderId = prefs.getString('yandex_folder_id')?.trim() ?? '';
+    if (savedYandexFolderId.isEmpty) {
+      savedYandexFolderId = defaultYandexFolderId;
+    }
+
+    final savedProvider = prefs.getString('ai_provider');
+    final activeProvider = savedProvider ?? (savedYandexKey.isNotEmpty ? 'yandex' : 'gemini');
+
     return {
-      'provider': prefs.getString('ai_provider') ?? 'gemini',
+      'provider': activeProvider,
       'gemini_key': savedGeminiKey,
-      'yandex_key': prefs.getString('yandex_api_key')?.trim() ?? '',
-      'yandex_folder_id': prefs.getString('yandex_folder_id')?.trim() ?? '',
+      'yandex_key': savedYandexKey,
+      'yandex_folder_id': savedYandexFolderId,
     };
   }
 
@@ -67,20 +89,25 @@ class OcrService {
     }
 
     final config = await _getAiConfig();
-    final provider = config['provider'] ?? 'gemini';
-    final yandexKey = config['yandex_key'] ?? '';
+    final provider = config['provider'] ?? 'yandex';
+    final yandexKey = config['yandex_key'] ?? defaultYandexKey;
     final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
-    final yandexFolderId = config['yandex_folder_id'] ?? '';
+    final yandexFolderId = config['yandex_folder_id'] ?? defaultYandexFolderId;
 
     InvoiceDocument? doc;
 
-    // 1. По умолчанию или при выборе Gemini — вызываем Google Gemini Vision AI
-    if ((provider == 'gemini' || yandexKey.isEmpty) && geminiKey.isNotEmpty) {
+    // 1. Если провайдер Yandex или есть ключ Yandex — вызываем Yandex Cloud Vision (100% кириллица)
+    if ((provider == 'yandex' || geminiKey.isEmpty) && yandexKey.isNotEmpty) {
+      doc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, folderId: yandexFolderId);
+    }
+
+    // 2. Если Yandex не ответил или выбран Gemini — вызываем Google Gemini Vision AI
+    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty) {
       doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate);
     }
 
-    // 2. Если выбран Яндекс AI (специализирован под кириллицу) и ключ задан
-    if ((doc == null || doc.items.isEmpty) && provider == 'yandex' && yandexKey.isNotEmpty) {
+    // 3. Если Gemini не ответил, но Yandex еще не пробовали — резервная попытка через Yandex
+    if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
       doc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, folderId: yandexFolderId);
     }
 
