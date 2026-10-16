@@ -480,7 +480,8 @@ class OcrService {
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
       storeId: 1,
       supplierName: data['supplier_name']?.toString() ?? 'Поставщик',
-      invoiceNumber: data['invoice_number']?.toString() ?? 'б/н',
+      invoiceNumber: '',
+      incomingNumber: data['invoice_number']?.toString() ?? 'б/н',
       invoiceDate: data['invoice_date'] != null 
           ? DateTime.tryParse(data['invoice_date']) ?? DateTime.now() 
           : DateTime.now(),
@@ -797,7 +798,8 @@ class OcrService {
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
       storeId: 1,
       supplierName: detectedSupplier,
-      invoiceNumber: detectedInvoiceNum,
+      invoiceNumber: '',
+      incomingNumber: detectedInvoiceNum,
       invoiceDate: detectedDate,
       totalAmount: finalTotal,
       items: items,

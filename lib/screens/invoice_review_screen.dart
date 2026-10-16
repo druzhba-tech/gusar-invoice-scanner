@@ -41,6 +41,15 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     _doc = widget.document;
     _matcher.init();
     _checkDuplicate();
+    // Автоматически получаем следующий последовательный системный номер gusar.tj
+    if (_doc.invoiceNumber.isEmpty || _doc.invoiceNumber == 'б/н') {
+      _api.fetchNextSequentialInvoiceNumber(storeId: _doc.storeId).then((nextSeq) {
+        if (mounted && (_doc.invoiceNumber.isEmpty || _doc.invoiceNumber == 'б/н')) {
+          setState(() => _doc.invoiceNumber = nextSeq);
+          _storage.saveInvoice(_doc);
+        }
+      }).catchError((_) {});
+    }
     // Фоновая загрузка контрагентов при входе в накладную
     _api.getSuppliers().then((_) {
       if (mounted) setState(() {});
@@ -1354,6 +1363,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         storeName: _api.currentStoreName,
         supplierName: _doc.supplierName,
         initialInvoiceNumber: _doc.invoiceNumber,
+        initialIncomingNumber: _doc.incomingNumber,
         initialPaidAmount: _doc.paidAmount,
         initiallyDebt: _doc.paidAmount <= 0.001 && _doc.status != DocumentStatus.draft,
       ),
@@ -1362,11 +1372,15 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     if (paymentResult == null) return;
 
     final String finalInvoiceNum = (paymentResult['invoice_number'] as String?) ?? '';
+    final String finalIncomingNum = (paymentResult['incoming_number'] as String?) ?? '';
     final double finalPaidAmount = (paymentResult['paid_amount'] as double?) ?? 0.0;
 
     setState(() {
       if (finalInvoiceNum.isNotEmpty) {
         _doc.invoiceNumber = finalInvoiceNum;
+      }
+      if (finalIncomingNum.isNotEmpty) {
+        _doc.incomingNumber = finalIncomingNum;
       }
       _doc.paidAmount = finalPaidAmount;
       // Гарантированная санитаризация: сбрасываем старые псевдо-ID перед отправкой
@@ -2455,6 +2469,7 @@ class _InvoicePaymentSheet extends StatefulWidget {
   final String storeName;
   final String supplierName;
   final String initialInvoiceNumber;
+  final String initialIncomingNumber;
   final double initialPaidAmount;
   final bool initiallyDebt;
 
@@ -2463,6 +2478,7 @@ class _InvoicePaymentSheet extends StatefulWidget {
     required this.storeName,
     required this.supplierName,
     required this.initialInvoiceNumber,
+    this.initialIncomingNumber = '',
     required this.initialPaidAmount,
     required this.initiallyDebt,
   });
@@ -2475,6 +2491,8 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
   late bool _isDebtSelected;
   late TextEditingController _payAmountCtrl;
   late TextEditingController _invoiceNumCtrl;
+  late TextEditingController _incomingNumCtrl;
+  bool _isLoadingNextNum = false;
 
   @override
   void initState() {
@@ -2487,7 +2505,31 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
             : widget.totalInvoiceSum.toStringAsFixed(2));
     _payAmountCtrl = TextEditingController(text: initialText);
     _invoiceNumCtrl = TextEditingController(text: widget.initialInvoiceNumber);
+    _incomingNumCtrl = TextEditingController(
+      text: widget.initialIncomingNumber.isNotEmpty
+          ? widget.initialIncomingNumber
+          : (widget.initialInvoiceNumber != 'б/н' ? widget.initialInvoiceNumber : ''),
+    );
     _payAmountCtrl.addListener(_onAmountChanged);
+
+    if (_invoiceNumCtrl.text.isEmpty || _invoiceNumCtrl.text == 'б/н') {
+      _reloadNextNumber();
+    }
+  }
+
+  Future<void> _reloadNextNumber() async {
+    setState(() => _isLoadingNextNum = true);
+    try {
+      final nextSeq = await ApiService().fetchNextSequentialInvoiceNumber();
+      if (mounted) {
+        setState(() {
+          _invoiceNumCtrl.text = nextSeq;
+          _isLoadingNextNum = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingNextNum = false);
+    }
   }
 
   void _onAmountChanged() {
@@ -2499,6 +2541,7 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
     _payAmountCtrl.removeListener(_onAmountChanged);
     _payAmountCtrl.dispose();
     _invoiceNumCtrl.dispose();
+    _incomingNumCtrl.dispose();
     super.dispose();
   }
 
@@ -2588,20 +2631,68 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
             ),
             const SizedBox(height: 16),
 
-            // Номер накладной
-            const Text(
-              'Номер бумажной накладной (из сканера):',
-              style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+            // 1. Основной номер накладной в системе gusar.tj (последовательный)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '1. Номер в системе gusar.tj (основной):',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text('Сквозной порядок gusar.tj', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.w600)),
+                ),
+              ],
             ),
             const SizedBox(height: 6),
             TextField(
               controller: _invoiceNumCtrl,
+              keyboardType: TextInputType.text,
+              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: const Color(0xFF0F172A),
+                prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF10B981), size: 20),
+                suffixIcon: IconButton(
+                  icon: _isLoadingNextNum
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)))
+                      : const Icon(Icons.sync_rounded, color: Color(0xFF10B981), size: 20),
+                  tooltip: 'Получить следующий номер из gusar.tj',
+                  onPressed: _isLoadingNextNum ? null : _reloadNextNumber,
+                ),
+                hintText: 'Например: 46',
+                hintStyle: const TextStyle(color: Colors.white38),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // 2. Номер на самой бумажной накладной
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '2. Номер на самой накладной (с бумаги):',
+                  style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                const Text('Для информации', style: TextStyle(color: Colors.white38, fontSize: 10)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _incomingNumCtrl,
               style: const TextStyle(color: Colors.white, fontSize: 14),
               decoration: InputDecoration(
                 filled: true,
                 fillColor: const Color(0xFF0F172A),
-                prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF38BDF8), size: 18),
-                hintText: 'Например: 458-Б или №1024',
+                prefixIcon: const Icon(Icons.receipt_long_outlined, color: Color(0xFF38BDF8), size: 18),
+                hintText: 'Номер со скана, например: №182-А или б/н',
                 hintStyle: const TextStyle(color: Colors.white38),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -2885,6 +2976,7 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
                         'paid_amount': finalPaid,
                         'debt_amount': finalDebt,
                         'invoice_number': _invoiceNumCtrl.text.trim(),
+                        'incoming_number': _incomingNumCtrl.text.trim(),
                       });
                     },
                     child: const Text(

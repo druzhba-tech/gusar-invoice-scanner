@@ -7,6 +7,7 @@ import '../models/supplier.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 import '../utils/image_utils.dart';
+import 'local_storage_service.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -1058,15 +1059,62 @@ class ApiService {
     }
   }
 
+  // 6.1 Получение следующего последовательного системного номера накладной из базы gusar.tj
+  Future<String> fetchNextSequentialInvoiceNumber({int? storeId}) async {
+    int maxNum = 0;
+    final targetStoreId = storeId ?? currentStoreId;
+
+    // 1. Опрашиваем онлайн-сервер gusar.tj
+    try {
+      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': targetStoreId}).timeout(const Duration(seconds: 7));
+      if (response.statusCode == 200 && response.data != null) {
+        dynamic items = response.data;
+        if (items is Map && items['purchases'] is List) items = items['purchases'];
+        if (items is Map && items['data'] is List) items = items['data'];
+
+        if (items is List) {
+          for (var p in items) {
+            final inv = p['invoice_number']?.toString().trim() ?? p['invoice_no']?.toString().trim() ?? '';
+            final match = RegExp(r'\d+').firstMatch(inv);
+            if (match != null) {
+              final n = int.tryParse(match.group(0)!);
+              if (n != null && n > maxNum) maxNum = n;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Online getPurchases next num warning: $e');
+    }
+
+    // 2. Также проверяем локальную БД телефона (на случай если товаровед оприходовал офлайн)
+    try {
+      final storage = LocalStorageService();
+      final localDocs = await storage.getLocalInvoices();
+      for (var doc in localDocs) {
+        final match = RegExp(r'\d+').firstMatch(doc.invoiceNumber);
+        if (match != null) {
+          final n = int.tryParse(match.group(0)!);
+          if (n != null && n > maxNum) maxNum = n;
+        }
+      }
+    } catch (_) {}
+
+    final nextSeq = maxNum > 0 ? (maxNum + 1) : 1;
+    return nextSeq.toString();
+  }
+
   // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj
   Future<bool> submitPurchase(InvoiceDocument document) async {
     lastSubmitError = null;
     try {
       final isDebt = document.paidAmount <= 0;
-      final rawInvNum = document.invoiceNumber.trim();
-      final cleanInvNum = rawInvNum.isNotEmpty
-          ? rawInvNum
-          : 'НАК-${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+      String rawInvNum = document.invoiceNumber.trim();
+      if (rawInvNum.isEmpty || rawInvNum == 'б/н') {
+        rawInvNum = await fetchNextSequentialInvoiceNumber();
+        document.invoiceNumber = rawInvNum;
+      }
+      final cleanInvNum = rawInvNum;
       final double total = document.totalAmount > 0 ? document.totalAmount : document.calculatedTotal;
       final double paid = isDebt ? 0.0 : document.paidAmount;
 
@@ -1172,14 +1220,17 @@ class ApiService {
       }
 
       final double debtAmount = (total - paid) > 0.001 ? (total - paid) : 0.0;
+      final cleanIncoming = document.incomingNumber.trim().isNotEmpty
+          ? document.incomingNumber.trim()
+          : (document.invoiceNumber.trim() != cleanInvNum ? document.invoiceNumber.trim() : 'б/н');
 
       final purchasePayload = {
         'store_id': currentStoreId,
         'supplier_id': verifiedSupplierId,
         'invoice_number': cleanInvNum,
         'invoice_no': cleanInvNum,
-        'incoming_invoice_number': cleanInvNum,
-        'incoming_number': cleanInvNum,
+        'incoming_invoice_number': cleanIncoming,
+        'incoming_number': cleanIncoming,
         'date': document.invoiceDate.toIso8601String(),
         'total_amount': double.parse(total.toStringAsFixed(2)),
         // Сумма оплаты и остаток долга по накладной
@@ -1191,7 +1242,7 @@ class ApiService {
         'payment_status': isDebt ? 'debt' : (debtAmount > 0.001 ? 'partial' : 'paid'),
         'is_debt': (isDebt || debtAmount > 0.001) ? 1 : 0,
         'payment_source': paid > 0 ? 'cash' : 'unpaid',
-        'notes': 'Накладная №$cleanInvNum от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : (debtAmount > 0.001 ? "ОПЛАЧЕНО: ${paid.toStringAsFixed(2)} TJS, ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : "ОПЛАЧЕНО ПОЛНОСТЬЮ: ${paid.toStringAsFixed(2)} TJS")}]',
+        'notes': 'Накладная №$cleanInvNum (Вх. №: $cleanIncoming) от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : (debtAmount > 0.001 ? "ОПЛАЧЕНО: ${paid.toStringAsFixed(2)} TJS, ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : "ОПЛАЧЕНО ПОЛНОСТЬЮ: ${paid.toStringAsFixed(2)} TJS")}]',
         'items': itemsPayload,
       };
 

@@ -15,6 +15,7 @@ class InvoiceDocument {
   int? supplierId;
   String supplierName;
   String invoiceNumber;
+  String incomingNumber;
   DateTime invoiceDate;
   double totalAmount;
   double paidAmount;
@@ -32,6 +33,7 @@ class InvoiceDocument {
     this.supplierId,
     required this.supplierName,
     required this.invoiceNumber,
+    this.incomingNumber = '',
     required this.invoiceDate,
     required this.totalAmount,
     this.paidAmount = 0.0,
@@ -76,6 +78,7 @@ class InvoiceDocument {
       'supplier_id': supplierId,
       'supplier_name': supplierName,
       'invoice_number': invoiceNumber,
+      'incoming_number': incomingNumber,
       'invoice_date': invoiceDate.toIso8601String(),
       'total_amount': totalAmount,
       'paid_amount': paidAmount,
@@ -96,6 +99,7 @@ class InvoiceDocument {
       supplierId: json['supplier_id'],
       supplierName: json['supplier_name'] ?? 'Неизвестный поставщик',
       invoiceNumber: json['invoice_number'] ?? 'б/н',
+      incomingNumber: json['incoming_number']?.toString() ?? '',
       invoiceDate: json['invoice_date'] != null 
           ? DateTime.tryParse(json['invoice_date']) ?? DateTime.now() 
           : DateTime.now(),

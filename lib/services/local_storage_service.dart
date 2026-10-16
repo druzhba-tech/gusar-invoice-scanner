@@ -24,9 +24,9 @@ class LocalStorageService {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, 'gusar_scanner.db');
 
-    return await openDatabase(
+    final db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         // Таблица локальных документов накладных
         await db.execute('''
@@ -36,6 +36,7 @@ class LocalStorageService {
             supplier_id INTEGER,
             supplier_name TEXT,
             invoice_number TEXT,
+            incoming_number TEXT,
             invoice_date TEXT,
             total_amount REAL,
             paid_amount REAL,
@@ -61,7 +62,19 @@ class LocalStorageService {
           )
         ''');
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        try {
+          await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
+        } catch (_) {}
+      },
     );
+
+    // Гарантированная миграция существующей локальной БД без потери данных
+    try {
+      await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
+    } catch (_) {}
+
+    return db;
   }
 
   // 1. Сохранение черновика накладной (со сжатием оригиналов фото до 40 КБ)
@@ -87,6 +100,7 @@ class LocalStorageService {
         'supplier_id': doc.supplierId,
         'supplier_name': doc.supplierName,
         'invoice_number': doc.invoiceNumber,
+        'incoming_number': doc.incomingNumber,
         'invoice_date': doc.invoiceDate.toIso8601String(),
         'total_amount': doc.totalAmount,
         'paid_amount': doc.paidAmount,
@@ -118,6 +132,7 @@ class LocalStorageService {
         supplierId: r['supplier_id'] as int?,
         supplierName: r['supplier_name'] as String,
         invoiceNumber: r['invoice_number'] as String,
+        incomingNumber: r['incoming_number'] as String? ?? '',
         invoiceDate: DateTime.parse(r['invoice_date'] as String),
         totalAmount: (r['total_amount'] as num).toDouble(),
         paidAmount: (r['paid_amount'] as num).toDouble(),

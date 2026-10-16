@@ -33,11 +33,356 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isAuthenticated = false;
   UpdateInfo? _availableUpdate;
 
+  // Быстрый поиск и фильтрация накладных
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+  String? _selectedSupplierFilter;
+  String _dateFilterType = 'all'; // 'all', 'today', 'yesterday', 'week', 'month', 'custom'
+  DateTimeRange? _customDateRange;
+  String _amountFilterType = 'all'; // 'all', 'under500', '500_2000', '2000_10000', 'over10000'
+
   @override
   void initState() {
     super.initState();
+    _searchCtrl.addListener(() {
+      if (_searchQuery != _searchCtrl.text) {
+        setState(() => _searchQuery = _searchCtrl.text);
+      }
+    });
     _loadData();
     _checkUpdates();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  List<String> get _availableSuppliers {
+    final Set<String> suppliers = {};
+    for (var doc in _recentInvoices) {
+      final name = doc.supplierName.trim();
+      if (name.isNotEmpty && name != 'Неизвестный поставщик') {
+        suppliers.add(name);
+      }
+    }
+    final list = suppliers.toList();
+    list.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return list;
+  }
+
+  List<InvoiceDocument> get _filteredInvoices {
+    final query = _searchQuery.toLowerCase().trim();
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+    final weekStart = todayStart.subtract(const Duration(days: 7));
+    final monthStart = todayStart.subtract(const Duration(days: 30));
+
+    return _recentInvoices.where((doc) {
+      // 1. Текстовый поиск (по системному номеру, входящему номеру, поставщику, сумме)
+      if (query.isNotEmpty) {
+        final invNum = doc.invoiceNumber.toLowerCase();
+        final inNum = doc.incomingNumber.toLowerCase();
+        final supName = doc.supplierName.toLowerCase();
+        final totalStr = doc.totalAmount.toStringAsFixed(2);
+        final matches = invNum.contains(query) ||
+            inNum.contains(query) ||
+            supName.contains(query) ||
+            totalStr.contains(query);
+        if (!matches) return false;
+      }
+
+      // 2. Фильтр по контрагенту
+      if (_selectedSupplierFilter != null && _selectedSupplierFilter!.isNotEmpty) {
+        if (doc.supplierName.trim().toLowerCase() != _selectedSupplierFilter!.trim().toLowerCase()) {
+          return false;
+        }
+      }
+
+      // 3. Фильтр по дате
+      final docDate = doc.invoiceDate;
+      if (_dateFilterType == 'today') {
+        if (docDate.isBefore(todayStart)) return false;
+      } else if (_dateFilterType == 'yesterday') {
+        if (docDate.isBefore(yesterdayStart) || docDate.isAfter(todayStart)) return false;
+      } else if (_dateFilterType == 'week') {
+        if (docDate.isBefore(weekStart)) return false;
+      } else if (_dateFilterType == 'month') {
+        if (docDate.isBefore(monthStart)) return false;
+      } else if (_dateFilterType == 'custom' && _customDateRange != null) {
+        final start = DateTime(_customDateRange!.start.year, _customDateRange!.start.month, _customDateRange!.start.day);
+        final end = DateTime(_customDateRange!.end.year, _customDateRange!.end.month, _customDateRange!.end.day, 23, 59, 59);
+        if (docDate.isBefore(start) || docDate.isAfter(end)) return false;
+      }
+
+      // 4. Фильтр по сумме
+      final amount = doc.totalAmount > 0 ? doc.totalAmount : doc.calculatedTotal;
+      if (_amountFilterType == 'under500') {
+        if (amount >= 500) return false;
+      } else if (_amountFilterType == '500_2000') {
+        if (amount < 500 || amount > 2000) return false;
+      } else if (_amountFilterType == '2000_10000') {
+        if (amount < 2000 || amount > 10000) return false;
+      } else if (_amountFilterType == 'over10000') {
+        if (amount <= 10000) return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
+  bool get _hasActiveFilters {
+    return _searchQuery.isNotEmpty ||
+        _selectedSupplierFilter != null ||
+        _dateFilterType != 'all' ||
+        _amountFilterType != 'all';
+  }
+
+  int get _activeFiltersCount {
+    int c = 0;
+    if (_searchQuery.isNotEmpty) c++;
+    if (_selectedSupplierFilter != null) c++;
+    if (_dateFilterType != 'all') c++;
+    if (_amountFilterType != 'all') c++;
+    return c;
+  }
+
+  void _resetAllFilters() {
+    setState(() {
+      _searchCtrl.clear();
+      _searchQuery = '';
+      _selectedSupplierFilter = null;
+      _dateFilterType = 'all';
+      _customDateRange = null;
+      _amountFilterType = 'all';
+    });
+  }
+
+  void _showSupplierFilterPicker() {
+    final suppliers = _availableSuppliers;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.person_search_rounded, color: Color(0xFF10B981), size: 24),
+                  const SizedBox(width: 10),
+                  const Text('Фильтр по контрагенту', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.all_inclusive_rounded, color: Color(0xFF10B981)),
+                title: const Text('Все контрагенты', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                trailing: _selectedSupplierFilter == null ? const Icon(Icons.check, color: Color(0xFF10B981)) : null,
+                onTap: () {
+                  setState(() => _selectedSupplierFilter = null);
+                  Navigator.pop(ctx);
+                },
+              ),
+              const Divider(color: Colors.white12),
+              if (suppliers.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(child: Text('Нет сохранённых контрагентов в накладных', style: TextStyle(color: Colors.white54))),
+                )
+              else
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.45),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: suppliers.length,
+                    itemBuilder: (c, idx) {
+                      final sup = suppliers[idx];
+                      final count = _recentInvoices.where((d) => d.supplierName.trim().toLowerCase() == sup.toLowerCase()).length;
+                      final isSelected = _selectedSupplierFilter == sup;
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(sup, style: TextStyle(color: isSelected ? const Color(0xFF10B981) : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                        trailing: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: isSelected ? const Color(0xFF10B981) : Colors.white10,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            '$count накл.',
+                            style: TextStyle(color: isSelected ? Colors.white : Colors.white60, fontSize: 11),
+                          ),
+                        ),
+                        onTap: () {
+                          setState(() => _selectedSupplierFilter = sup);
+                          Navigator.pop(ctx);
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showDateFilterPicker() async {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.date_range_rounded, color: Color(0xFF38BDF8), size: 24),
+                  const SizedBox(width: 10),
+                  const Text('Фильтр по дате накладной', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _dateOption(ctx, 'all', 'Все даты'),
+              _dateOption(ctx, 'today', 'Сегодня'),
+              _dateOption(ctx, 'yesterday', 'Вчера'),
+              _dateOption(ctx, 'week', 'Последние 7 дней'),
+              _dateOption(ctx, 'month', 'Последние 30 дней'),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.edit_calendar_rounded, color: Color(0xFF38BDF8)),
+                title: Text(
+                  _customDateRange != null
+                      ? '${DateFormat("dd.MM.yyyy").format(_customDateRange!.start)} — ${DateFormat("dd.MM.yyyy").format(_customDateRange!.end)}'
+                      : 'Выбрать произвольный период...',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                trailing: _dateFilterType == 'custom' ? const Icon(Icons.check, color: Color(0xFF10B981)) : null,
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await showDateRangePicker(
+                    context: context,
+                    firstDate: DateTime(2023),
+                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                    initialDateRange: _customDateRange ?? DateTimeRange(
+                      start: DateTime.now().subtract(const Duration(days: 7)),
+                      end: DateTime.now(),
+                    ),
+                    builder: (context, child) => Theme(
+                      data: ThemeData.dark().copyWith(
+                        colorScheme: const ColorScheme.dark(
+                          primary: Color(0xFF10B981),
+                          onPrimary: Colors.white,
+                          surface: Color(0xFF1E293B),
+                          onSurface: Colors.white,
+                        ),
+                      ),
+                      child: child!,
+                    ),
+                  );
+                  if (picked != null) {
+                    setState(() {
+                      _dateFilterType = 'custom';
+                      _customDateRange = picked;
+                    });
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dateOption(BuildContext ctx, String type, String label) {
+    final isSelected = _dateFilterType == type;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(label, style: TextStyle(color: isSelected ? const Color(0xFF10B981) : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+      trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF10B981)) : null,
+      onTap: () {
+        setState(() {
+          _dateFilterType = type;
+          if (type != 'custom') _customDateRange = null;
+        });
+        Navigator.pop(ctx);
+      },
+    );
+  }
+
+  void _showAmountFilterPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.payments_outlined, color: Color(0xFFF59E0B), size: 24),
+                  const SizedBox(width: 10),
+                  const Text('Фильтр по сумме накладной', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _amountOption(ctx, 'all', 'Любая сумма'),
+              _amountOption(ctx, 'under500', 'До 500 TJS'),
+              _amountOption(ctx, '500_2000', 'От 500 до 2 000 TJS'),
+              _amountOption(ctx, '2000_10000', 'От 2 000 до 10 000 TJS'),
+              _amountOption(ctx, 'over10000', 'Более 10 000 TJS'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _amountOption(BuildContext ctx, String type, String label) {
+    final isSelected = _amountFilterType == type;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(label, style: TextStyle(color: isSelected ? const Color(0xFFF59E0B) : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+      trailing: isSelected ? const Icon(Icons.check, color: Color(0xFFF59E0B)) : null,
+      onTap: () {
+        setState(() => _amountFilterType = type);
+        Navigator.pop(ctx);
+      },
+    );
   }
 
   Future<void> _loadData() async {
@@ -640,7 +985,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Text('Журнал накладных', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                 Row(
                   children: [
-                    Text('${_recentInvoices.length} документов', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                    Text(
+                      _hasActiveFilters
+                          ? '${_filteredInvoices.length} из ${_recentInvoices.length} накл.'
+                          : '${_recentInvoices.length} документов',
+                      style: TextStyle(
+                        color: _hasActiveFilters ? const Color(0xFF10B981) : Colors.white54,
+                        fontSize: 12,
+                        fontWeight: _hasActiveFilters ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
                     if (_recentInvoices.isNotEmpty) ...[
                       const SizedBox(width: 8),
                       IconButton(
@@ -655,21 +1009,261 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
+
+            // Поле быстрого поиска и фильтры
+            if (_recentInvoices.isNotEmpty) ...[
+              TextField(
+                controller: _searchCtrl,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF1E293B),
+                  hintText: 'Поиск по номеру накладной, поставщику, сумме...',
+                  hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                  prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF10B981), size: 20),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear_rounded, color: Colors.white54, size: 18),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                        )
+                      : null,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // Полоса быстрых фильтров (Контрагенты, Даты, Суммы, Сброс)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    // Фильтр по Контрагенту
+                    InkWell(
+                      onTap: _showSupplierFilterPicker,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _selectedSupplierFilter != null ? const Color(0xFF10B981).withOpacity(0.2) : const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _selectedSupplierFilter != null ? const Color(0xFF10B981) : Colors.white12,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.person_outline_rounded, size: 15, color: _selectedSupplierFilter != null ? const Color(0xFF10B981) : Colors.white70),
+                            const SizedBox(width: 5),
+                            Text(
+                              _selectedSupplierFilter != null ? _selectedSupplierFilter! : 'Контрагент',
+                              style: TextStyle(
+                                color: _selectedSupplierFilter != null ? const Color(0xFF10B981) : Colors.white70,
+                                fontSize: 12,
+                                fontWeight: _selectedSupplierFilter != null ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(Icons.arrow_drop_down, size: 16, color: _selectedSupplierFilter != null ? const Color(0xFF10B981) : Colors.white54),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+
+                    // Фильтр по Дате
+                    InkWell(
+                      onTap: _showDateFilterPicker,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _dateFilterType != 'all' ? const Color(0xFF38BDF8).withOpacity(0.2) : const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _dateFilterType != 'all' ? const Color(0xFF38BDF8) : Colors.white12,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.calendar_today_rounded, size: 13, color: _dateFilterType != 'all' ? const Color(0xFF38BDF8) : Colors.white70),
+                            const SizedBox(width: 5),
+                            Text(
+                              _dateFilterType == 'today'
+                                  ? 'Сегодня'
+                                  : (_dateFilterType == 'yesterday'
+                                      ? 'Вчера'
+                                      : (_dateFilterType == 'week'
+                                          ? '7 дней'
+                                          : (_dateFilterType == 'month'
+                                              ? '30 дней'
+                                              : (_dateFilterType == 'custom' && _customDateRange != null
+                                                  ? '${DateFormat("dd.MM").format(_customDateRange!.start)} - ${DateFormat("dd.MM").format(_customDateRange!.end)}'
+                                                  : 'Дата')))),
+                              style: TextStyle(
+                                color: _dateFilterType != 'all' ? const Color(0xFF38BDF8) : Colors.white70,
+                                fontSize: 12,
+                                fontWeight: _dateFilterType != 'all' ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(Icons.arrow_drop_down, size: 16, color: _dateFilterType != 'all' ? const Color(0xFF38BDF8) : Colors.white54),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+
+                    // Фильтр по Сумме
+                    InkWell(
+                      onTap: _showAmountFilterPicker,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _amountFilterType != 'all' ? const Color(0xFFF59E0B).withOpacity(0.2) : const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _amountFilterType != 'all' ? const Color(0xFFF59E0B) : Colors.white12,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.payments_outlined, size: 14, color: _amountFilterType != 'all' ? const Color(0xFFF59E0B) : Colors.white70),
+                            const SizedBox(width: 5),
+                            Text(
+                              _amountFilterType == 'under500'
+                                  ? '< 500 TJS'
+                                  : (_amountFilterType == '500_2000'
+                                      ? '500 - 2 000 TJS'
+                                      : (_amountFilterType == '2000_10000'
+                                          ? '2 000 - 10 000 TJS'
+                                          : (_amountFilterType == 'over10000' ? '> 10 000 TJS' : 'Сумма'))),
+                              style: TextStyle(
+                                color: _amountFilterType != 'all' ? const Color(0xFFF59E0B) : Colors.white70,
+                                fontSize: 12,
+                                fontWeight: _amountFilterType != 'all' ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(Icons.arrow_drop_down, size: 16, color: _amountFilterType != 'all' ? const Color(0xFFF59E0B) : Colors.white54),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // Кнопка сброса всех фильтров
+                    if (_hasActiveFilters) ...[
+                      const SizedBox(width: 8),
+                      InkWell(
+                        onTap: _resetAllFilters,
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.redAccent.withOpacity(0.5)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.close_rounded, size: 13, color: Colors.redAccent),
+                              const SizedBox(width: 4),
+                              Text('Сбросить (${_activeFiltersCount})', style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              if (_hasActiveFilters)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Builder(
+                    builder: (context) {
+                      final filtered = _filteredInvoices;
+                      final sum = filtered.fold<double>(0.0, (s, d) => s + (d.totalAmount > 0 ? d.totalAmount : d.calculatedTotal));
+                      return Row(
+                        children: [
+                          const Icon(Icons.filter_alt_outlined, size: 13, color: Color(0xFF10B981)),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Найдено: ${filtered.length} документов на ${sum.toStringAsFixed(2)} TJS',
+                            style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+            ],
+            const SizedBox(height: 6),
 
             // 4. Список недавних накладных
             if (_isLoading)
               const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator(color: Color(0xFF10B981))))
             else if (_recentInvoices.isEmpty)
               _emptyState()
+            else if (_filteredInvoices.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 16),
+                child: Center(
+                  child: Column(
+                    children: [
+                      const Icon(Icons.search_off_rounded, size: 48, color: Colors.white24),
+                      const SizedBox(height: 12),
+                      const Text('По выбранным фильтрам накладных не найдено', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1E293B),
+                          foregroundColor: const Color(0xFF10B981),
+                          side: const BorderSide(color: Color(0xFF10B981), width: 1),
+                        ),
+                        icon: const Icon(Icons.refresh_rounded, size: 16),
+                        label: const Text('Сбросить фильтры поиска'),
+                        onPressed: _resetAllFilters,
+                      ),
+                    ],
+                  ),
+                ),
+              )
             else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _recentInvoices.length,
-                itemBuilder: (ctx, index) {
-                  final doc = _recentInvoices[index];
-                  return _invoiceCard(doc);
+              Builder(
+                builder: (context) {
+                  final list = _filteredInvoices;
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: list.length,
+                    itemBuilder: (ctx, index) {
+                      final doc = list[index];
+                      return _invoiceCard(doc);
+                    },
+                  );
                 },
               ),
           ],
@@ -963,6 +1557,20 @@ class _HomeScreenState extends State<HomeScreen> {
                             '№${doc.invoiceNumber}',
                             style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12, fontWeight: FontWeight.bold),
                           ),
+                          if (doc.incomingNumber.isNotEmpty && doc.incomingNumber != doc.invoiceNumber) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                'Вх: ${doc.incomingNumber}',
+                                style: const TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                          ],
                           if (doc.pagePhotos.isNotEmpty) ...[
                             const SizedBox(width: 4),
                             Container(
