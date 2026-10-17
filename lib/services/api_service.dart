@@ -1035,13 +1035,14 @@ class ApiService {
             localImagePath: imagePath,
           );
         } else {
-          final dbProd = await _databaseHelper.getProductById(productId);
-          if (dbProd != null) {
-            updatedProd = dbProd.copyWith(
-              imageUrl: finalImageUrl,
-              localImagePath: imagePath,
-            );
-          }
+          updatedProd = Product(
+            id: productId,
+            storeId: currentStoreId,
+            name: 'Товар #$productId',
+            price: 0.0,
+            imageUrl: finalImageUrl,
+            localImagePath: imagePath,
+          );
         }
       }
     } catch (e) {
