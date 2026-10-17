@@ -2794,39 +2794,48 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  '1. Номер в системе gusar.tj (основной):',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                const Row(
+                  children: [
+                    Icon(Icons.lock_rounded, color: Color(0xFF10B981), size: 16),
+                    SizedBox(width: 6),
+                    Text(
+                      '1. Системный номер gusar.tj:',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                  ],
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
                     color: const Color(0xFF10B981).withOpacity(0.15),
                     borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
                   ),
-                  child: const Text('Сквозной порядок gusar.tj', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.w600)),
+                  child: const Text('Автоматически (без редактирования)', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.w600)),
                 ),
               ],
             ),
             const SizedBox(height: 6),
             TextField(
               controller: _invoiceNumCtrl,
-              keyboardType: TextInputType.text,
-              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+              readOnly: true,
+              style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.5),
               decoration: InputDecoration(
                 filled: true,
                 fillColor: const Color(0xFF0F172A),
-                prefixIcon: const Icon(Icons.tag_rounded, color: Color(0xFF10B981), size: 20),
+                prefixIcon: const Icon(Icons.lock_outline_rounded, color: Color(0xFF10B981), size: 20),
                 suffixIcon: IconButton(
                   icon: _isLoadingNextNum
                       ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)))
                       : const Icon(Icons.sync_rounded, color: Color(0xFF10B981), size: 20),
-                  tooltip: 'Получить следующий номер из gusar.tj',
+                  tooltip: 'Обновить следующий порядковый номер из gusar.tj',
                   onPressed: _isLoadingNextNum ? null : _reloadNextNumber,
                 ),
-                hintText: 'Например: 46',
+                hintText: 'Автономер gusar.tj',
                 hintStyle: const TextStyle(color: Colors.white38),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                helperText: '🔒 Номер накладной присваивается системой автоматически',
+                helperStyle: const TextStyle(color: Color(0xFF10B981), fontSize: 11),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF10B981), width: 1)),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               ),
             ),

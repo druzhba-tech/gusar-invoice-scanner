@@ -883,6 +883,16 @@ class ApiService {
             created = Product.fromJson(data);
           }
         }
+
+        // Если к товару было прикреплено фото, гарантированно загружаем его на сервер через PATCH /api/products/:id/image
+        if (created != null && localImagePath != null && File(localImagePath).existsSync()) {
+          try {
+            final uploaded = await uploadProductImage(created.id, localImagePath);
+            if (uploaded != null) {
+              created = uploaded;
+            }
+          } catch (_) {}
+        }
       }
     } catch (e) {
       print('Create product on gusar.tj server error: $e');
@@ -914,7 +924,60 @@ class ApiService {
     return created;
   }
 
-  // 4. Загрузка фото товара на сервер gusar.tj в формате Base64 (как в админке сайта)
+  // 4.1 Обновление данных существующего товара в базе gusar.tj (PUT /api/products/:id)
+  Future<Product?> updateProduct(Product product) async {
+    final idx = _cachedProducts.indexWhere((p) => p.id == product.id);
+    Product? updated;
+
+    try {
+      final payload = {
+        'name': product.name.trim(),
+        'price': product.price,
+        'cost_price': product.costPrice,
+        if (product.wholesalePrice != null && product.wholesalePrice! > 0) 'wholesale_price': product.wholesalePrice,
+        if (product.barcode != null && product.barcode!.isNotEmpty) 'barcode': product.barcode!.trim(),
+        'category': product.category ?? 'Продукты',
+        'unit': product.unit,
+        'product_type': product.productType.idName,
+        if (product.pluCode != null && product.pluCode!.isNotEmpty) 'plu_code': product.pluCode,
+        'store_id': currentStoreId,
+        'storeId': currentStoreId,
+      };
+
+      final response = await _dio.put(
+        '/api/products/${product.id}',
+        data: payload,
+      ).timeout(const Duration(seconds: 25));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = response.data;
+        if (data is Map<String, dynamic>) {
+          if (data['data'] is Map<String, dynamic>) {
+            updated = Product.fromJson(data['data'] as Map<String, dynamic>);
+          } else if (data['product'] is Map<String, dynamic>) {
+            updated = Product.fromJson(data['product'] as Map<String, dynamic>);
+          }
+        }
+      }
+    } catch (e) {
+      print('Update product on gusar.tj error: $e');
+    }
+
+    updated ??= product;
+    if (idx >= 0) {
+      // Сохраняем фото если сервер вернул пустой url
+      if ((updated.imageUrl == null || updated.imageUrl!.isEmpty) && _cachedProducts[idx].imageUrl != null) {
+        updated = updated.copyWith(
+          imageUrl: _cachedProducts[idx].imageUrl,
+          localImagePath: _cachedProducts[idx].localImagePath,
+        );
+      }
+    }
+    _addOrUpdateCachedProduct(updated);
+    return updated;
+  }
+
+  // 4.2 Загрузка фото товара на сервер gusar.tj в формате Base64 (PATCH /api/products/:id/image)
   Future<Product?> uploadProductImage(int productId, String imagePath) async {
     final idx = _cachedProducts.indexWhere((p) => p.id == productId);
     Product? updatedProd;
@@ -929,17 +992,17 @@ class ApiService {
       final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
 
       Response? response;
-      // 1. Быстрое обновление фото через метод админки gusar.tj
+      // 1. Основной маршрут загрузки фото товара gusar.tj (PATCH /api/products/:id/image)
       try {
         response = await _dio.patch(
-          '/api/admin/products/$productId/quick-update',
+          '/api/products/$productId/image',
           data: {'imageBase64': base64Image},
-        ).timeout(const Duration(seconds: 15));
+        ).timeout(const Duration(seconds: 20));
       } catch (_) {
-        // 2. Метод через прямое обновление карточки товара
+        // 2. Запасной маршрут через quick-update админки gusar.tj
         try {
-          response = await _dio.put(
-            '/api/products/$productId',
+          response = await _dio.patch(
+            '/api/admin/products/$productId/quick-update',
             data: {'imageBase64': base64Image},
           ).timeout(const Duration(seconds: 15));
         } catch (_) {}
@@ -971,6 +1034,14 @@ class ApiService {
             imageUrl: finalImageUrl,
             localImagePath: imagePath,
           );
+        } else {
+          final dbProd = await _databaseHelper.getProductById(productId);
+          if (dbProd != null) {
+            updatedProd = dbProd.copyWith(
+              imageUrl: finalImageUrl,
+              localImagePath: imagePath,
+            );
+          }
         }
       }
     } catch (e) {
@@ -1316,13 +1387,15 @@ class ApiService {
       print('Auto-allocate debt error: $e');
     }
 
-    // 3. Прямой вызов API взаиморасчетов, если накладных нет в списке
+    // 3. Прямая выплата поставщику через API gusar.tj (POST /api/suppliers/:id/pay)
     try {
       final resp = await _dio.post(
-        '/api/counterparties/payment',
+        '/api/suppliers/$supplierId/pay',
         data: {
-          'supplier_id': supplierId,
-          ...payload,
+          'amount': double.parse(amount.toStringAsFixed(2)),
+          'source': mappedSource,
+          'store_id': currentStoreId,
+          if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
         },
       ).timeout(const Duration(seconds: 25));
 
@@ -1330,7 +1403,7 @@ class ApiService {
         await getSuppliers(forceRefresh: true);
         return {
           'success': true,
-          'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS зафиксирована в базе!',
+          'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS успешно списана в базе gusar.tj!',
         };
       }
     } on DioException catch (dioErr) {
@@ -1340,6 +1413,24 @@ class ApiService {
           'message': 'Доступ запрещён (403): учетная запись не имеет прав на списание долгов поставщикам. Требуются права Администратора или Менеджера.',
         };
       }
+      // Запасной маршрут через counterparties/payment
+      try {
+        final resp = await _dio.post(
+          '/api/counterparties/payment',
+          data: {
+            'supplier_id': supplierId,
+            ...payload,
+          },
+        ).timeout(const Duration(seconds: 20));
+
+        if (resp.statusCode == 200 || resp.statusCode == 201) {
+          await getSuppliers(forceRefresh: true);
+          return {
+            'success': true,
+            'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS зафиксирована в базе!',
+          };
+        }
+      } catch (_) {}
     } catch (_) {}
 
     return {

@@ -702,16 +702,17 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
-          if (_availableUpdate != null)
-            IconButton(
-              icon: const Badge(
-                backgroundColor: Color(0xFF10B981),
-                smallSize: 8,
-                child: Icon(Icons.rocket_launch_rounded, color: Color(0xFF10B981)),
-              ),
-              tooltip: 'Доступно обновление v${_availableUpdate!.version}',
-              onPressed: () => _showUpdateDialog(_availableUpdate!),
-            ),
+          // Новая кнопка "Связанные товары" (вместо кнопки проверки обновления)
+          IconButton(
+            icon: const Icon(Icons.inventory_2_rounded, color: Color(0xFF38BDF8)),
+            tooltip: 'Связанные товары (каталог и редактирование)',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProductPhotoManagerScreen()),
+              ).then((_) => _loadData());
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white70),
             tooltip: 'Обновить данные',
@@ -923,7 +924,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: const Color(0xFF0284C7).withOpacity(0.18),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Icon(Icons.add_a_photo_rounded, color: Color(0xFF38BDF8), size: 22),
+                      child: const Icon(Icons.inventory_2_rounded, color: Color(0xFF38BDF8), size: 22),
                     ),
                     const SizedBox(width: 12),
                     const Expanded(
@@ -931,12 +932,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '📸 Добавить фото к товарам',
+                            '📦 Связанные товары',
                             style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Поиск по штрихкоду/названию, авто-сжатие без потери качества',
+                            'Каталог gusar.tj: редактирование цен, штрихкодов и фото',
                             style: TextStyle(color: Colors.white54, fontSize: 11),
                           ),
                         ],
