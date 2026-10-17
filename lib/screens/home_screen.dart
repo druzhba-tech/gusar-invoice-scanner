@@ -705,7 +705,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // Новая кнопка "Связанные товары" (вместо кнопки проверки обновления)
           IconButton(
             icon: const Icon(Icons.inventory_2_rounded, color: Color(0xFF38BDF8)),
-            tooltip: 'Связанные товары (каталог и редактирование)',
+            tooltip: 'Связанные товары (связи базы к добавленным в приложении)',
             onPressed: () {
               Navigator.push(
                 context,
@@ -932,12 +932,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '📦 Связанные товары',
+                            '📦 Связанные товары базы и приложения',
                             style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Каталог gusar.tj: редактирование цен, штрихкодов и фото',
+                            'Связи товаров из накладных с базой gusar.tj, очистка и редактирование',
                             style: TextStyle(color: Colors.white54, fontSize: 11),
                           ),
                         ],

@@ -20,6 +20,7 @@ class MatchingService {
 
   // Словарь синонимов: "supplier::raw_name" -> productId и "global::raw_name" -> productId
   Map<String, int> _aliasDictionary = {};
+  Map<String, int> get aliasDictionary => Map.unmodifiable(_aliasDictionary);
 
   // Обучаемая память исправлений пользователя: "rawOcrText" -> "cleanText"
   Map<String, String> _correctionsDictionary = {};
@@ -27,8 +28,36 @@ class MatchingService {
   // Память контрагентов: "rawSupplierOcr" -> { id: 1, name: "ООО Оби Зулол" }
   Map<String, Map<String, dynamic>> _supplierAliases = {};
 
+  // Очистка всех связок товаров (пользовательский запрос "почисти все связанные товары")
+  Future<void> clearAllAliases() async {
+    _aliasDictionary.clear();
+    _correctionsDictionary.clear();
+    _supplierAliases.clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('supplier_aliases_dict');
+    await prefs.remove('ocr_corrections_dict');
+    await prefs.remove('counterparty_aliases_dict');
+    await prefs.setBool('aliases_cleaned_v1429', true);
+  }
+
+  // Удаление конкретной связки
+  Future<void> removeAlias(String supplierName, String rawName) async {
+    final key = _buildKey(supplierName, rawName);
+    final globalKey = 'global::${_normalizeText(rawName)}';
+    _aliasDictionary.remove(key);
+    _aliasDictionary.remove(globalKey);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('supplier_aliases_dict', jsonEncode(_aliasDictionary));
+  }
+
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+    final alreadyCleaned = prefs.getBool('aliases_cleaned_v1429') ?? false;
+    if (!alreadyCleaned) {
+      await clearAllAliases();
+      return;
+    }
+
     final rawDict = prefs.getString('supplier_aliases_dict');
     if (rawDict != null) {
       try {

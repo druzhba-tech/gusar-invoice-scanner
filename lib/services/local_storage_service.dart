@@ -264,4 +264,75 @@ class LocalStorageService {
       );
     }).toList();
   }
+
+  // 9. Очистить все связки товаров внутри локальных накладных
+  Future<void> clearAllItemMatchesInInvoices() async {
+    final docs = await getLocalInvoices();
+    for (var doc in docs) {
+      bool changed = false;
+      for (var item in doc.items) {
+        if (item.matchedProductId != null) {
+          item.matchedProductId = null;
+          item.matchedProductName = null;
+          item.matchedBarcode = null;
+          item.matchConfidence = 0.0;
+          item.status = ItemStatus.unmatched;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await saveInvoice(doc);
+      }
+    }
+  }
+
+  // 10. Отвязать конкретный товар по накладной
+  Future<void> unmatchItemInInvoice(String invoiceId, String rawName) async {
+    final docs = await getLocalInvoices();
+    final docIdx = docs.indexWhere((d) => d.id == invoiceId);
+    if (docIdx >= 0) {
+      final doc = docs[docIdx];
+      bool changed = false;
+      final cleanRaw = rawName.trim().toLowerCase();
+      for (var item in doc.items) {
+        if (item.rawName.trim().toLowerCase() == cleanRaw) {
+          item.matchedProductId = null;
+          item.matchedProductName = null;
+          item.matchedBarcode = null;
+          item.matchConfidence = 0.0;
+          item.status = ItemStatus.unmatched;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await saveInvoice(doc);
+      }
+    }
+  }
+
+  // 11. Перепривязать товар строки накладной к другому товару из базы
+  Future<void> rematchItemInInvoice(String invoiceId, String rawName, Product newProduct) async {
+    final docs = await getLocalInvoices();
+    final docIdx = docs.indexWhere((d) => d.id == invoiceId);
+    if (docIdx >= 0) {
+      final doc = docs[docIdx];
+      bool changed = false;
+      final cleanRaw = rawName.trim().toLowerCase();
+      for (var item in doc.items) {
+        if (item.rawName.trim().toLowerCase() == cleanRaw) {
+          item.matchedProductId = newProduct.id;
+          item.matchedProductName = newProduct.name;
+          item.matchedBarcode = newProduct.barcode;
+          item.currentRetailPrice = newProduct.price;
+          item.lastBuyPrice = newProduct.costPrice > 0 ? newProduct.costPrice : null;
+          item.matchConfidence = 1.0;
+          item.status = ItemStatus.verified;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await saveInvoice(doc);
+      }
+    }
+  }
 }
