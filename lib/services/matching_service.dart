@@ -34,8 +34,9 @@ class MatchingService {
       try {
         final decoded = jsonDecode(rawDict) as Map<String, dynamic>;
         _aliasDictionary = decoded.map((k, v) => MapEntry(k, v as int));
-        // Очищаем любые поврежденные / слишком короткие или общие ключи
+        // Очищаем любые поврежденные / слишком короткие или общие ключи, а также фейковые ID
         _aliasDictionary.removeWhere((k, v) {
+          if (v <= 0 || v >= 100000000 || (v >= 101 && v <= 110)) return true;
           final cleanKey = k.replaceAll('global::', '').replaceAll(RegExp(r'^.*?::'), '').trim();
           if (cleanKey.length < 5) return true;
           const genericWords = {'сливки', 'со вкусом', 'сыр', 'соль', 'шоколад', 'конфеты', 'печенье', 'молоко', 'масло', 'сахар'};
@@ -126,6 +127,8 @@ class MatchingService {
 
   // 2. Сохранение связки в постоянный обучаемый словарь сети (поставщик + глобально)
   Future<void> saveAlias(String supplierName, String rawName, int productId) async {
+    if (productId <= 0 || productId >= 100000000 || (productId >= 101 && productId <= 110)) return;
+
     final key = _buildKey(supplierName, rawName);
     final globalKey = 'global::${_normalizeText(rawName)}';
 

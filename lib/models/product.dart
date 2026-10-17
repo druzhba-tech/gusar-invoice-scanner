@@ -172,8 +172,14 @@ class Product {
       }
     }
 
+    final rawId = json['id'] ??
+        (json['data'] is Map ? json['data']['id'] : null) ??
+        (json['product'] is Map ? json['product']['id'] : null) ??
+        json['product_id'];
+    final parsedId = rawId is int ? rawId : int.tryParse(rawId?.toString() ?? '0') ?? 0;
+
     return Product(
-      id: json['id'] is int ? json['id'] : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
+      id: parsedId,
       storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
       name: name,
       barcode: barcode,

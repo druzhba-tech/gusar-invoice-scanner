@@ -57,8 +57,9 @@ class ApiService {
     _dio = Dio(
       BaseOptions(
         baseUrl: baseUrl,
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 20),
+        connectTimeout: const Duration(seconds: 60),
+        receiveTimeout: const Duration(seconds: 60),
+        sendTimeout: const Duration(seconds: 60),
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
@@ -575,9 +576,9 @@ class ApiService {
             'store_id': currentStoreId,
             'limit': 1000,
           },
-        ).timeout(const Duration(seconds: 10));
+        ).timeout(const Duration(seconds: 30));
       } catch (_) {
-        response = await _dio.get('/api/products').timeout(const Duration(seconds: 10));
+        response = await _dio.get('/api/products').timeout(const Duration(seconds: 30));
       }
 
       if (response != null && response.statusCode == 200 && response.data != null) {
@@ -594,10 +595,17 @@ class ApiService {
         }
 
         if (items.isNotEmpty) {
-          final serverProds = items.map((p) => Product.fromJson(p as Map<String, dynamic>)).toList();
-          _cachedProducts = serverProds;
-          await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
-          return _cachedProducts;
+          final serverProds = items
+              .where((p) => p is Map)
+              .map((p) => Product.fromJson(Map<String, dynamic>.from(p as Map)))
+              .where((p) => p.id > 0 && p.id < 100000000 && !(p.id >= 101 && p.id <= 110))
+              .toList();
+
+          if (serverProds.isNotEmpty) {
+            _cachedProducts = serverProds;
+            await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
+            return _cachedProducts;
+          }
         }
       }
     } catch (e) {
@@ -714,6 +722,105 @@ class ApiService {
     await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
   }
 
+  // Поиск товара напрямую на сервере gusar.tj для получения подтверждённого серверного ID
+  Future<Product?> searchProductOnServer(String barcodeOrQuery) async {
+    final clean = barcodeOrQuery.trim();
+    if (clean.isEmpty) return null;
+
+    final isBarcode = RegExp(r'^\d{6,14}$').hasMatch(clean);
+
+    // 1. Сначала пробуем поиск по параметру barcode, если это цифры
+    if (isBarcode) {
+      try {
+        final resp = await _dio.get('/api/products', queryParameters: {
+          'barcode': clean,
+          'store_id': currentStoreId,
+          'limit': 5,
+        }).timeout(const Duration(seconds: 20));
+
+        if (resp.statusCode == 200 && resp.data != null) {
+          final found = _parseProductListResponse(resp.data, clean, isStrictBarcode: true);
+          if (found != null) return found;
+        }
+      } catch (_) {}
+    }
+
+    // 2. Общий поиск по строке (search / q)
+    try {
+      final response = await _dio.get('/api/products', queryParameters: {
+        'search': clean,
+        'store_id': currentStoreId,
+        'limit': 15,
+      }).timeout(const Duration(seconds: 25));
+
+      if (response.statusCode == 200 && response.data != null) {
+        final found = _parseProductListResponse(response.data, clean, isStrictBarcode: isBarcode);
+        if (found != null) return found;
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  Product? _parseProductListResponse(dynamic raw, String query, {bool isStrictBarcode = false}) {
+    List<dynamic> items = [];
+    if (raw is List) {
+      items = raw;
+    } else if (raw is Map) {
+      if (raw['products'] is List) items = raw['products'];
+      else if (raw['data'] is List) items = raw['data'];
+      else if (raw['items'] is List) items = raw['items'];
+    }
+
+    final lowerQuery = query.toLowerCase();
+
+    // Проход 1: Точное совпадение по штрихкоду
+    for (final item in items) {
+      if (item is Map) {
+        final map = Map<String, dynamic>.from(item);
+        final p = Product.fromJson(map);
+        if (p.id > 0 && p.id < 100000000 && !(p.id >= 101 && p.id <= 110)) {
+          final bc = (p.barcode ?? '').toLowerCase();
+          if (bc == lowerQuery || bc.split(',').map((e) => e.trim()).contains(lowerQuery)) {
+            _addOrUpdateCachedProduct(p);
+            return p;
+          }
+        }
+      }
+    }
+
+    if (isStrictBarcode) return null;
+
+    // Проход 2: Совпадение по названию
+    for (final item in items) {
+      if (item is Map) {
+        final map = Map<String, dynamic>.from(item);
+        final p = Product.fromJson(map);
+        if (p.id > 0 && p.id < 100000000 && !(p.id >= 101 && p.id <= 110)) {
+          final pName = p.name.toLowerCase();
+          if (pName == lowerQuery || (lowerQuery.length > 3 && pName.contains(lowerQuery))) {
+            _addOrUpdateCachedProduct(p);
+            return p;
+          }
+        }
+      }
+    }
+
+    // Проход 3: Первый валидный товар из выборки
+    for (final item in items) {
+      if (item is Map) {
+        final map = Map<String, dynamic>.from(item);
+        final p = Product.fromJson(map);
+        if (p.id > 0 && p.id < 100000000 && !(p.id >= 101 && p.id <= 110)) {
+          _addOrUpdateCachedProduct(p);
+          return p;
+        }
+      }
+    }
+
+    return null;
+  }
+
   // 3. Создание нового товара прямо из приёмки или экрана добавления товара
   Future<Product?> createProduct({
     required String name,
@@ -728,6 +835,7 @@ class ApiService {
     String? pluCode,
     String? localImagePath,
     String? imageUrl,
+    bool allowLocalFallback = true,
   }) async {
     final cleanBarcode = barcode.trim();
     Product? created;
@@ -753,42 +861,56 @@ class ApiService {
         'wholesale_price': wholesalePrice,
         'cost_price': costPrice,
         'category_id': categoryId,
-        'category': category,
+        'category': category ?? 'Продукты',
         'store_id': currentStoreId,
+        'storeId': currentStoreId,
         'stock_quantity': 0,
         'product_type': productType.idName,
         'unit': unit,
         'plu_code': pluCode,
         'image_url': imageUrl,
         if (base64Image != null) 'imageBase64': base64Image,
-      }).timeout(const Duration(seconds: 12));
+      }).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        created = Product.fromJson(response.data);
+        dynamic data = response.data;
+        if (data is Map<String, dynamic>) {
+          if (data['data'] is Map<String, dynamic>) {
+            created = Product.fromJson(data['data'] as Map<String, dynamic>);
+          } else if (data['product'] is Map<String, dynamic>) {
+            created = Product.fromJson(data['product'] as Map<String, dynamic>);
+          } else {
+            created = Product.fromJson(data);
+          }
+        }
       }
     } catch (e) {
-      print('Create product on gusar.tj server error (creating local fallback): $e');
+      print('Create product on gusar.tj server error: $e');
     }
 
-    // Если сервер недоступен или вернул ошибку, создаем локально в базе приложения
-    created ??= Product(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      storeId: currentStoreId,
-      name: name.trim(),
-      barcode: cleanBarcode.isNotEmpty ? cleanBarcode : null,
-      price: price,
-      wholesalePrice: wholesalePrice,
-      costPrice: costPrice,
-      stockQuantity: 0,
-      category: category,
-      productType: productType,
-      unit: unit,
-      pluCode: pluCode,
-      localImagePath: localImagePath,
-      imageUrl: imageUrl,
-    );
+    // Если сервер недоступен и РАЗРЕШЕН локальный fallback (например, оффлайн добавление товара)
+    if (created == null && allowLocalFallback) {
+      created = Product(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        storeId: currentStoreId,
+        name: name.trim(),
+        barcode: cleanBarcode.isNotEmpty ? cleanBarcode : null,
+        price: price,
+        wholesalePrice: wholesalePrice,
+        costPrice: costPrice,
+        stockQuantity: 0,
+        category: category ?? 'Продукты',
+        productType: productType,
+        unit: unit,
+        pluCode: pluCode,
+        localImagePath: localImagePath,
+        imageUrl: imageUrl,
+      );
+    }
 
-    _addOrUpdateCachedProduct(created);
+    if (created != null) {
+      _addOrUpdateCachedProduct(created);
+    }
     return created;
   }
 
@@ -914,7 +1036,7 @@ class ApiService {
           response = await _dio.get(
             path,
             queryParameters: params.isNotEmpty ? params : null,
-          ).timeout(const Duration(seconds: 7));
+          ).timeout(const Duration(seconds: 20));
         } on DioException catch (dioErr) {
           if (dioErr.response?.statusCode == 401) {
             final ok = await _trySilentReLogin();
@@ -922,7 +1044,7 @@ class ApiService {
               response = await _dio.get(
                 path,
                 queryParameters: params.isNotEmpty ? params : null,
-              ).timeout(const Duration(seconds: 7));
+              ).timeout(const Duration(seconds: 20));
             }
           }
         }
@@ -953,8 +1075,8 @@ class ApiService {
 
           if (items.isNotEmpty) {
             final parsed = items
-                .whereType<Map<String, dynamic>>()
-                .map((s) => Supplier.fromJson(s))
+                .where((s) => s is Map)
+                .map((s) => Supplier.fromJson(Map<String, dynamic>.from(s as Map)))
                 .where((s) => s.id > 0 && s.id < 1000000 && s.name.trim().isNotEmpty)
                 .toList();
 
@@ -1005,7 +1127,7 @@ class ApiService {
           if (sId > 0) 'store_id': sId,
           'limit': 100,
         },
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200 && response.data != null) {
         dynamic raw = response.data;
@@ -1018,7 +1140,10 @@ class ApiService {
           items = raw['data'];
         }
 
-        final list = items.whereType<Map<String, dynamic>>().toList();
+        final list = items
+            .where((item) => item is Map)
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
 
         // Сортируем: сверху самые последние/свежие, снизу более ранние
         list.sort((a, b) {
@@ -1040,12 +1165,24 @@ class ApiService {
     required int supplierId,
     int? purchaseId,
     required double amount,
-    String source = 'cash',
+    String source = 'cash_drawer',
     String? notes,
     String? receiptPhotoPath,
   }) async {
     if (amount <= 0) {
       return {'success': false, 'message': 'Сумма оплаты должна быть больше 0'};
+    }
+
+    // Приводим источник к формату gusar.tj API
+    String mappedSource = source;
+    if (source == 'cash') {
+      mappedSource = 'cash_drawer';
+    } else if (source == 'safe') {
+      mappedSource = 'owner_pocket';
+    } else if (source == 'bank') {
+      mappedSource = 'bank';
+    } else if (source != 'cash_drawer' && source != 'owner_pocket') {
+      mappedSource = 'cash_drawer';
     }
 
     String? base64Receipt;
@@ -1061,20 +1198,22 @@ class ApiService {
     }
 
     final payload = {
-      'amount': amount,
-      'source': source,
+      'amount': double.parse(amount.toStringAsFixed(2)),
+      'source': mappedSource,
+      'payment_source': mappedSource,
       'store_id': currentStoreId,
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
       if (base64Receipt != null) 'receipt_base64': base64Receipt,
+      if (base64Receipt != null) 'receipt_photo': base64Receipt,
     };
 
-    // 1. Если оплата по конкретной накладной
+    // 1. Оплата по конкретной накладной
     if (purchaseId != null && purchaseId > 0) {
       try {
         final resp = await _dio.post(
           '/api/purchases/$purchaseId/pay-debt',
           data: payload,
-        ).timeout(const Duration(seconds: 12));
+        ).timeout(const Duration(seconds: 30));
 
         if (resp.statusCode == 200 || resp.statusCode == 201) {
           await getSuppliers(forceRefresh: true);
@@ -1083,54 +1222,129 @@ class ApiService {
             'message': 'Оплата накладной №$purchaseId на сумму ${amount.toStringAsFixed(2)} TJS успешно проведена!',
           };
         }
+      } on DioException catch (dioErr) {
+        if (dioErr.response?.statusCode == 403) {
+          return {
+            'success': false,
+            'message': 'Доступ запрещён (403): ваша учётная запись (роль Кассир) не имеет прав на списание долгов поставщикам в gusar.tj. Требуются права Администратора или Менеджера.',
+          };
+        }
+        if (dioErr.type == DioExceptionType.connectionTimeout || dioErr.type == DioExceptionType.receiveTimeout) {
+          return {
+            'success': false,
+            'message': 'Превышено время ожидания ответа сервера gusar.tj (таймаут). Проверьте интернет-соединение.',
+          };
+        }
+        final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
+        return {
+          'success': false,
+          'message': serverMsg?.toString() ?? 'Ошибка при списании долга по накладной: ${dioErr.message}',
+        };
       } catch (e) {
-        print('pay-debt by purchase error: $e');
+        return {'success': false, 'message': 'Ошибка при списании долга: $e'};
       }
     }
 
-    // 2. Общая выплата поставщику через /api/suppliers/:id/pay
+    // 2. Общая выплата поставщику (распределяем по накладным поставщика с остатком долга)
+    try {
+      final purchases = await fetchSupplierPurchases(supplierId);
+      final unpaidPurchases = purchases.where((p) {
+        final debt = (p['debt_amount'] is num
+            ? (p['debt_amount'] as num).toDouble()
+            : double.tryParse(p['debt_amount']?.toString() ?? '0') ?? 0.0);
+        final rem = (p['remaining_amount'] is num
+            ? (p['remaining_amount'] as num).toDouble()
+            : double.tryParse(p['remaining_amount']?.toString() ?? '0') ?? 0.0);
+        final status = (p['payment_status'] ?? '').toString().toLowerCase();
+        return debt > 0.01 || rem > 0.01 || status == 'debt' || status == 'partial';
+      }).toList();
+
+      if (unpaidPurchases.isNotEmpty) {
+        // Сортируем от самых старых к новым (хронологическое погашение задолженности)
+        unpaidPurchases.sort((a, b) {
+          final dateA = DateTime.tryParse(a['purchase_date']?.toString() ?? a['date']?.toString() ?? a['created_at']?.toString() ?? '') ?? DateTime(2000);
+          final dateB = DateTime.tryParse(b['purchase_date']?.toString() ?? b['date']?.toString() ?? b['created_at']?.toString() ?? '') ?? DateTime(2000);
+          return dateA.compareTo(dateB);
+        });
+
+        double remainingToPay = amount;
+        int paidCount = 0;
+
+        for (final p in unpaidPurchases) {
+          if (remainingToPay <= 0.009) break;
+          final pId = p['id'] is int ? p['id'] as int : int.tryParse(p['id']?.toString() ?? '0') ?? 0;
+          if (pId <= 0) continue;
+
+          final debt = (p['debt_amount'] is num
+              ? (p['debt_amount'] as num).toDouble()
+              : double.tryParse(p['debt_amount']?.toString() ?? '0') ?? 0.0);
+          final rem = (p['remaining_amount'] is num
+              ? (p['remaining_amount'] as num).toDouble()
+              : double.tryParse(p['remaining_amount']?.toString() ?? '0') ?? 0.0);
+          final curDebt = debt > 0 ? debt : (rem > 0 ? rem : remainingToPay);
+          final allocAmount = remainingToPay >= curDebt ? curDebt : remainingToPay;
+
+          final pPayload = Map<String, dynamic>.from(payload);
+          pPayload['amount'] = double.parse(allocAmount.toStringAsFixed(2));
+
+          try {
+            final resp = await _dio.post('/api/purchases/$pId/pay-debt', data: pPayload).timeout(const Duration(seconds: 25));
+            if (resp.statusCode == 200 || resp.statusCode == 201) {
+              remainingToPay -= allocAmount;
+              paidCount++;
+            }
+          } on DioException catch (dioErr) {
+            if (dioErr.response?.statusCode == 403) {
+              return {
+                'success': false,
+                'message': 'Доступ запрещён (403): роль вашей учетной записи (Кассир) не имеет прав на списание долгов поставщикам. Требуются права Администратора или Менеджера.',
+              };
+            }
+            break;
+          }
+        }
+
+        if (paidCount > 0) {
+          await getSuppliers(forceRefresh: true);
+          return {
+            'success': true,
+            'message': 'Оплата на сумму ${amount.toStringAsFixed(2)} TJS успешно распределена и проведена по накладным ($paidCount шт.)!',
+          };
+        }
+      }
+    } catch (e) {
+      print('Auto-allocate debt error: $e');
+    }
+
+    // 3. Прямой вызов API взаиморасчетов, если накладных нет в списке
     try {
       final resp = await _dio.post(
-        '/api/suppliers/$supplierId/pay',
-        data: payload,
-      ).timeout(const Duration(seconds: 12));
+        '/api/counterparties/payment',
+        data: {
+          'supplier_id': supplierId,
+          ...payload,
+        },
+      ).timeout(const Duration(seconds: 25));
 
       if (resp.statusCode == 200 || resp.statusCode == 201) {
         await getSuppliers(forceRefresh: true);
         return {
           'success': true,
-          'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS зафиксирована в базе gusar.tj!',
+          'message': 'Оплата поставщику на сумму ${amount.toStringAsFixed(2)} TJS зафиксирована в базе!',
         };
       }
-    } catch (e) {
-      // 3. Запасной эндпоинт взаиморасчетов
-      try {
-        final altResp = await _dio.post(
-          '/api/v2/counterparties/payment',
-          data: {
-            'supplier_id': supplierId,
-            ...payload,
-          },
-        ).timeout(const Duration(seconds: 10));
-
-        if (altResp.statusCode == 200 || altResp.statusCode == 201) {
-          await getSuppliers(forceRefresh: true);
-          return {
-            'success': true,
-            'message': 'Оплата на сумму ${amount.toStringAsFixed(2)} TJS проведена!',
-          };
-        }
-      } catch (altErr) {
+    } on DioException catch (dioErr) {
+      if (dioErr.response?.statusCode == 403) {
         return {
           'success': false,
-          'message': 'Ошибка сервера gusar.tj при проведении оплаты: $altErr',
+          'message': 'Доступ запрещён (403): учетная запись не имеет прав на списание долгов поставщикам. Требуются права Администратора или Менеджера.',
         };
       }
-    }
+    } catch (_) {}
 
     return {
       'success': false,
-      'message': 'Не удалось провести оплату поставщику на сервере gusar.tj',
+      'message': 'Не удалось провести оплату поставщику на сервере gusar.tj. Проверьте права доступа.',
     };
   }
 
@@ -1331,13 +1545,43 @@ class ApiService {
         }
       }
 
-      // 2. Формируем позиции с точными дробными весами (для весовых товаров в кг)
+      // 2. Формируем позиции с гарантированной проверкой серверных ID в базе gusar.tj
       final List<Map<String, dynamic>> itemsPayload = [];
       for (var item in document.items) {
         int? productId = item.matchedProductId;
+        bool isRealServerId = false;
 
-        // Если товар не привязан к базе gusar.tj, создаем его карточку прямо в базе!
-        if (productId == null || productId <= 0) {
+        // Проверяем: это валидный серверный ID (не мок, не таймстамп)
+        if (productId != null && productId > 0 && productId < 100000000 && !(productId >= 101 && productId <= 110)) {
+          final inCache = _cachedProducts.any((p) => p.id == productId && p.id < 100000000 && !(p.id >= 101 && p.id <= 110));
+          if (inCache) {
+            isRealServerId = true;
+          }
+        }
+
+        // Если ID не подтвержден сервером — ищем реальный товар на сервере gusar.tj
+        if (!isRealServerId) {
+          final bc = (item.barcode ?? item.matchedBarcode ?? '').trim();
+          Product? found;
+          if (bc.isNotEmpty) {
+            found = await searchProductOnServer(bc);
+          }
+          if (found == null) {
+            final cleanName = item.rawName.trim();
+            if (cleanName.isNotEmpty) {
+              found = await searchProductOnServer(cleanName);
+            }
+          }
+
+          if (found != null && found.id > 0 && found.id < 100000000 && !(found.id >= 101 && found.id <= 110)) {
+            productId = found.id;
+            item.matchedProductId = found.id;
+            isRealServerId = true;
+          }
+        }
+
+        // Если товар отсутствует на сервере gusar.tj — регистрируем его карточку (строго БЕЗ мок-таймстампа!)
+        if (!isRealServerId) {
           try {
             final newProd = await createProduct(
               name: item.rawName.trim(),
@@ -1345,32 +1589,40 @@ class ApiService {
               price: item.currentRetailPrice ?? (item.buyPrice > 0 ? (item.buyPrice * 1.25) : 10.0),
               costPrice: item.buyPrice > 0 ? item.buyPrice : 1.0,
               unit: item.unit.isNotEmpty ? item.unit : 'шт',
+              allowLocalFallback: false, // Запрещено генерировать локальные таймстампы при сетевом оприходовании
             );
-            if (newProd != null && newProd.id > 0) {
+            if (newProd != null && newProd.id > 0 && newProd.id < 100000000 && !(newProd.id >= 101 && newProd.id <= 110)) {
               productId = newProd.id;
               item.matchedProductId = newProd.id;
+              isRealServerId = true;
             }
           } catch (createErr) {
-            print('Auto-create product error: $createErr');
+            print('Auto-create product on server error: $createErr');
           }
         }
 
-        if (productId != null && productId > 0) {
-          final rawQty = item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity;
-          final double cleanQty = double.tryParse(rawQty.toStringAsFixed(3)) ?? rawQty;
-          final double cleanBuy = item.buyPrice > 0 ? double.tryParse(item.buyPrice.toStringAsFixed(2)) ?? item.buyPrice : 0.01;
-          final double? cleanRetail = item.currentRetailPrice != null && item.currentRetailPrice! > 0
-              ? double.tryParse(item.currentRetailPrice!.toStringAsFixed(2))
-              : null;
-
-          itemsPayload.add({
-            'product_id': productId,
-            'quantity': cleanQty > 0 ? cleanQty : 1.0,
-            'buy_price': cleanBuy,
-            if (cleanRetail != null) 'retail_price': cleanRetail,
-            if (cleanRetail != null) 'sell_price': cleanRetail,
-          });
+        // Защита от Foreign Key Constraint crash в Prisma:
+        // Если ID товара не существует в PostgreSQL на сервере — запрещено отправлять фальшивый ID!
+        if (!isRealServerId || productId == null) {
+          lastSubmitError = 'Товар "${item.rawName}" не зарегистрирован в базе gusar.tj. '
+              'Пожалуйста, создайте товар в каталоге или подключитесь к интернету для синхронизации.';
+          return false;
         }
+
+        final rawQty = item.verifiedQuantity > 0 ? item.verifiedQuantity : item.quantity;
+        final double cleanQty = double.tryParse(rawQty.toStringAsFixed(3)) ?? rawQty;
+        final double cleanBuy = item.buyPrice > 0 ? double.tryParse(item.buyPrice.toStringAsFixed(2)) ?? item.buyPrice : 0.01;
+        final double? cleanRetail = item.currentRetailPrice != null && item.currentRetailPrice! > 0
+            ? double.tryParse(item.currentRetailPrice!.toStringAsFixed(2))
+            : null;
+
+        itemsPayload.add({
+          'product_id': productId,
+          'quantity': cleanQty > 0 ? cleanQty : 1.0,
+          'buy_price': cleanBuy,
+          if (cleanRetail != null) 'retail_price': cleanRetail,
+          if (cleanRetail != null) 'sell_price': cleanRetail,
+        });
       }
 
       if (itemsPayload.isEmpty) {
@@ -1420,8 +1672,25 @@ class ApiService {
           return submitPurchase(document);
         }
       }
-      final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
-      lastSubmitError = serverMsg?.toString() ?? dioErr.message ?? 'Ошибка сети при отправке накладной';
+
+      if (dioErr.type == DioExceptionType.connectionTimeout ||
+          dioErr.type == DioExceptionType.receiveTimeout ||
+          dioErr.type == DioExceptionType.sendTimeout) {
+        lastSubmitError = 'Превышено время ожидания ответа от сервера gusar.tj (таймаут соединения). Проверьте интернет-соединение на телефоне и повторите отправку.';
+      } else if (dioErr.response?.statusCode == 403) {
+        lastSubmitError = 'Доступ запрещён (403): у текущего пользователя нет прав на оприходование накладных в магазине №$currentStoreId.';
+      } else if (dioErr.response?.statusCode == 500) {
+        final rawErr = dioErr.response?.data?.toString() ?? '';
+        if (rawErr.contains('Foreign key constraint violated') || rawErr.contains('purchase_items_product_id_fkey')) {
+          lastSubmitError = 'Ошибка базы данных gusar.tj: один из товаров накладной отсутствует в каталоге сервера. Пожалуйста, синхронизируйте справочник товаров.';
+        } else {
+          final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
+          lastSubmitError = serverMsg?.toString() ?? 'Внутренняя ошибка сервера gusar.tj (500). Попробуйте через несколько секунд.';
+        }
+      } else {
+        final serverMsg = dioErr.response?.data?['error'] ?? dioErr.response?.data?['message'];
+        lastSubmitError = serverMsg?.toString() ?? dioErr.message ?? 'Ошибка сети при отправке накладной';
+      }
       print('Submit purchase dio error: $lastSubmitError');
       return false;
     } catch (e) {

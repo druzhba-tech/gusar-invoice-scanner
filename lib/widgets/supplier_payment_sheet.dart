@@ -57,7 +57,7 @@ class _SupplierPaymentSheetState extends State<SupplierPaymentSheet> {
 
   final TextEditingController _amountCtrl = TextEditingController();
   final TextEditingController _notesCtrl = TextEditingController();
-  String _paymentSource = 'cash'; // 'cash', 'bank', 'safe'
+  String _paymentSource = 'cash_drawer'; // 'cash_drawer', 'bank', 'owner_pocket'
   File? _receiptPhoto;
   bool _isSubmitting = false;
 
@@ -480,7 +480,7 @@ class _SupplierPaymentSheetState extends State<SupplierPaymentSheet> {
                       children: [
                         Expanded(
                           child: _sourceOption(
-                            id: 'cash',
+                            id: 'cash_drawer',
                             label: 'Касса',
                             icon: Icons.point_of_sale_rounded,
                             color: const Color(0xFF10B981),
@@ -498,7 +498,7 @@ class _SupplierPaymentSheetState extends State<SupplierPaymentSheet> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: _sourceOption(
-                            id: 'safe',
+                            id: 'owner_pocket',
                             label: 'Сейф',
                             icon: Icons.lock_clock_rounded,
                             color: const Color(0xFFF59E0B),
