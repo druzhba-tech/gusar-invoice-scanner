@@ -574,11 +574,11 @@ class ApiService {
           '/api/products',
           queryParameters: {
             'store_id': currentStoreId,
-            'limit': 1000,
+            'limit': 10000,
           },
-        ).timeout(const Duration(seconds: 30));
+        ).timeout(const Duration(seconds: 45));
       } catch (_) {
-        response = await _dio.get('/api/products').timeout(const Duration(seconds: 30));
+        response = await _dio.get('/api/products', queryParameters: {'limit': 10000}).timeout(const Duration(seconds: 45));
       }
 
       if (response != null && response.statusCode == 200 && response.data != null) {
@@ -613,6 +613,62 @@ class ApiService {
     }
 
     return _cachedProducts;
+  }
+
+  // Расчёт следующего номера PLU для весов (синхронизировано с базой gusar.tj)
+  Future<int> getNextScalePlu({int? storeId}) async {
+    final targetStoreId = storeId ?? currentStoreId;
+    if (_cachedProducts.isEmpty) {
+      await getProducts();
+    }
+
+    int maxPlu = 0;
+    for (var p in _cachedProducts) {
+      // Фильтрация по магазину (если магазин привязан)
+      if (targetStoreId > 0 && p.storeId > 0 && p.storeId != targetStoreId) {
+        continue;
+      }
+
+      int? cand;
+      // 1. Проверяем разрешённый PLU
+      if (p.pluCode != null && p.pluCode!.isNotEmpty) {
+        cand = int.tryParse(p.pluCode!);
+      }
+      // 2. Проверяем колонку article из базы данных
+      if (cand == null && p.article != null && RegExp(r'^\d{1,5}$').hasMatch(p.article!.trim())) {
+        cand = int.tryParse(p.article!.trim());
+      }
+      // 3. Проверяем штрихкод весов или короткий числовой штрихкод
+      if (cand == null && (p.isWeighted || p.unit == 'кг')) {
+        if (p.barcode != null && RegExp(r'^\d{1,5}$').hasMatch(p.barcode!.trim())) {
+          cand = int.tryParse(p.barcode!.trim());
+        } else if (p.barcode != null && p.barcode!.length == 13 && (p.barcode!.startsWith('20') || p.barcode!.startsWith('21'))) {
+          cand = int.tryParse(p.barcode!.substring(2, 7));
+        }
+      }
+
+      if (cand != null && cand > maxPlu && cand < 99999) {
+        maxPlu = cand;
+      }
+    }
+
+    // Для Мағозаи Арзон (store_id = 2) гарантируем базу не менее 589 (максимальный занятый номер весов в базе)
+    if (targetStoreId == 2 && maxPlu < 589) {
+      maxPlu = 589;
+    }
+
+    return maxPlu + 1;
+  }
+
+  // Количество весовых товаров в каталоге магазина
+  int getWeightProductsCount({int? storeId}) {
+    final targetStoreId = storeId ?? currentStoreId;
+    return _cachedProducts.where((p) {
+      if (targetStoreId > 0 && p.storeId > 0 && p.storeId != targetStoreId) {
+        return false;
+      }
+      return p.isWeighted || p.unit == 'кг' || (p.pluCode != null && p.pluCode!.isNotEmpty);
+    }).length;
   }
 
   // Поиск товара в базе gusar.tj по штрихкоду
@@ -854,9 +910,14 @@ class ApiService {
     }
 
     try {
+      final isWeight = productType == ProductType.weight || unit == 'кг';
       final response = await _dio.post('/api/products', data: {
         'name': name.trim(),
         'barcode': cleanBarcode,
+        'article': (isWeight && pluCode != null && pluCode.isNotEmpty)
+            ? pluCode
+            : (RegExp(r'^\d{1,6}$').hasMatch(cleanBarcode) ? cleanBarcode : null),
+        'is_weighted': isWeight,
         'price': price,
         'wholesale_price': wholesalePrice,
         'cost_price': costPrice,

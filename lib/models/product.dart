@@ -45,6 +45,7 @@ class Product {
   final int storeId;
   final String name;
   final String? barcode;
+  final String? article; // Код товара / артикул (в gusar.tj для весовых товаров здесь хранится PLU весов)
   final double price; // Розничная цена продажи
   final double? wholesalePrice; // Оптовая цена продажи
   final double costPrice; // Последняя себестоимость
@@ -61,6 +62,7 @@ class Product {
     required this.storeId,
     required this.name,
     this.barcode,
+    this.article,
     required this.price,
     this.wholesalePrice,
     this.costPrice = 0.0,
@@ -83,6 +85,7 @@ class Product {
       'store_id': storeId,
       'name': name,
       'barcode': barcode,
+      'article': article,
       'price': price,
       'wholesale_price': wholesalePrice,
       'cost_price': costPrice,
@@ -90,6 +93,7 @@ class Product {
       'category': category,
       'image_url': imageUrl,
       'product_type': productType.idName,
+      'is_weighted': isWeighted,
       'unit': unit,
       'plu_code': pluCode,
       'local_image_path': localImagePath,
@@ -103,6 +107,7 @@ class Product {
       'store_id': storeId,
       'name': name,
       'barcode': barcode,
+      'article': article,
       'price': price,
       'wholesale_price': wholesalePrice,
       'cost_price': costPrice,
@@ -120,6 +125,7 @@ class Product {
         json['bar_code']?.toString() ??
         json['code']?.toString() ??
         json['ean']?.toString();
+    final article = json['article']?.toString();
     final price = (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0) is num
         ? (json['price'] ?? json['retail_price'] ?? json['sell_price'] ?? 0).toDouble()
         : double.tryParse((json['price'] ?? 0).toString()) ?? 0.0;
@@ -137,13 +143,28 @@ class Product {
     ProductType parsedType = ProductType.barcode;
     if (json['product_type'] != null) {
       parsedType = ProductTypeExtension.fromString(json['product_type'].toString());
-    } else if (json['is_weighted'] == true || json['unit'] == 'кг' || (barcode != null && barcode.length == 13 && barcode.startsWith(RegExp(r'2[0-9]')))) {
+    } else if (json['is_weighted'] == true || json['is_weighted'] == 1 || json['unit'] == 'кг' || (barcode != null && barcode.length == 13 && barcode.startsWith(RegExp(r'2[0-9]')))) {
       parsedType = ProductType.weight;
     } else if (barcode != null && (barcode.length < 7 || barcode.startsWith('INT_'))) {
       parsedType = ProductType.internal;
     }
 
     final parsedUnit = json['unit']?.toString() ?? (parsedType == ProductType.weight ? 'кг' : 'шт');
+
+    // Разрешение кода весов (PLU):
+    // В базе gusar.tj (PostgreSQL) код весов для супермаркетов хранится в колонке article (или в barcode),
+    // а также может передаваться в явных полях plu_code / plu.
+    String? resolvedPlu = json['plu_code']?.toString() ?? json['plu']?.toString();
+    if (resolvedPlu == null || resolvedPlu.isEmpty) {
+      if (article != null && RegExp(r'^\d{1,5}$').hasMatch(article.trim())) {
+        resolvedPlu = article.trim();
+      } else if (barcode != null && RegExp(r'^\d{1,5}$').hasMatch(barcode.trim())) {
+        resolvedPlu = barcode.trim();
+      } else if (barcode != null && barcode.length == 13 && (barcode.startsWith('20') || barcode.startsWith('21') || barcode.startsWith('22'))) {
+        final raw = int.tryParse(barcode.substring(2, 7));
+        if (raw != null && raw > 0) resolvedPlu = raw.toString();
+      }
+    }
 
     String? resolvedImageUrl;
     dynamic rawImage = json['image_url'] ??
@@ -183,6 +204,7 @@ class Product {
       storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
       name: name,
       barcode: barcode,
+      article: article,
       price: price,
       wholesalePrice: wholesalePrice,
       costPrice: costPrice,
@@ -191,7 +213,7 @@ class Product {
       imageUrl: resolvedImageUrl,
       productType: parsedType,
       unit: parsedUnit,
-      pluCode: json['plu_code']?.toString() ?? json['plu']?.toString(),
+      pluCode: resolvedPlu,
       localImagePath: json['local_image_path']?.toString(),
     );
   }
@@ -201,6 +223,7 @@ class Product {
     int? storeId,
     String? name,
     String? barcode,
+    String? article,
     double? price,
     double? wholesalePrice,
     double? costPrice,
@@ -217,6 +240,7 @@ class Product {
       storeId: storeId ?? this.storeId,
       name: name ?? this.name,
       barcode: barcode ?? this.barcode,
+      article: article ?? this.article,
       price: price ?? this.price,
       wholesalePrice: wholesalePrice ?? this.wholesalePrice,
       costPrice: costPrice ?? this.costPrice,

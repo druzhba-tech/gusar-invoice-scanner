@@ -723,7 +723,12 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            if (dbProd.barcode != null && dbProd.barcode!.isNotEmpty) ...[
+                            if (dbProd.pluCode != null && dbProd.pluCode!.isNotEmpty) ...[
+                              const Icon(Icons.scale_rounded, color: Color(0xFF34D399), size: 12),
+                              const SizedBox(width: 4),
+                              Text('PLU: ${dbProd.pluCode}', style: const TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.bold)),
+                              const SizedBox(width: 8),
+                            ] else if (dbProd.barcode != null && dbProd.barcode!.isNotEmpty) ...[
                               const Icon(Icons.qr_code, color: Colors.white38, size: 12),
                               const SizedBox(width: 4),
                               Text(dbProd.barcode!, style: const TextStyle(color: Colors.white54, fontSize: 11, fontFamily: 'monospace')),
@@ -865,7 +870,12 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
               ),
               subtitle: Row(
                 children: [
-                  if (prod.barcode != null && prod.barcode!.isNotEmpty) ...[
+                  if (prod.pluCode != null && prod.pluCode!.isNotEmpty) ...[
+                    const Icon(Icons.scale_rounded, color: Color(0xFF34D399), size: 12),
+                    const SizedBox(width: 4),
+                    Text('PLU: ${prod.pluCode}', style: const TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 8),
+                  ] else if (prod.barcode != null && prod.barcode!.isNotEmpty) ...[
                     const Icon(Icons.qr_code, color: Colors.white38, size: 12),
                     const SizedBox(width: 4),
                     Text(prod.barcode!, style: const TextStyle(color: Colors.white54, fontSize: 11, fontFamily: 'monospace')),

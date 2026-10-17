@@ -79,12 +79,26 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     if (_selectedType == ProductType.weight) {
       _selectedUnit = 'кг';
-      final nextPlu = _calculateNextPlu();
-      _pluCtrl.text = nextPlu;
-      _barcodeCtrl.text = '20${int.parse(nextPlu).toString().padLeft(5, '0')}00000';
+      _generateNextPlu();
     } else if (_selectedType == ProductType.internal) {
       if (_barcodeCtrl.text.isEmpty) {
         _barcodeCtrl.text = _calculateNextInternalCode();
+      }
+    }
+    _loadStoreData();
+  }
+
+  Future<void> _loadStoreData() async {
+    if (_api.cachedProducts.isEmpty) {
+      await _api.getProducts();
+      if (mounted) {
+        setState(() {
+          if (_selectedType == ProductType.weight) {
+            _generateNextPlu();
+          } else if (_selectedType == ProductType.internal && _barcodeCtrl.text.isEmpty) {
+            _barcodeCtrl.text = _calculateNextInternalCode();
+          }
+        });
       }
     }
   }
@@ -172,27 +186,68 @@ class _AddProductScreenState extends State<AddProductScreen> {
     });
   }
 
-  // Автоматический расчёт следующего номера PLU для весов (начиная от 1)
+  // Расчёт контрольной цифры EAN-13
+  String _calculateEanCheckDigit(String code12) {
+    if (code12.length != 12) return '0';
+    int sum = 0;
+    for (int i = 0; i < 12; i++) {
+      int d = int.parse(code12[i]);
+      sum += (i % 2 == 0) ? d : d * 3;
+    }
+    int checkDigit = (10 - (sum % 10)) % 10;
+    return checkDigit.toString();
+  }
+
+  // Автоматический расчёт следующего номера PLU для весов (синхронизировано с базой gusar.tj)
   String _calculateNextPlu() {
     int maxPlu = 0;
+    final currentStoreId = _api.currentStoreId;
+
     for (var p in _api.cachedProducts) {
+      if (currentStoreId > 0 && p.storeId > 0 && p.storeId != currentStoreId) {
+        continue;
+      }
+
+      int? cand;
+      // 1. Разрешённый PLU
       if (p.pluCode != null && p.pluCode!.isNotEmpty) {
-        final parsed = int.tryParse(p.pluCode!);
-        if (parsed != null && parsed > maxPlu) maxPlu = parsed;
-      } else if (p.productType == ProductType.weight && p.barcode != null && p.barcode!.startsWith('20') && p.barcode!.length == 13) {
-        final pluPart = int.tryParse(p.barcode!.substring(2, 7));
-        if (pluPart != null && pluPart > maxPlu) maxPlu = pluPart;
+        cand = int.tryParse(p.pluCode!);
+      }
+      // 2. Колонка article из базы данных gusar.tj
+      if (cand == null && p.article != null && RegExp(r'^\d{1,5}$').hasMatch(p.article!.trim())) {
+        cand = int.tryParse(p.article!.trim());
+      }
+      // 3. Штрихкод весов или короткий числовой код
+      if (cand == null && (p.isWeighted || p.unit == 'кг')) {
+        if (p.barcode != null && RegExp(r'^\d{1,5}$').hasMatch(p.barcode!.trim())) {
+          cand = int.tryParse(p.barcode!.trim());
+        } else if (p.barcode != null && p.barcode!.length == 13 && (p.barcode!.startsWith('20') || p.barcode!.startsWith('21'))) {
+          cand = int.tryParse(p.barcode!.substring(2, 7));
+        }
+      }
+
+      if (cand != null && cand > maxPlu && cand < 99999) {
+        maxPlu = cand;
       }
     }
-    return (maxPlu + 1).toString(); // Последовательность начинается строго от 1
+
+    // Для Мағозаи Арзон (store_id = 2) гарантируем, что нумерация весов начинается после всех 589 зарегистрированных товаров базы
+    if (currentStoreId == 2 && maxPlu < 589) {
+      maxPlu = 589;
+    }
+
+    return (maxPlu + 1).toString();
   }
 
   // Генерация следующего номера для весов
   void _generateNextPlu() {
     final nextPlu = _calculateNextPlu();
+    final pluNum = int.tryParse(nextPlu) ?? 1;
+    final raw12 = '20${pluNum.toString().padLeft(5, '0')}00000';
+    final check = _calculateEanCheckDigit(raw12);
     setState(() {
       _pluCtrl.text = nextPlu;
-      _barcodeCtrl.text = '20${int.parse(nextPlu).toString().padLeft(5, '0')}00000';
+      _barcodeCtrl.text = '$raw12$check';
     });
   }
 
@@ -330,7 +385,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
     if (_selectedType == ProductType.weight) {
       final plu = _pluCtrl.text.trim();
       final pluNum = int.tryParse(plu) ?? int.parse(_calculateNextPlu());
-      finalBarcode = '20${pluNum.toString().padLeft(5, '0')}00000';
+      final raw12 = '20${pluNum.toString().padLeft(5, '0')}00000';
+      final check = _calculateEanCheckDigit(raw12);
+      finalBarcode = '$raw12$check';
     } else if (_selectedType == ProductType.internal) {
       if (finalBarcode.isEmpty || !RegExp(r'^\d{6}$').hasMatch(finalBarcode)) {
         finalBarcode = _calculateNextInternalCode();
@@ -903,7 +960,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                     decoration: InputDecoration(
                       hintText: '1, 2, 3...',
                       hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
-                      helperText: 'Начиная от 1',
+                      helperText: 'Весовых в базе: ${_api.getWeightProductsCount()} • След: ${_calculateNextPlu()}',
                       helperStyle: const TextStyle(color: Color(0xFF34D399), fontSize: 11),
                       filled: true,
                       fillColor: const Color(0xFF1E293B),
@@ -922,8 +979,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
                     onChanged: (val) {
                       final parsed = int.tryParse(val.trim());
                       if (parsed != null && parsed >= 1) {
+                        final raw12 = '20${parsed.toString().padLeft(5, '0')}00000';
+                        final check = _calculateEanCheckDigit(raw12);
                         setState(() {
-                          _barcodeCtrl.text = '20${parsed.toString().padLeft(5, '0')}00000';
+                          _barcodeCtrl.text = '$raw12$check';
                         });
                       }
                     },
