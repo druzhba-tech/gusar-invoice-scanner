@@ -110,7 +110,7 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
                   storeId: doc.storeId,
                   name: item.matchedProductName ?? 'Товар #${item.matchedProductId}',
                   price: item.currentRetailPrice ?? 0.0,
-                  costPrice: item.lastBuyPrice ?? (item.price > 0 ? item.price : 0.0),
+                  costPrice: item.lastBuyPrice ?? (item.buyPrice > 0 ? item.buyPrice : 0.0),
                   barcode: item.matchedBarcode,
                 );
 
@@ -120,7 +120,7 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
               supplierName: doc.supplierName,
               invoiceNumber: doc.invoiceNumber.isNotEmpty ? doc.invoiceNumber : 'б/н',
               date: doc.invoiceDate,
-              invoicePrice: item.price,
+              invoicePrice: item.buyPrice,
               quantity: item.quantity,
               unit: item.unit,
               databaseProduct: dbProduct,

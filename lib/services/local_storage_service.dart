@@ -276,7 +276,7 @@ class LocalStorageService {
           item.matchedProductName = null;
           item.matchedBarcode = null;
           item.matchConfidence = 0.0;
-          item.status = ItemStatus.unmatched;
+          item.status = ItemStatus.pending;
           changed = true;
         }
       }
@@ -300,7 +300,7 @@ class LocalStorageService {
           item.matchedProductName = null;
           item.matchedBarcode = null;
           item.matchConfidence = 0.0;
-          item.status = ItemStatus.unmatched;
+          item.status = ItemStatus.pending;
           changed = true;
         }
       }
