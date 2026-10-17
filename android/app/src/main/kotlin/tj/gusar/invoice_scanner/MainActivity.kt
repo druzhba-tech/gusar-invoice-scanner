@@ -57,7 +57,50 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    private var activeDownloadId: Long = -1L
+
     private fun startSystemDownload(url: String, title: String, description: String, fileName: String): Long {
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+
+        // 1. Проверяем, нет ли уже активной или ожидающей загрузки этого файла в системе
+        try {
+            val query = DownloadManager.Query()
+            val cursor = dm.query(query)
+            if (cursor != null) {
+                val uriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_URI)
+                val statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                val idIdx = cursor.getColumnIndex(DownloadManager.COLUMN_ID)
+                val titleIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TITLE)
+
+                while (cursor.moveToNext()) {
+                    val status = if (statusIdx != -1) cursor.getInt(statusIdx) else -1
+                    val itemUri = if (uriIdx != -1) cursor.getString(uriIdx) else null
+                    val itemTitle = if (titleIdx != -1) cursor.getString(titleIdx) else null
+
+                    if (status == DownloadManager.STATUS_RUNNING || status == DownloadManager.STATUS_PENDING) {
+                        val isSameUrl = itemUri != null && itemUri == url
+                        val isSameApp = itemTitle != null && itemTitle.contains("GScan")
+                        if (isSameUrl || isSameApp) {
+                            val existingId = if (idIdx != -1) cursor.getLong(idIdx) else -1L
+                            cursor.close()
+                            registerDownloadReceiver()
+                            activeDownloadId = existingId
+                            return existingId
+                        }
+                    }
+                }
+                cursor.close()
+            }
+        } catch (e: Exception) {}
+
+        // 2. Удаляем старый файл, если он остался от прошлых загрузок
+        try {
+            val destFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+            if (destFile.exists()) {
+                destFile.delete()
+            }
+        } catch (e: Exception) {}
+
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle(title)
             .setDescription(description)
@@ -66,9 +109,8 @@ class MainActivity: FlutterActivity() {
             .setAllowedOverRoaming(true)
             .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName)
 
-        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val downloadId = dm.enqueue(request)
-
+        activeDownloadId = downloadId
         registerDownloadReceiver()
         return downloadId
     }

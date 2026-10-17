@@ -281,13 +281,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  bool _isCheckingUpdate = false;
+
   void _checkApkUpdate() async {
-    final update = await _updater.checkForUpdate();
-    if (update != null && mounted) {
-      _updater.showDownloadAndInstallDialog(context, update);
-    } else if (mounted) {
-      final currentVer = await _updater.getCurrentVersion();
-      TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия: v$currentVer!');
+    if (_isCheckingUpdate || _updater.isDownloading || _updater.isDialogOpen) {
+      TopNotification.showInfo(context, 'Загрузка или проверка обновления уже выполняется...');
+      return;
+    }
+
+    setState(() => _isCheckingUpdate = true);
+    try {
+      final update = await _updater.checkForUpdate();
+      if (!mounted) return;
+      if (update != null) {
+        _updater.showDownloadAndInstallDialog(context, update);
+      } else {
+        final currentVer = await _updater.getCurrentVersion();
+        TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия: v$currentVer!');
+      }
+    } catch (e) {
+      if (mounted) {
+        TopNotification.showError(context, 'Ошибка при проверке обновления: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingUpdate = false);
+      }
     }
   }
 
@@ -863,14 +882,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(height: 10),
                           OutlinedButton.icon(
                             style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: Color(0xFF38BDF8), width: 1.5),
-                              foregroundColor: const Color(0xFF38BDF8),
+                              side: BorderSide(
+                                color: (_isCheckingUpdate || _updater.isDownloading) ? Colors.white24 : const Color(0xFF38BDF8),
+                                width: 1.5,
+                              ),
+                              foregroundColor: (_isCheckingUpdate || _updater.isDownloading) ? Colors.white38 : const Color(0xFF38BDF8),
                               minimumSize: const Size(double.infinity, 44),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            icon: const Icon(Icons.system_update_rounded),
-                            label: const Text('Проверить и скачать обновление APK', style: TextStyle(fontWeight: FontWeight.bold)),
-                            onPressed: _checkApkUpdate,
+                            icon: _isCheckingUpdate
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8)),
+                                  )
+                                : Icon(_updater.isDownloading ? Icons.downloading_rounded : Icons.system_update_rounded),
+                            label: Text(
+                              _updater.isDownloading
+                                  ? 'Идёт скачивание обновления...'
+                                  : (_isCheckingUpdate ? 'Проверка обновлений...' : 'Проверить и скачать обновление APK'),
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: (_isCheckingUpdate || _updater.isDownloading) ? null : _checkApkUpdate,
                           ),
                         ],
                       );

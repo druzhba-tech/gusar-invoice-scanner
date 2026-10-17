@@ -411,17 +411,25 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  bool _isCheckingUpdate = false;
+
   Future<void> _checkUpdates({bool manual = false}) async {
-    final update = await _updater.checkForUpdate();
-    if (update != null && mounted) {
-      setState(() => _availableUpdate = update);
-      final isPostponed = await _updater.isUpdatePostponed(update.version);
-      // Если пользователь не откладывал или нажал вручную — показываем уведомление
-      if (!isPostponed || manual) {
-        _showUpdateDialog(update);
+    if (_isCheckingUpdate) return;
+    _isCheckingUpdate = true;
+    try {
+      final update = await _updater.checkForUpdate();
+      if (update != null && mounted) {
+        setState(() => _availableUpdate = update);
+        final isPostponed = await _updater.isUpdatePostponed(update.version);
+        // Если пользователь не откладывал или нажал вручную — показываем диалог (если он не открыт и не идёт загрузка)
+        if ((!isPostponed || manual) && !_updater.isDialogOpen && !_updater.isDownloading) {
+          _showUpdateDialog(update);
+        }
+      } else if (manual && mounted) {
+        TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия!');
       }
-    } else if (manual && mounted) {
-      TopNotification.showSuccess(context, 'У вас установлена самая актуальная версия!');
+    } finally {
+      _isCheckingUpdate = false;
     }
   }
 
@@ -505,95 +513,115 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showUpdateDialog(UpdateInfo update) {
+    if (_updater.isDialogOpen || _updater.isDownloading) {
+      if (_updater.isDownloading && mounted) {
+        TopNotification.showInfo(context, 'Загрузка обновления v${update.version} уже идёт...');
+      }
+      return;
+    }
+
+    bool isStarting = false;
+
     showDialog(
       context: context,
       barrierDismissible: true,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF10B981).withOpacity(0.2),
-                borderRadius: BorderRadius.circular(10),
+      builder: (ctx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.rocket_launch_rounded, color: Color(0xFF10B981), size: 24),
               ),
-              child: const Icon(Icons.rocket_launch_rounded, color: Color(0xFF10B981), size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Обновление v${update.version}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                    const Text('GScan (tj.gusar)', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Вышла новая версия приложения. Вы можете обновиться прямо сейчас или завершить текущую приёмку и обновиться в любое удобное время.',
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Что нового в этой версии:', style: TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text(
+                      update.releaseNotes.isEmpty ? 'Плановое повышение стабильности и скорости распознавания' : update.releaseNotes,
+                      maxLines: 6,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          actions: [
+            TextButton(
+              onPressed: isStarting
+                  ? null
+                  : () async {
+                      Navigator.pop(ctx);
+                      await _updater.postponeUpdate(update.version);
+                      if (mounted) {
+                        TopNotification.showInfo(context, 'Обновление отложено. Вы всегда можете запустить его из верхнего меню.');
+                      }
+                    },
+              child: const Text('Позже (я решу сам)', style: TextStyle(color: Colors.white60)),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Обновление v${update.version}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  const Text('GScan (tj.gusar)', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                ],
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
+              icon: isStarting
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.download_rounded, size: 18),
+              label: Text(isStarting ? 'Запуск загрузки...' : 'Обновить сейчас', style: const TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: isStarting
+                  ? null
+                  : () async {
+                      setDlgState(() => isStarting = true);
+                      Navigator.pop(ctx);
+                      await _updater.clearPostponedUpdate();
+                      if (mounted) {
+                        _updater.showDownloadAndInstallDialog(context, update);
+                      }
+                    },
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Вышла новая версия приложения. Вы можете обновиться прямо сейчас или завершить текущую приёмку и обновиться в любое удобное время.',
-              style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F172A),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Что нового в этой версии:', style: TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Text(
-                    update.releaseNotes.isEmpty ? 'Плановое повышение стабильности и скорости распознавания' : update.releaseNotes,
-                    maxLines: 6,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white60, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await _updater.postponeUpdate(update.version);
-              if (mounted) {
-                TopNotification.showInfo(context, 'Обновление отложено. Вы всегда можете запустить его из верхнего меню.');
-              }
-            },
-            child: const Text('Позже (я решу сам)', style: TextStyle(color: Colors.white60)),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF10B981),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            icon: const Icon(Icons.download_rounded, size: 18),
-            label: const Text('Обновить сейчас', style: TextStyle(fontWeight: FontWeight.bold)),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await _updater.clearPostponedUpdate();
-              _updater.showDownloadAndInstallDialog(context, update);
-            },
-          ),
-        ],
       ),
     );
   }
@@ -798,15 +826,20 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(width: 8),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF10B981),
+                        backgroundColor: _updater.isDownloading ? Colors.white24 : const Color(0xFF10B981),
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      onPressed: () => _showUpdateDialog(_availableUpdate!),
-                      child: const Text('Обновить', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: _updater.isDownloading
+                          ? null
+                          : () => _showUpdateDialog(_availableUpdate!),
+                      child: Text(
+                        _updater.isDownloading ? 'Загрузка...' : 'Обновить',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ],
                 ),

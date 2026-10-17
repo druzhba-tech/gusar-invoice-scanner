@@ -35,6 +35,10 @@ class UpdaterService {
   UpdateInfo? lastDetectedUpdate;
   String? downloadedApkPath;
 
+  bool isDownloading = false;
+  bool isDialogOpen = false;
+  DateTime? _lastBackgroundDownloadTime;
+
   // Получить текущую установленную версию приложения
   Future<String> getCurrentVersion() async {
     try {
@@ -182,7 +186,13 @@ class UpdaterService {
     required Function(double progress, int receivedBytes, int totalBytes, String? statusMsg) onProgress,
     CancelToken? cancelToken,
   }) async {
-    final dir = await getTemporaryDirectory();
+    if (isDownloading) {
+      debugPrint('downloadApk: загрузка уже выполняется, повторный запуск отклонён');
+      return null;
+    }
+    isDownloading = true;
+    try {
+      final dir = await getTemporaryDirectory();
 
     // Удаляем любые старые скачанные APK промежуточных версий
     try {
@@ -331,6 +341,9 @@ class UpdaterService {
       }
     }
     return null;
+    } finally {
+      isDownloading = false;
+    }
   }
 
   // 4. Запуск фоновой загрузки через системный Android DownloadManager (в шторке)
@@ -338,6 +351,13 @@ class UpdaterService {
     required String downloadUrl,
     required String version,
   }) async {
+    final now = DateTime.now();
+    if (_lastBackgroundDownloadTime != null && now.difference(_lastBackgroundDownloadTime!).inSeconds < 4) {
+      debugPrint('startSystemBackgroundDownload: повторный вызов заблокирован (защита от двойного клика)');
+      return true;
+    }
+    _lastBackgroundDownloadTime = now;
+
     try {
       const channel = MethodChannel('tj.gusar.invoice_scanner/app_installer');
       final result = await channel.invokeMethod('startSystemDownload', {
@@ -372,6 +392,11 @@ class UpdaterService {
 
   // 6. Диалог с живым индикатором загрузки, автодокачкой и кнопкой фоновой загрузки
   void showDownloadAndInstallDialog(BuildContext context, UpdateInfo update) {
+    if (isDialogOpen) {
+      debugPrint('showDownloadAndInstallDialog: диалог обновления уже открыт, дублирование заблокировано');
+      return;
+    }
+    isDialogOpen = true;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -379,7 +404,9 @@ class UpdaterService {
         update: update,
         updater: this,
       ),
-    );
+    ).then((_) {
+      isDialogOpen = false;
+    });
   }
 
   Future<bool> isUpdatePostponed(String version) async {
@@ -441,6 +468,7 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
   int _totalBytes = 0;
   bool _isDownloading = true;
   bool _isDone = false;
+  bool _isActionInProgress = false;
   String? _statusMessage;
   String? _error;
   String? _apkPath;
@@ -513,6 +541,8 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
   }
 
   void _switchToBackgroundDownload() async {
+    if (_isActionInProgress) return;
+    setState(() => _isActionInProgress = true);
     _cancelToken?.cancel();
     await widget.updater.startSystemBackgroundDownload(
       downloadUrl: widget.update.downloadUrl,
@@ -628,7 +658,7 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
                 ),
                 icon: const Icon(Icons.downloading_rounded, size: 18),
                 label: const Text('Скачать в фоне (в шторке телефона)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                onPressed: _switchToBackgroundDownload,
+                onPressed: _isActionInProgress ? null : _switchToBackgroundDownload,
               ),
             ),
           ] else if (_isDone) ...[
@@ -710,10 +740,13 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
             ),
             icon: const Icon(Icons.system_update_rounded, color: Colors.white),
             label: const Text('УСТАНОВИТЬ СЕЙЧАС', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            onPressed: () {
-              Navigator.pop(context);
-              _install();
-            },
+            onPressed: _isActionInProgress
+                ? null
+                : () {
+                    setState(() => _isActionInProgress = true);
+                    Navigator.pop(context);
+                    _install();
+                  },
           ),
       ],
     );
