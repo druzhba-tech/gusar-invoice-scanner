@@ -114,10 +114,20 @@ class LocalStorageService {
     );
   }
 
-  // 2. Получение всех локальных накладных
-  Future<List<InvoiceDocument>> getLocalInvoices() async {
+  // 2. Получение локальных накладных (с фильтрацией по магазину)
+  Future<List<InvoiceDocument>> getLocalInvoices({int? storeId}) async {
     final db = await database;
-    final rows = await db.query('invoices', orderBy: 'created_at DESC');
+    final List<Map<String, dynamic>> rows;
+    if (storeId != null && storeId > 0) {
+      rows = await db.query(
+        'invoices',
+        where: 'store_id = ?',
+        whereArgs: [storeId],
+        orderBy: 'created_at DESC',
+      );
+    } else {
+      rows = await db.query('invoices', orderBy: 'created_at DESC');
+    }
 
     return rows.map((r) {
       final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
@@ -182,10 +192,14 @@ class LocalStorageService {
     await db.delete('invoices', where: 'id = ?', whereArgs: [id]);
   }
 
-  // 6. Очистка всех локальных накладных
-  Future<void> clearAllInvoices() async {
+  // 6. Очистка локальных накладных (с возможностью очистки только текущего магазина)
+  Future<void> clearAllInvoices({int? storeId}) async {
     final db = await database;
-    await db.delete('invoices');
+    if (storeId != null && storeId > 0) {
+      await db.delete('invoices', where: 'store_id = ?', whereArgs: [storeId]);
+    } else {
+      await db.delete('invoices');
+    }
   }
 
   // 7. Проверка на дубликат накладной

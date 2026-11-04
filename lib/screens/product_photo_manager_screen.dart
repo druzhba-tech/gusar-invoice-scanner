@@ -90,7 +90,9 @@ class _ProductPhotoManagerScreenState extends State<ProductPhotoManagerScreen> {
       final prods = await _api.getProducts(forceRefresh: forceRefresh);
       final Map<int, Product> prodMap = {for (var p in prods) p.id: p};
 
-      final invoices = await _storage.getLocalInvoices();
+      final invoices = await _storage.getLocalInvoices(
+        storeId: _api.currentStoreId > 0 ? _api.currentStoreId : null,
+      );
       final aliases = _matcher.aliasDictionary;
 
       final List<LinkedProductRecord> records = [];

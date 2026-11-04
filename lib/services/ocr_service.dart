@@ -8,6 +8,7 @@ import '../models/invoice_item.dart';
 import '../utils/image_utils.dart';
 import '../utils/cyrillic_decoder.dart';
 import 'invoice_template_service.dart';
+import 'api_service.dart';
 
 class OcrService {
   static final OcrService _instance = OcrService._internal();
@@ -478,7 +479,7 @@ class OcrService {
 
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
-      storeId: 1,
+      storeId: ApiService().currentStoreId > 0 ? ApiService().currentStoreId : 1,
       supplierName: data['supplier_name']?.toString() ?? 'Поставщик',
       invoiceNumber: '',
       incomingNumber: data['invoice_number']?.toString() ?? 'б/н',
@@ -796,7 +797,7 @@ class OcrService {
 
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
-      storeId: 1,
+      storeId: ApiService().currentStoreId > 0 ? ApiService().currentStoreId : 1,
       supplierName: detectedSupplier,
       invoiceNumber: '',
       incomingNumber: detectedInvoiceNum,

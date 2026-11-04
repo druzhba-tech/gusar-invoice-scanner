@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../utils/top_notification.dart';
@@ -16,10 +17,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final TextEditingController _usernameCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
+  final FocusNode _usernameFocus = FocusNode();
 
   List<Map<String, dynamic>> _stores = [];
   int? _selectedStoreId;
+  bool _userExplicitlySelectedStore = false;
   bool _loadingStores = true;
+
+  List<Map<String, dynamic>> _savedAccounts = [];
+  bool _showSavedAccountsList = false;
 
   bool _rememberPassword = true;
   bool _obscurePassword = true;
@@ -29,7 +35,11 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    _loadSavedCredentials();
+    _usernameFocus.addListener(() {
+      if (_usernameFocus.hasFocus && mounted) {
+        setState(() => _showSavedAccountsList = true);
+      }
+    });
     _loadStores();
   }
 
@@ -49,15 +59,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (storesList.isEmpty) {
       storesList = [
-        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'is_active': true},
         {'id': 2, 'name': 'Мағозаи Арзон', 'is_active': true},
+        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'is_active': true},
+        {'id': 7, 'name': 'Алкомаркет №7', 'is_active': true},
       ];
     }
 
     int? defaultId = savedStoreId;
     if (defaultId == null || !storesList.any((s) => s['id'] == defaultId)) {
-      // Приоритетно магазин #3 или первый активный
-      if (storesList.any((s) => s['id'] == 3)) {
+      if (storesList.any((s) => s['id'] == 2)) {
+        defaultId = 2;
+      } else if (storesList.any((s) => s['id'] == 3)) {
         defaultId = 3;
       } else {
         defaultId = storesList.first['id'] as int;
@@ -70,20 +82,83 @@ class _LoginScreenState extends State<LoginScreen> {
         _selectedStoreId = defaultId;
         _loadingStores = false;
       });
+      _loadSavedCredentials(storeId: defaultId);
     }
   }
 
-  Future<void> _loadSavedCredentials() async {
+  Future<void> _loadSavedCredentials({int? storeId}) async {
     final prefs = await SharedPreferences.getInstance();
-    final savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username') ?? '';
-    final savedPass = prefs.getString('saved_password') ?? '';
+    final targetStoreId = storeId ?? _selectedStoreId ?? prefs.getInt('store_id');
+    final accounts = await _api.getSavedAccounts(filterStoreId: targetStoreId);
+    String savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username') ?? '';
+    String savedPass = prefs.getString('saved_password') ?? '';
     final remember = prefs.getBool('remember_credentials') ?? true;
+
+    // Подбираем сохранённый аккаунт именно для выбранного магазина
+    if (targetStoreId != null && targetStoreId > 0) {
+      final storeAccWithPass = accounts.firstWhere(
+        (a) => a['store_id'] == targetStoreId && (a['password'] ?? '').toString().isNotEmpty,
+        orElse: () => accounts.firstWhere((a) => a['store_id'] == targetStoreId, orElse: () => {}),
+      );
+      if (storeAccWithPass.isNotEmpty) {
+        savedUser = (storeAccWithPass['username'] ?? '').toString();
+        savedPass = (storeAccWithPass['password'] ?? '').toString();
+      }
+    } else if ((savedUser.isEmpty || savedPass.isEmpty) && accounts.isNotEmpty) {
+      final firstWithPass = accounts.firstWhere(
+        (a) => (a['password'] ?? '').toString().isNotEmpty,
+        orElse: () => accounts.first,
+      );
+      savedUser = (firstWithPass['username'] ?? '').toString();
+      savedPass = (firstWithPass['password'] ?? '').toString();
+    }
 
     if (mounted) {
       setState(() {
-        _usernameCtrl.text = savedUser;
-        _passwordCtrl.text = savedPass;
+        _savedAccounts = accounts;
+        if (savedUser.isNotEmpty) {
+          _usernameCtrl.text = savedUser;
+        }
+        if (savedPass.isNotEmpty) {
+          _passwordCtrl.text = savedPass;
+        }
         _rememberPassword = remember;
+      });
+    }
+  }
+
+  void _applySavedAccount(Map<String, dynamic> acc, {bool autoLogin = false}) {
+    final user = (acc['username'] ?? '').toString().trim();
+    final pass = (acc['password'] ?? '').toString();
+    final accStoreId = acc['store_id'] is int
+        ? acc['store_id'] as int
+        : int.tryParse(acc['store_id']?.toString() ?? '');
+
+    setState(() {
+      _usernameCtrl.text = user;
+      _passwordCtrl.text = pass;
+      if (accStoreId != null && accStoreId > 0 && _stores.any((s) => s['id'] == accStoreId)) {
+        _selectedStoreId = accStoreId;
+      }
+      _showSavedAccountsList = false;
+      _errorMessage = null;
+    });
+    FocusScope.of(context).unfocus();
+
+    if (autoLogin && user.isNotEmpty && pass.isNotEmpty) {
+      _handleLogin();
+    }
+  }
+
+  Future<void> _deleteSavedAccount(String username) async {
+    await _api.removeSavedAccount(username);
+    final updated = await _api.getSavedAccounts();
+    if (mounted) {
+      setState(() {
+        _savedAccounts = updated;
+        if (_savedAccounts.isEmpty) {
+          _showSavedAccountsList = false;
+        }
       });
     }
   }
@@ -103,12 +178,14 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _showSavedAccountsList = false;
     });
 
     final result = await _api.login(
       username,
       password,
       preferredStoreId: _selectedStoreId,
+      userExplicitlySelectedStore: _userExplicitlySelectedStore,
       remember: _rememberPassword,
     );
 
@@ -119,6 +196,7 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (result['success'] == true) {
+      TextInput.finishAutofillContext();
       final storeName = result['store_name'] ?? _api.currentStoreName;
       TopNotification.showSuccess(context, 'Вход выполнен! Магазин: $storeName');
 
@@ -137,6 +215,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
+    _usernameFocus.dispose();
     _usernameCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
@@ -280,7 +359,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                     if (newId != null) {
                                       setState(() {
                                         _selectedStoreId = newId;
+                                        _userExplicitlySelectedStore = true;
                                       });
+                                      _loadSavedCredentials(storeId: newId);
                                     }
                                   },
                                 ),
@@ -288,62 +369,288 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Поле логина
-                      TextField(
-                        controller: _usernameCtrl,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Логин / Телефон',
-                          labelStyle: const TextStyle(color: Colors.white60),
-                          prefixIcon: const Icon(Icons.person_outline_rounded, color: Color(0xFF38BDF8)),
-                          filled: true,
-                          fillColor: const Color(0xFF0F172A),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Colors.white12),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                      // Быстрый выбор сохранённых аккаунтов (логинов и паролей)
+                      if (_savedAccounts.isNotEmpty) ...[
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.vpn_key_rounded, size: 14, color: Color(0xFF10B981)),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Сохранённые аккаунты (быстрый вход):',
+                                  style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                                ),
+                              ],
+                            ),
+                            Text(
+                              '${_savedAccounts.length}',
+                              style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: _savedAccounts.map((acc) {
+                              final accUser = (acc['username'] ?? '').toString();
+                              final accStoreName = (acc['store_name'] ?? '').toString();
+                              final hasPass = (acc['password'] ?? '').toString().isNotEmpty;
+                              final isCurrent = _usernameCtrl.text.trim().toLowerCase() == accUser.trim().toLowerCase();
+                              return Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: () => _applySavedAccount(acc),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: isCurrent
+                                          ? const Color(0xFF10B981).withOpacity(0.2)
+                                          : const Color(0xFF0F172A),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: isCurrent
+                                            ? const Color(0xFF10B981)
+                                            : (hasPass ? const Color(0xFF10B981).withOpacity(0.4) : Colors.white12),
+                                        width: isCurrent ? 1.4 : 1.0,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          hasPass ? Icons.vpn_key_rounded : Icons.account_circle_rounded,
+                                          size: 15,
+                                          color: hasPass
+                                              ? const Color(0xFF10B981)
+                                              : (isCurrent ? const Color(0xFF10B981) : const Color(0xFF38BDF8)),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              accUser,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
+                                              ),
+                                            ),
+                                            if (accStoreName.isNotEmpty)
+                                              Text(
+                                                accStoreName.length > 22 ? '${accStoreName.substring(0, 22)}…' : accStoreName,
+                                                style: const TextStyle(color: Colors.white54, fontSize: 9.5),
+                                              ),
+                                          ],
+                                        ),
+                                        if (hasPass) ...[
+                                          const SizedBox(width: 6),
+                                          InkWell(
+                                            onTap: () => _applySavedAccount(acc, autoLogin: true),
+                                            borderRadius: BorderRadius.circular(6),
+                                            child: Container(
+                                              padding: const EdgeInsets.all(3),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF10B981).withOpacity(0.25),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              child: const Icon(Icons.login_rounded, size: 13, color: Color(0xFF10B981)),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 14),
+                        const SizedBox(height: 12),
+                      ],
 
-                      // Поле пароля
-                      TextField(
-                        controller: _passwordCtrl,
-                        obscureText: _obscurePassword,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Пароль',
-                          labelStyle: const TextStyle(color: Colors.white60),
-                          prefixIcon: const Icon(Icons.lock_outline_rounded, color: Color(0xFF38BDF8)),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                              color: Colors.white54,
+                      AutofillGroup(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Поле логина
+                            TextField(
+                              controller: _usernameCtrl,
+                              focusNode: _usernameFocus,
+                              autofillHints: const [AutofillHints.username],
+                              textInputAction: TextInputAction.next,
+                              style: const TextStyle(color: Colors.white),
+                              onTap: () {
+                                if (_savedAccounts.isNotEmpty) {
+                                  setState(() => _showSavedAccountsList = true);
+                                }
+                              },
+                              onChanged: (_) {
+                                setState(() {});
+                              },
+                              decoration: InputDecoration(
+                                labelText: 'Логин / Телефон',
+                                labelStyle: const TextStyle(color: Colors.white60),
+                                prefixIcon: const Icon(Icons.person_outline_rounded, color: Color(0xFF38BDF8)),
+                                suffixIcon: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (_usernameCtrl.text.isNotEmpty)
+                                      IconButton(
+                                        icon: const Icon(Icons.clear_rounded, color: Colors.white38, size: 18),
+                                        tooltip: 'Очистить поле',
+                                        onPressed: () {
+                                          setState(() {
+                                            _usernameCtrl.clear();
+                                            _passwordCtrl.clear();
+                                            if (_savedAccounts.isNotEmpty) {
+                                              _showSavedAccountsList = true;
+                                            }
+                                          });
+                                        },
+                                      ),
+                                    if (_savedAccounts.isNotEmpty)
+                                      IconButton(
+                                        icon: Icon(
+                                          _showSavedAccountsList
+                                              ? Icons.keyboard_arrow_up_rounded
+                                              : Icons.keyboard_arrow_down_rounded,
+                                          color: const Color(0xFF10B981),
+                                        ),
+                                        tooltip: 'Выбрать сохранённый логин и пароль',
+                                        onPressed: () {
+                                          setState(() => _showSavedAccountsList = !_showSavedAccountsList);
+                                        },
+                                      ),
+                                  ],
+                                ),
+                                filled: true,
+                                fillColor: const Color(0xFF0F172A),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: Colors.white12),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                                ),
+                              ),
                             ),
-                            onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                          ),
-                          filled: true,
-                          fillColor: const Color(0xFF0F172A),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Colors.white12),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.5),
-                          ),
+
+                            // Выпадающий список сохранённых логинов и паролей при нажатии на поле логина
+                            if (_showSavedAccountsList && _savedAccounts.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0F172A),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: _savedAccounts.map((acc) {
+                                    final accUser = (acc['username'] ?? '').toString();
+                                    final accStore = (acc['store_name'] ?? '').toString();
+                                    final hasPass = (acc['password'] ?? '').toString().isNotEmpty;
+                                    return ListTile(
+                                      dense: true,
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                                      leading: Icon(
+                                        hasPass ? Icons.vpn_key_rounded : Icons.person_outline_rounded,
+                                        color: hasPass ? const Color(0xFF10B981) : const Color(0xFF38BDF8),
+                                        size: 18,
+                                      ),
+                                      title: Text(
+                                        accUser,
+                                        style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text(
+                                        hasPass
+                                            ? (accStore.isNotEmpty ? '$accStore • Пароль сохранён' : 'Пароль сохранён (••••••••)')
+                                            : (accStore.isNotEmpty ? '$accStore • Нажмите для подстановки логина' : 'Сотрудник магазина'),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: hasPass ? const Color(0xFF34D399) : Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (hasPass) ...[
+                                            IconButton(
+                                              icon: const Icon(Icons.login_rounded, color: Color(0xFF10B981), size: 18),
+                                              tooltip: 'Войти сразу',
+                                              constraints: const BoxConstraints(),
+                                              padding: const EdgeInsets.all(4),
+                                              onPressed: () => _applySavedAccount(acc, autoLogin: true),
+                                            ),
+                                            const SizedBox(width: 4),
+                                          ],
+                                          IconButton(
+                                            icon: const Icon(Icons.close_rounded, color: Colors.white38, size: 16),
+                                            tooltip: 'Удалить из списка',
+                                            constraints: const BoxConstraints(),
+                                            padding: const EdgeInsets.all(4),
+                                            onPressed: () => _deleteSavedAccount(accUser),
+                                          ),
+                                        ],
+                                      ),
+                                      onTap: () => _applySavedAccount(acc),
+                                    );
+                                  }).toList(),
+                                ),
+                              ),
+                            ],
+
+                            const SizedBox(height: 14),
+
+                            // Поле пароля
+                            TextField(
+                              controller: _passwordCtrl,
+                              obscureText: _obscurePassword,
+                              autofillHints: const [AutofillHints.password],
+                              textInputAction: TextInputAction.done,
+                              onSubmitted: (_) => _handleLogin(),
+                              style: const TextStyle(color: Colors.white),
+                              decoration: InputDecoration(
+                                labelText: 'Пароль',
+                                labelStyle: const TextStyle(color: Colors.white60),
+                                prefixIcon: const Icon(Icons.lock_outline_rounded, color: Color(0xFF38BDF8)),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                                    color: Colors.white54,
+                                  ),
+                                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                                ),
+                                filled: true,
+                                fillColor: const Color(0xFF0F172A),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: Colors.white12),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 12),

@@ -95,8 +95,10 @@ class _SupplierInvoicesScreenState extends State<SupplierInvoicesScreen> {
       // 2. Получаем накладные с сервера gusar.tj
       final serverPurchases = await _api.fetchSupplierPurchases(_currentSupplier.id);
 
-      // 3. Получаем локальные накладные для привязки фото оригиналов
-      final localInvoices = await _storage.getLocalInvoices();
+      // 3. Получаем локальные накладные для привязки фото оригиналов (только для активного магазина)
+      final localInvoices = await _storage.getLocalInvoices(
+        storeId: _api.currentStoreId > 0 ? _api.currentStoreId : null,
+      );
       final supplierLocals = localInvoices.where((doc) {
         if (doc.supplierId != null && doc.supplierId == _currentSupplier.id) return true;
         final cleanDocSup = doc.supplierName.trim().toLowerCase();

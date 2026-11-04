@@ -41,6 +41,9 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   void initState() {
     super.initState();
     _doc = widget.document;
+    if (_doc.storeId <= 0 && _api.currentStoreId > 0) {
+      _doc.storeId = _api.currentStoreId;
+    }
     _matcher.init();
     _checkDuplicate();
     // Автоматически получаем следующий последовательный системный номер gusar.tj

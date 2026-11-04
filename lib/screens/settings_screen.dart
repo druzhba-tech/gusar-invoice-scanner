@@ -256,6 +256,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (pass.isNotEmpty) {
       await prefs.setString('saved_password', pass);
     }
+    if (user.isNotEmpty && pass.isNotEmpty) {
+      await _api.saveAccountCredentials(user, pass, storeId: storeIdToSave, storeName: storeNameToSave);
+    }
 
     if (user.isNotEmpty && pass.isNotEmpty && !_isAuthenticated) {
       await _api.login(user, pass, remember: true);
@@ -575,31 +578,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 child: Column(
                   children: [
-                    TextField(
-                      controller: _usernameCtrl,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        labelText: 'Логин / Телефон сотрудника',
-                        hintText: 'admin или 992...',
-                        prefixIcon: Icon(Icons.person_outline_rounded, color: Colors.white54),
-                        labelStyle: TextStyle(color: Colors.white54),
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _passwordCtrl,
-                      obscureText: true,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        labelText: 'Пароль',
-                        prefixIcon: Icon(Icons.lock_outline_rounded, color: Colors.white54),
-                        labelStyle: TextStyle(color: Colors.white54),
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                    AutofillGroup(
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: _usernameCtrl,
+                            autofillHints: const [AutofillHints.username],
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Логин / Телефон сотрудника',
+                              hintText: 'admin или 992...',
+                              prefixIcon: Icon(Icons.person_outline_rounded, color: Colors.white54),
+                              labelStyle: TextStyle(color: Colors.white54),
+                              filled: true,
+                              fillColor: Color(0xFF0F172A),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _passwordCtrl,
+                            obscureText: true,
+                            autofillHints: const [AutofillHints.password],
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Пароль',
+                              prefixIcon: Icon(Icons.lock_outline_rounded, color: Colors.white54),
+                              labelStyle: TextStyle(color: Colors.white54),
+                              filled: true,
+                              fillColor: Color(0xFF0F172A),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide.none),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 16),

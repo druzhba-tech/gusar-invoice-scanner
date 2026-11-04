@@ -386,29 +386,45 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadData({bool syncWithServer = true, bool showNotification = false}) async {
+    if (_recentInvoices.isEmpty) {
+      setState(() => _isLoading = true);
+    }
     final prefs = await SharedPreferences.getInstance();
-    final localDocs = await _storage.getLocalInvoices();
+    int activeStoreId = _api.currentStoreId;
+    if (activeStoreId <= 0) {
+      activeStoreId = prefs.getInt('store_id') ?? 1;
+    }
+    final localDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
     String storeName = _api.currentStoreName.isNotEmpty ? _api.currentStoreName : (prefs.getString('store_name') ?? 'Склад gusar.tj');
     final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
     final isAuth = prefs.getBool('is_authenticated') ?? false;
 
-    setState(() {
-      _recentInvoices = localDocs;
-      _storeName = storeName;
-      _loggedUser = loggedUser;
-      _isAuthenticated = isAuth;
-      _isLoading = false;
-    });
+    if (mounted) {
+      setState(() {
+        _recentInvoices = localDocs;
+        _storeName = storeName;
+        _loggedUser = loggedUser;
+        _isAuthenticated = isAuth;
+        _isLoading = false;
+      });
+    }
 
-    // Фоновое обновление каталога с gusar.tj (с подтягиванием актуальных фото)
-    try {
-      final products = await _api.getProducts(forceRefresh: true);
-      if (products.isNotEmpty) {
-        await _storage.cacheProducts(products);
-      }
-    } catch (_) {}
+    if (syncWithServer) {
+      try {
+        await _api.syncStoreInvoices(storeId: activeStoreId, fastOnly: true);
+        final syncedDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
+        if (mounted) {
+          setState(() {
+            _recentInvoices = syncedDocs;
+            _isLoading = false;
+          });
+          if (showNotification) {
+            TopNotification.showSuccess(context, 'Статусы накладных магазина обновлены');
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   bool _isCheckingUpdate = false;
@@ -743,10 +759,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white70),
-            tooltip: 'Обновить данные',
+            tooltip: 'Обновить статус накладных',
             onPressed: () {
-              _loadData();
-              _checkUpdates(manual: true);
+              _loadData(syncWithServer: true, showNotification: true);
             },
           ),
           IconButton(
@@ -778,8 +793,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          await _loadData();
-          await _checkUpdates(manual: true);
+          await _loadData(syncWithServer: true, showNotification: true);
         },
         color: const Color(0xFF10B981),
         backgroundColor: const Color(0xFF1E293B),
@@ -1391,10 +1405,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (result == true) {
-      await _storage.clearAllInvoices();
+      final activeStoreId = _api.currentStoreId > 0 ? _api.currentStoreId : null;
+      await _storage.clearAllInvoices(storeId: activeStoreId);
       await _loadData();
       if (mounted) {
-        TopNotification.showSuccess(context, 'Журнал накладных очищен');
+        TopNotification.showSuccess(context, 'Журнал накладных магазина очищен');
       }
     }
   }

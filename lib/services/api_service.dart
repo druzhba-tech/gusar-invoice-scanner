@@ -239,14 +239,196 @@ class ApiService {
     return [];
   }
 
+  // Список известных сотрудников подразделений сети gusar.tj для быстрого выбора
+  static const List<Map<String, dynamic>> defaultStaffAccounts = [
+    {'username': 'Furuzon', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'ADMIN'},
+    {'username': 'кассир', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'CASHIER'},
+    {'username': 'alko7_admin', 'store_id': 7, 'store_name': 'Алкомаркет №7', 'role': 'ADMIN'},
+    {'username': 'kassa7', 'store_id': 7, 'store_name': 'Алкомаркет №7', 'role': 'CASHIER'},
+    {'username': 'testadmin', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'ADMIN'},
+    {'username': 'kassir', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'CASHIER'},
+    {'username': 'Фурушанда', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'CASHIER'},
+    {'username': 'umar', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'ADMIN'},
+    {'username': 'Umarbek', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'CASHIER'},
+    {'username': 'Касса', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'CASHIER'},
+    {'username': 'cafe5_admin', 'store_id': 5, 'store_name': 'Кафе AMID #5', 'role': 'ADMIN'},
+    {'username': 'Касса амид', 'store_id': 5, 'store_name': 'Кафе AMID #5', 'role': 'CASHIER'},
+    {'username': 'testadmin4', 'store_id': 4, 'store_name': 'Магазин #4', 'role': 'ADMIN'},
+    {'username': 'shervon', 'store_id': 9, 'store_name': 'Магазин #9', 'role': 'ADMIN'},
+    {'username': 'Umed', 'store_id': 1, 'store_name': 'Магазин #1', 'role': 'ADMIN'},
+    {'username': 'superadmin', 'store_id': null, 'store_name': 'Вся сеть gusar.tj', 'role': 'SUPERADMIN'},
+  ];
+
+  // 0. Управление списком сохранённых аккаунтов (логинов и паролей) для быстрого входа
+  Future<List<Map<String, dynamic>>> getSavedAccounts({int? filterStoreId}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<Map<String, dynamic>> accounts = [];
+
+    final rawJson = prefs.getString('saved_accounts_list');
+    if (rawJson != null && rawJson.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawJson) as List;
+        for (final item in decoded) {
+          if (item is Map) {
+            final u = (item['username'] ?? '').toString().trim();
+            final p = (item['password'] ?? '').toString();
+            if (u.isNotEmpty) {
+              accounts.add(Map<String, dynamic>.from(item));
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Автоматическая миграция последнего сохранённого логина и пароля, если его ещё нет в списке
+    final legacyUser = (prefs.getString('saved_username') ?? prefs.getString('logged_username') ?? '').trim();
+    final legacyPass = prefs.getString('saved_password') ?? '';
+    if (legacyUser.isNotEmpty && legacyPass.isNotEmpty) {
+      final exists = accounts.any((a) => (a['username'] ?? '').toString().trim().toLowerCase() == legacyUser.toLowerCase());
+      if (!exists) {
+        accounts.insert(0, {
+          'username': legacyUser,
+          'password': legacyPass,
+          'store_id': prefs.getInt('store_id') ?? currentStoreId,
+          'store_name': prefs.getString('store_name') ?? currentStoreName,
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+        await prefs.setString('saved_accounts_list', jsonEncode(accounts));
+      }
+    }
+
+    // Подмешиваем известные аккаунты сети, если их ещё нет в списке
+    for (final defAcc in defaultStaffAccounts) {
+      final defUser = (defAcc['username'] as String).trim();
+      final exists = accounts.any((a) => (a['username'] ?? '').toString().trim().toLowerCase() == defUser.toLowerCase());
+      if (!exists) {
+        String savedPassForDef = '';
+        if (legacyUser.toLowerCase() == defUser.toLowerCase() && legacyPass.isNotEmpty) {
+          savedPassForDef = legacyPass;
+        }
+        accounts.add({
+          'username': defUser,
+          'password': savedPassForDef,
+          'store_id': defAcc['store_id'],
+          'store_name': defAcc['store_name'],
+          'role': defAcc['role'],
+          'is_default': true,
+        });
+      }
+    }
+
+    if (filterStoreId != null && filterStoreId > 0) {
+      // Сначала аккаунты для выбранного магазина, затем остальные
+      final storeAccs = accounts.where((a) {
+        final sid = a['store_id'] is int ? a['store_id'] as int : int.tryParse(a['store_id']?.toString() ?? '');
+        return sid == filterStoreId;
+      }).toList();
+      final otherAccs = accounts.where((a) {
+        final sid = a['store_id'] is int ? a['store_id'] as int : int.tryParse(a['store_id']?.toString() ?? '');
+        return sid != filterStoreId;
+      }).toList();
+      return [...storeAccs, ...otherAccs];
+    }
+
+    return accounts;
+  }
+
+  Future<void> saveAccountCredentials(
+    String username,
+    String password, {
+    int? storeId,
+    String? storeName,
+  }) async {
+    final cleanUser = username.trim();
+    if (cleanUser.isEmpty || password.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_username', cleanUser);
+    await prefs.setString('saved_password', password);
+    await prefs.setBool('remember_credentials', true);
+
+    final accounts = await getSavedAccounts();
+    Map<String, dynamic>? existing;
+    for (final a in accounts) {
+      if ((a['username'] ?? '').toString().trim().toLowerCase() == cleanUser.toLowerCase()) {
+        existing = a;
+        break;
+      }
+    }
+
+    final resolvedStoreId = (storeId != null && storeId > 0)
+        ? storeId
+        : (existing?['store_id'] is int ? existing!['store_id'] as int : currentStoreId);
+    final resolvedStoreName = (storeName != null && storeName.trim().isNotEmpty)
+        ? storeName.trim()
+        : ((existing?['store_name'] ?? '').toString().trim().isNotEmpty
+            ? existing!['store_name'].toString().trim()
+            : currentStoreName);
+
+    accounts.removeWhere((a) => (a['username'] ?? '').toString().trim().toLowerCase() == cleanUser.toLowerCase());
+    accounts.insert(0, {
+      'username': cleanUser,
+      'password': password,
+      'store_id': resolvedStoreId,
+      'store_name': resolvedStoreName,
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+
+    if (accounts.length > 20) {
+      accounts.removeRange(20, accounts.length);
+    }
+    await prefs.setString('saved_accounts_list', jsonEncode(accounts));
+  }
+
+  Future<void> removeSavedAccount(String username) async {
+    final cleanUser = username.trim().toLowerCase();
+    final prefs = await SharedPreferences.getInstance();
+    final accounts = await getSavedAccounts();
+    accounts.removeWhere((a) => (a['username'] ?? '').toString().trim().toLowerCase() == cleanUser);
+    await prefs.setString('saved_accounts_list', jsonEncode(accounts));
+
+    final currentSaved = (prefs.getString('saved_username') ?? '').trim().toLowerCase();
+    if (currentSaved == cleanUser) {
+      if (accounts.isNotEmpty) {
+        await prefs.setString('saved_username', (accounts.first['username'] ?? '').toString());
+        await prefs.setString('saved_password', (accounts.first['password'] ?? '').toString());
+      } else {
+        await prefs.remove('saved_username');
+        await prefs.remove('saved_password');
+      }
+    }
+  }
+
+  int? _extractStoreIdFromJwt(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length == 3) {
+        final normalized = base64Url.normalize(parts[1]);
+        final payloadStr = utf8.decode(base64Url.decode(normalized));
+        final payload = jsonDecode(payloadStr);
+        if (payload is Map) {
+          final rawId = payload['store_id'] ?? payload['storeId'];
+          if (rawId != null) {
+            return int.tryParse(rawId.toString());
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   // 1. Авторизация сотрудника склада / товароведа с привязкой к выбранному или назначенному магазину
-  Future<Map<String, dynamic>> login(String username, String password, {int? preferredStoreId, bool remember = true}) async {
+  Future<Map<String, dynamic>> login(
+    String username,
+    String password, {
+    int? preferredStoreId,
+    bool userExplicitlySelectedStore = false,
+    bool remember = true,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
 
     // Всегда надежно сохраняем логин и пароль сотрудника в памяти приложения
-    await prefs.setString('saved_username', username);
-    await prefs.setString('saved_password', password);
-    await prefs.setBool('remember_credentials', true);
+    await saveAccountCredentials(username, password, storeId: preferredStoreId);
 
     try {
       Response? response;
@@ -275,20 +457,21 @@ class ApiService {
         // 1. Сначала подгружаем актуальный список всех магазинов базы gusar.tj
         final allStores = await fetchStores();
 
-        // 2. Определяем точный store_id пользователя:
-        // А) Если пользователь выбрал магазин на экране логина - это высший приоритет!
-        int? userStoreId = (preferredStoreId != null && preferredStoreId > 0) ? preferredStoreId : null;
+        // 2. Определяем точный store_id пользователя с сервера и из токена:
+        int? serverStoreId;
         String? userStoreName;
         String? userRole = response.data['role']?.toString().toUpperCase();
 
-        if (userStoreId == null && response.data['store_id'] != null) {
-          userStoreId = int.tryParse(response.data['store_id'].toString());
+        if (response.data['store_id'] != null) {
+          serverStoreId = int.tryParse(response.data['store_id'].toString());
+        } else if (response.data['storeId'] != null) {
+          serverStoreId = int.tryParse(response.data['storeId'].toString());
         }
 
         final dynamic rawUser = response.data['user'] ?? response.data['data']?['user'];
-        if (rawUser is Map && userStoreId == null) {
-          if (rawUser['store_id'] != null) {
-            userStoreId = int.tryParse(rawUser['store_id'].toString());
+        if (rawUser is Map) {
+          if (serverStoreId == null && rawUser['store_id'] != null) {
+            serverStoreId = int.tryParse(rawUser['store_id'].toString());
           }
           if (rawUser['store_name'] != null && rawUser['store_name'].toString().trim().isNotEmpty) {
             userStoreName = rawUser['store_name'].toString().trim();
@@ -296,8 +479,8 @@ class ApiService {
             if (rawUser['store']['name'] != null) {
               userStoreName = rawUser['store']['name'].toString().trim();
             }
-            if (rawUser['store']['id'] != null) {
-              userStoreId = int.tryParse(rawUser['store']['id'].toString());
+            if (serverStoreId == null && rawUser['store']['id'] != null) {
+              serverStoreId = int.tryParse(rawUser['store']['id'].toString());
             }
           }
           if (rawUser['role'] != null) {
@@ -305,8 +488,11 @@ class ApiService {
           }
         }
 
-        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/auth/me) если еще не определен
-        if (userStoreId == null) {
+        // Проверяем store_id внутри JWT-токена
+        serverStoreId ??= _extractStoreIdFromJwt(token);
+
+        // 3. Запрашиваем точный профиль сотрудника из gusar.tj (/api/auth/me) если еще не определен сервером
+        if (serverStoreId == null) {
           try {
             final meResp = await _dio.get(
               '/api/auth/me',
@@ -316,24 +502,24 @@ class ApiService {
             if (meResp.statusCode == 200 && meResp.data != null) {
               final meData = meResp.data;
               if (meData['store_id'] != null) {
-                userStoreId = int.tryParse(meData['store_id'].toString());
+                serverStoreId = int.tryParse(meData['store_id'].toString());
               } else if (meData['storeId'] != null) {
-                userStoreId = int.tryParse(meData['storeId'].toString());
+                serverStoreId = int.tryParse(meData['storeId'].toString());
               }
 
               final dynamic meUser = meData['user'] ?? meData['data'];
               if (meUser is Map) {
                 if (meUser['store_id'] != null) {
-                  userStoreId = int.tryParse(meUser['store_id'].toString()) ?? userStoreId;
+                  serverStoreId = int.tryParse(meUser['store_id'].toString()) ?? serverStoreId;
                 } else if (meUser['storeId'] != null) {
-                  userStoreId = int.tryParse(meUser['storeId'].toString()) ?? userStoreId;
+                  serverStoreId = int.tryParse(meUser['storeId'].toString()) ?? serverStoreId;
                 }
 
                 if (meUser['store_name'] != null && meUser['store_name'].toString().trim().isNotEmpty) {
                   userStoreName = meUser['store_name'].toString().trim();
                 } else if (meUser['store'] is Map) {
                   if (meUser['store']['id'] != null) {
-                    userStoreId = int.tryParse(meUser['store']['id'].toString()) ?? userStoreId;
+                    serverStoreId = int.tryParse(meUser['store']['id'].toString()) ?? serverStoreId;
                   }
                   if (meUser['store']['name'] != null) {
                     userStoreName = meUser['store']['name'].toString().trim();
@@ -342,6 +528,16 @@ class ApiService {
               }
             }
           } catch (_) {}
+        }
+
+        // Выбираем итоговый userStoreId:
+        // Если пользователь явно сам переключил магазин на экране входа — берем его выбор,
+        // иначе если у аккаунта на сервере привязан конкретный магазин — берем магазин аккаунта!
+        int? userStoreId;
+        if (userExplicitlySelectedStore && preferredStoreId != null && preferredStoreId > 0) {
+          userStoreId = preferredStoreId;
+        } else if (serverStoreId != null && serverStoreId > 0) {
+          userStoreId = serverStoreId;
         }
 
         // 4. Умное сопоставление логина сотрудника со списком магазинов gusar.tj
@@ -401,7 +597,10 @@ class ApiService {
           }
         }
 
-        // 5. Если всё еще не определен - проверяем ранее сохраненный в приложении магазин!
+        // 5. Если всё еще не определен - используем выбранный на экране магазин или ранее сохраненный магазин!
+        if (userStoreId == null && preferredStoreId != null && preferredStoreId > 0) {
+          userStoreId = preferredStoreId;
+        }
         if (userStoreId == null) {
           final previouslySavedId = prefs.getInt('store_id');
           if (previouslySavedId != null && previouslySavedId > 0 && allStores.any((s) => s['id'] == previouslySavedId)) {
@@ -450,13 +649,19 @@ class ApiService {
           {'id': assignedStoreId, 'name': assignedStoreName, 'address': 'Магазин сотрудника $username'}
         ];
 
-        // ВАЖНО: Обновляем текущий магазин и сбрасываем кэш старого магазина!
+        // ВАЖНО: Обновляем текущий магазин и сохраняем привязку аккаунта к этому магазину!
         await updateStore(assignedStoreId, assignedStoreName);
+        await saveAccountCredentials(username, password, storeId: assignedStoreId, storeName: assignedStoreName);
         await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
 
-        // Предварительно загружаем актуальных поставщиков и каталог товаров для этого магазина
-        getSuppliers(forceRefresh: true).catchError((_) => <Supplier>[]);
-        getProducts().catchError((_) => <Product>[]);
+        // Мгновенная синхронизация накладных этого магазина (чтобы видеть накладные магазина сразу при входе)
+        try {
+          await syncStoreInvoices(storeId: assignedStoreId, fastOnly: true);
+        } catch (_) {}
+
+        // Фоновая подгрузка каталога товаров и поставщиков без блокировки входа
+        getSuppliers(forceRefresh: false).catchError((_) => <Supplier>[]);
+        getProducts(forceRefresh: false).catchError((_) => <Product>[]);
 
         return {
           'success': true,
@@ -478,6 +683,7 @@ class ApiService {
       final fallbackId = savedId > 0 ? savedId : 3;
       final fallbackName = prefs.getString('store_name') ?? currentStoreName;
       await updateStore(fallbackId, fallbackName);
+      await saveAccountCredentials(username, password, storeId: fallbackId, storeName: fallbackName);
       if (accessibleStores.isEmpty) {
         accessibleStores = [
           {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
@@ -495,6 +701,7 @@ class ApiService {
       final fallbackId = savedId > 0 ? savedId : 3;
       final fallbackName = prefs.getString('store_name') ?? currentStoreName;
       await updateStore(fallbackId, fallbackName);
+      await saveAccountCredentials(username, password, storeId: fallbackId, storeName: fallbackName);
       if (accessibleStores.isEmpty) {
         accessibleStores = [
           {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
@@ -512,20 +719,20 @@ class ApiService {
     authToken = null;
     _cachedProducts = [];
     _cachedSuppliers = [];
-    currentStoreId = 2; // Всегда валидный активный магазин (Мағозаи Арзон)
-    currentStoreName = 'Мағозаи Арзон';
-    accessibleStores = [
-      {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'Магазин gusar.tj'}
-    ];
     final prefs = await SharedPreferences.getInstance();
+    // ВАЖНО: сохраняем текущий магазин, чтобы при входе с другого аккаунта этого же магазина он не сбрасывался!
+    final savedStoreId = prefs.getInt('store_id') ?? currentStoreId;
+    final savedStoreName = prefs.getString('store_name') ?? currentStoreName;
+    if (savedStoreId > 0) currentStoreId = savedStoreId;
+    if (savedStoreName.trim().isNotEmpty) currentStoreName = savedStoreName.trim();
+
     await prefs.remove('auth_token');
     await prefs.setBool('is_authenticated', false);
     await prefs.remove('logged_username');
-    // ВАЖНО: сохраняем saved_username и saved_password, чтобы пароли НЕ слетали при выходе!
+    // ВАЖНО: сохраняем saved_username, saved_password и saved_accounts_list, чтобы пароли НЕ слетали при выходе!
     await prefs.remove('cached_products_list');
     await prefs.remove('cached_suppliers_list');
     _dio.options.headers.remove('Authorization');
-    _dio.options.headers.remove('X-Store-ID');
   }
 
   List<Product> _cachedProducts = [];
@@ -1565,16 +1772,36 @@ class ApiService {
   }
 
   // 6. Проверка на дубликат накладной
-  Future<bool> checkInvoiceExists(String invoiceNumber, int? supplierId) async {
+  Future<bool> checkInvoiceExists(String invoiceNumber, int? supplierId, {double? totalAmount, String? supplierName}) async {
     final clean = invoiceNumber.trim().toLowerCase();
     if (clean.isEmpty) return false;
     try {
       final response = await _dio.get('/api/purchases', queryParameters: {'store_id': currentStoreId});
-      if (response.statusCode == 200 && response.data is List) {
-        for (var p in response.data) {
-          final invNum = p['invoice_number']?.toString().trim().toLowerCase() ?? '';
+      dynamic items = response.data;
+      if (items is Map && items['purchases'] is List) items = items['purchases'];
+      if (items is Map && items['data'] is List) items = items['data'];
+      if (response.statusCode == 200 && items is List) {
+        String norm(String s) => s.toLowerCase().replaceAll(RegExp(r'["«»„“\s\-\.\,\(\)]+'), '');
+        final targetSupNorm = supplierName != null ? norm(supplierName) : '';
+        for (var p in items) {
+          if (p is! Map) continue;
+          final invNum = (p['invoice_number'] ?? p['invoice_no'] ?? p['id'] ?? '').toString().trim().toLowerCase();
+          final incNum = (p['incoming_invoice_number'] ?? p['incoming_number'] ?? '').toString().trim().toLowerCase();
           final notes = p['notes']?.toString().trim().toLowerCase() ?? '';
-          if (invNum == clean || (notes.isNotEmpty && notes.contains(clean))) {
+          final pSupId = p['supplier_id'] is int ? p['supplier_id'] as int : int.tryParse(p['supplier_id']?.toString() ?? '');
+          final pSupNorm = norm((p['supplier_name'] ?? '').toString());
+          final rawTotal = p['total_amount'] ?? p['total'] ?? 0.0;
+          final pTotal = (rawTotal is num) ? rawTotal.toDouble() : double.tryParse(rawTotal.toString()) ?? 0.0;
+
+          final sameSupplier = (supplierId != null && pSupId == supplierId) ||
+              (targetSupNorm.isNotEmpty && pSupNorm.isNotEmpty && (pSupNorm == targetSupNorm || pSupNorm.contains(targetSupNorm) || targetSupNorm.contains(pSupNorm)));
+
+          if ((invNum == clean && (sameSupplier || supplierId == null)) ||
+              (incNum.isNotEmpty && incNum == clean) ||
+              (notes.isNotEmpty && notes.contains('№$clean'))) {
+            return true;
+          }
+          if (sameSupplier && totalAmount != null && totalAmount > 0 && (pTotal - totalAmount).abs() < 0.50 && invNum == clean) {
             return true;
           }
         }
@@ -1600,7 +1827,7 @@ class ApiService {
 
         if (items is List) {
           for (var p in items) {
-            final inv = p['invoice_number']?.toString().trim() ?? p['invoice_no']?.toString().trim() ?? '';
+            final inv = p['invoice_number']?.toString().trim() ?? p['invoice_no']?.toString().trim() ?? p['id']?.toString().trim() ?? '';
             final match = RegExp(r'\d+').firstMatch(inv);
             if (match != null) {
               final n = int.tryParse(match.group(0)!);
@@ -1616,7 +1843,9 @@ class ApiService {
     // 2. Также проверяем локальную БД телефона (на случай если товаровед оприходовал офлайн)
     try {
       final storage = LocalStorageService();
-      final localDocs = await storage.getLocalInvoices();
+      final localDocs = await storage.getLocalInvoices(
+        storeId: currentStoreId > 0 ? currentStoreId : null,
+      );
       for (var doc in localDocs) {
         final match = RegExp(r'\d+').firstMatch(doc.invoiceNumber);
         if (match != null) {
@@ -1628,6 +1857,385 @@ class ApiService {
 
     final nextSeq = maxNum > 0 ? (maxNum + 1) : 1;
     return nextSeq.toString();
+  }
+
+  // 6.2 Синхронизация накладных и их статусов для активного магазина (включая вход с другого аккаунта)
+  Future<void> syncStoreInvoices({int? storeId, bool fastOnly = false}) async {
+    final targetStoreId = (storeId != null && storeId > 0) ? storeId : currentStoreId;
+    if (targetStoreId <= 0) return;
+
+    final storage = LocalStorageService();
+    String norm(String s) => s.toLowerCase().replaceAll(RegExp(r'["«»„“\s\-\.\,\(\)]+'), '');
+
+    // Если fastOnly == true (быстрое обновление накладных при свайпе вниз или переключении аккаунта),
+    // пропускаем тяжелую загрузку полного каталога номенклатуры (9500+ товаров), обновляя сразу накладные!
+    if (!fastOnly) {
+      try {
+        await Future.wait([
+          getSuppliers(forceRefresh: false).catchError((_) => <Supplier>[]),
+          getProducts(forceRefresh: false).catchError((_) => <Product>[]),
+        ]);
+        if (_cachedProducts.isNotEmpty) {
+          await storage.cacheProducts(_cachedProducts);
+        }
+      } catch (_) {}
+    }
+
+    List<InvoiceDocument> allLocalDocs = await storage.getLocalInvoices();
+
+    // 1. Обновляем привязку товаров в локальных несинхронизированных накладных магазина
+    if (_cachedProducts.isNotEmpty) {
+      for (final doc in allLocalDocs.where((d) => d.storeId == targetStoreId && !d.isSynchronized)) {
+        bool docChanged = false;
+        for (final item in doc.items) {
+          if (item.matchedProductId == null) {
+            final bc = (item.barcode ?? item.matchedBarcode ?? '').trim();
+            Product? matchedProd;
+            if (bc.isNotEmpty) {
+              for (final p in _cachedProducts) {
+                if (p.barcode != null && p.barcode!.trim() == bc) {
+                  matchedProd = p;
+                  break;
+                }
+              }
+            }
+            if (matchedProd == null && item.rawName.trim().isNotEmpty) {
+              final rawNorm = norm(item.rawName);
+              for (final p in _cachedProducts) {
+                if (norm(p.name) == rawNorm) {
+                  matchedProd = p;
+                  break;
+                }
+              }
+            }
+            if (matchedProd != null) {
+              item.matchedProductId = matchedProd.id;
+              item.matchedProductName = matchedProd.name;
+              item.matchedBarcode = matchedProd.barcode;
+              item.currentRetailPrice = matchedProd.price;
+              item.lastBuyPrice = matchedProd.costPrice > 0 ? matchedProd.costPrice : null;
+              item.matchConfidence = 1.0;
+              item.status = ItemStatus.matched;
+              docChanged = true;
+            }
+          }
+        }
+        if (docChanged) {
+          await storage.saveInvoice(doc);
+        }
+      }
+    }
+
+    // 2. Запрашиваем список проведённых накладных магазина с сервера gusar.tj
+    List<Map<String, dynamic>> serverPurchases = [];
+    try {
+      Response? response;
+      try {
+        response = await _dio.get(
+          '/api/purchases',
+          queryParameters: {'store_id': targetStoreId, 'limit': 200},
+        ).timeout(const Duration(seconds: 15));
+      } on DioException catch (dioErr) {
+        if (dioErr.response?.statusCode == 401) {
+          final ok = await _trySilentReLogin();
+          if (ok) {
+            response = await _dio.get(
+              '/api/purchases',
+              queryParameters: {'store_id': targetStoreId, 'limit': 200},
+            ).timeout(const Duration(seconds: 15));
+          }
+        }
+      }
+
+      if (response != null && response.statusCode == 200 && response.data != null) {
+        dynamic raw = response.data;
+        List<dynamic> list = [];
+        if (raw is List) {
+          list = raw;
+        } else if (raw is Map && raw['purchases'] is List) {
+          list = raw['purchases'];
+        } else if (raw is Map && raw['data'] is List) {
+          list = raw['data'];
+        }
+        serverPurchases = list
+            .where((e) => e is Map)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .where((p) {
+              if (p['store_id'] == null) return true;
+              final pStoreId = int.tryParse(p['store_id'].toString());
+              return pStoreId == null || pStoreId <= 0 || pStoreId == targetStoreId;
+            })
+            .toList();
+      }
+    } catch (e) {
+      print('syncStoreInvoices fetch purchases warning: $e');
+    }
+
+    // 3. Сопоставляем серверные накладные с локальными, обновляем их статусы и догружаем накладные магазина
+    final Set<String> matchedLocalDocIds = {};
+    final List<Map<String, dynamic>> newServerPurchasesToImport = [];
+
+    for (final p in serverPurchases) {
+      final pId = p['id'] is int ? p['id'] as int : int.tryParse(p['id']?.toString() ?? '');
+      final rawInvNum = (p['invoice_number'] ?? p['invoice_no'] ?? p['number'] ?? '').toString().trim();
+      final rawIncNum = (p['incoming_invoice_number'] ?? p['incoming_number'] ?? '').toString().trim();
+      final notes = (p['notes'] ?? '').toString();
+
+      String? notesInvNum;
+      String? notesIncNum;
+      String? notesSupName;
+      if (notes.isNotEmpty) {
+        final mInv = RegExp(r'Накладная\s*№\s*([^\s\(]+)').firstMatch(notes);
+        if (mInv != null) notesInvNum = mInv.group(1)?.trim();
+        final mInc = RegExp(r'\(Вх\.\s*№:\s*([^\)]+)\)').firstMatch(notes);
+        if (mInc != null) notesIncNum = mInc.group(1)?.trim();
+        final mSup = RegExp(r'\(Поставщик:\s*([^\)]+)\)').firstMatch(notes);
+        if (mSup != null) notesSupName = mSup.group(1)?.trim();
+      }
+
+      final effectiveInvNum = rawInvNum.isNotEmpty
+          ? rawInvNum
+          : (notesInvNum != null && notesInvNum.isNotEmpty
+              ? notesInvNum
+              : (pId != null ? pId.toString() : 'б/н'));
+      final effectiveIncNum = rawIncNum.isNotEmpty
+          ? rawIncNum
+          : (notesIncNum != null && notesIncNum != 'б/н' ? notesIncNum : '');
+
+      final supId = p['supplier_id'] is int ? p['supplier_id'] as int : int.tryParse(p['supplier_id']?.toString() ?? '');
+      String supName = (p['supplier_name'] ?? (p['supplier'] is Map ? p['supplier']['name'] : null) ?? notesSupName ?? '').toString().trim();
+      if (supName.isEmpty && supId != null) {
+        final foundSup = _cachedSuppliers.where((s) => s.id == supId);
+        if (foundSup.isNotEmpty) supName = foundSup.first.name;
+      }
+      if (supName.isEmpty) supName = 'Поставщик';
+      final pSupNorm = norm(supName);
+
+      final rawTotal = p['total_amount'] ?? p['total'] ?? p['amount'] ?? 0.0;
+      final double pTotal = (rawTotal is num) ? rawTotal.toDouble() : double.tryParse(rawTotal.toString()) ?? 0.0;
+
+      final rawPaid = p['paid_amount'] ?? p['amount_paid'] ?? 0.0;
+      final double pPaid = (rawPaid is num) ? rawPaid.toDouble() : double.tryParse(rawPaid.toString()) ?? 0.0;
+
+      final dateStr = (p['purchase_date'] ?? p['date'] ?? p['created_at'])?.toString() ?? '';
+      final DateTime pDate = DateTime.tryParse(dateStr) ?? DateTime.now();
+
+      InvoiceDocument? matchedLocal;
+
+      // А) Точное совпадение по серверному ID документа
+      for (final doc in allLocalDocs) {
+        if (pId != null && (doc.id == 'srv_${targetStoreId}_$pId' || doc.id == 'srv_$pId' || doc.id == pId.toString())) {
+          matchedLocal = doc;
+          break;
+        }
+      }
+
+      // Б) Совпадение среди локальных накладных по номеру / входящему номеру / (поставщик + сумма)
+      if (matchedLocal == null) {
+        for (final doc in allLocalDocs) {
+          if (matchedLocalDocIds.contains(doc.id)) continue;
+          if (doc.id.startsWith('srv_')) continue;
+
+          final docTotal = doc.totalAmount > 0 ? doc.totalAmount : doc.calculatedTotal;
+          final docSupNorm = norm(doc.supplierName);
+          final sameSupplier = (supId != null && doc.supplierId == supId) ||
+              (pSupNorm.isNotEmpty && docSupNorm.isNotEmpty && (pSupNorm == docSupNorm || pSupNorm.contains(docSupNorm) || docSupNorm.contains(pSupNorm)));
+          final sameAmount = pTotal > 0 && docTotal > 0 && (pTotal - docTotal).abs() < 1.0;
+
+          final docInv = doc.invoiceNumber.trim().toLowerCase();
+          final docInc = doc.incomingNumber.trim().toLowerCase();
+
+          // 1. По входящему номеру
+          if (effectiveIncNum.isNotEmpty && effectiveIncNum != 'б/н') {
+            final cleanInc = effectiveIncNum.toLowerCase();
+            if ((docInc.isNotEmpty && docInc == cleanInc) || (docInv.isNotEmpty && docInv == cleanInc)) {
+              if (doc.storeId == targetStoreId || sameSupplier || sameAmount) {
+                matchedLocal = doc;
+                break;
+              }
+            }
+          }
+
+          // 2. По системному номеру + совпадение поставщика или суммы
+          if (effectiveInvNum.isNotEmpty && effectiveInvNum != 'б/н' && docInv == effectiveInvNum.toLowerCase()) {
+            if (doc.storeId == targetStoreId && (sameSupplier || sameAmount)) {
+              matchedLocal = doc;
+              break;
+            }
+          }
+
+          // 3. По поставщику + точной сумме накладной (так как сервер хранит supplier_id и total_amount)
+          if (sameSupplier && sameAmount && doc.storeId == targetStoreId) {
+            matchedLocal = doc;
+            break;
+          }
+        }
+      }
+
+      if (matchedLocal != null) {
+        matchedLocalDocIds.add(matchedLocal.id);
+        bool needsSave = false;
+
+        if (!matchedLocal.isSynchronized || matchedLocal.status != DocumentStatus.synced) {
+          matchedLocal.isSynchronized = true;
+          matchedLocal.status = DocumentStatus.synced;
+          needsSave = true;
+        }
+        if (matchedLocal.storeId != targetStoreId) {
+          matchedLocal.storeId = targetStoreId;
+          needsSave = true;
+        }
+        if (supId != null && supId > 0 && matchedLocal.supplierId != supId) {
+          matchedLocal.supplierId = supId;
+          needsSave = true;
+        }
+        if (supName.isNotEmpty && supName != 'Поставщик' && (matchedLocal.supplierName.isEmpty || matchedLocal.supplierName == 'Неизвестный поставщик')) {
+          matchedLocal.supplierName = supName;
+          needsSave = true;
+        }
+        if ((matchedLocal.paidAmount - pPaid).abs() > 0.01 && (pPaid > 0 || matchedLocal.paidAmount == 0)) {
+          matchedLocal.paidAmount = pPaid;
+          needsSave = true;
+        }
+        if (matchedLocal.totalAmount <= 0 && pTotal > 0) {
+          matchedLocal.totalAmount = pTotal;
+          needsSave = true;
+        }
+
+        if (needsSave) {
+          await storage.saveInvoice(matchedLocal);
+        }
+      } else if (pId != null && pId > 0) {
+        newServerPurchasesToImport.add({
+          'raw': p,
+          'pId': pId,
+          'invNum': effectiveInvNum,
+          'incNum': effectiveIncNum,
+          'supId': supId,
+          'supName': supName,
+          'total': pTotal,
+          'paid': pPaid,
+          'date': pDate,
+        });
+      }
+    }
+
+    // 4. Авто-отправка локальных накладных магазина, ожидающих отправки в офлайн-очереди (approved или полностью привязанных)
+    for (final doc in allLocalDocs.where((d) => d.storeId == targetStoreId && !d.isSynchronized && !matchedLocalDocIds.contains(d.id))) {
+      if (doc.status == DocumentStatus.approved && doc.unmatchedCount == 0 && doc.items.isNotEmpty) {
+        try {
+          final submitted = await submitPurchase(doc);
+          if (submitted) {
+            doc.isSynchronized = true;
+            doc.status = DocumentStatus.synced;
+            await storage.saveInvoice(doc);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 5. Импортируем накладные этого магазина с сервера (для отображения при входе с другого аккаунта)
+    if (newServerPurchasesToImport.isNotEmpty) {
+      final toImport = newServerPurchasesToImport.take(50).toList();
+      int breakdownFetchedCount = 0;
+
+      for (final entry in toImport) {
+        final Map<String, dynamic> p = entry['raw'] as Map<String, dynamic>;
+        final int pId = entry['pId'] as int;
+        final String invNum = entry['invNum'] as String;
+        final String incNum = entry['incNum'] as String;
+        final int? supId = entry['supId'] as int?;
+        final String supName = entry['supName'] as String;
+        final double total = entry['total'] as double;
+        final double paid = entry['paid'] as double;
+        final DateTime date = entry['date'] as DateTime;
+
+        final List<InvoiceItem> itemsList = [];
+        if (p['items'] is List && (p['items'] as List).isNotEmpty) {
+          for (final rawItem in (p['items'] as List)) {
+            if (rawItem is Map) {
+              final rawQty = rawItem['quantity'] ?? rawItem['batch_qty'] ?? rawItem['qty'] ?? 1.0;
+              final qty = (rawQty is num) ? rawQty.toDouble() : double.tryParse(rawQty.toString()) ?? 1.0;
+              final rawBuy = rawItem['buy_price'] ?? rawItem['price'] ?? rawItem['cost_price'] ?? 0.0;
+              final buy = (rawBuy is num) ? rawBuy.toDouble() : double.tryParse(rawBuy.toString()) ?? 0.0;
+              final prodId = rawItem['product_id'] is int ? rawItem['product_id'] as int : int.tryParse(rawItem['product_id']?.toString() ?? '');
+              final rawName = (rawItem['product_name'] ?? rawItem['name'] ?? 'Товар').toString();
+
+              itemsList.add(InvoiceItem(
+                id: (rawItem['id'] ?? rawItem['item_id'] ?? '${pId}_${itemsList.length}').toString(),
+                rawName: rawName,
+                quantity: qty,
+                verifiedQuantity: qty,
+                buyPrice: buy,
+                totalPrice: qty * buy,
+                unit: (rawItem['unit'] ?? 'шт').toString(),
+                matchedProductId: prodId,
+                matchedProductName: rawName,
+                matchConfidence: 1.0,
+                status: ItemStatus.verified,
+              ));
+            }
+          }
+        } else if (breakdownFetchedCount < 25) {
+          breakdownFetchedCount++;
+          try {
+            final bdResp = await _dio.get('/api/purchases/$pId/sales-breakdown').timeout(const Duration(seconds: 5));
+            if (bdResp.statusCode == 200 && bdResp.data is Map && bdResp.data['items'] is List) {
+              for (final rawItem in (bdResp.data['items'] as List)) {
+                if (rawItem is Map) {
+                  final rawQty = rawItem['batch_qty'] ?? rawItem['quantity'] ?? rawItem['qty'] ?? 1.0;
+                  final qty = (rawQty is num) ? rawQty.toDouble() : double.tryParse(rawQty.toString()) ?? 1.0;
+                  final rawBuy = rawItem['buy_price'] ?? rawItem['price'] ?? 0.0;
+                  final buy = (rawBuy is num) ? rawBuy.toDouble() : double.tryParse(rawBuy.toString()) ?? 0.0;
+                  final prodId = rawItem['product_id'] is int ? rawItem['product_id'] as int : int.tryParse(rawItem['product_id']?.toString() ?? '');
+                  final rawName = (rawItem['product_name'] ?? rawItem['name'] ?? 'Товар').toString();
+
+                  itemsList.add(InvoiceItem(
+                    id: (rawItem['item_id'] ?? rawItem['id'] ?? '${pId}_${itemsList.length}').toString(),
+                    rawName: rawName,
+                    quantity: qty,
+                    verifiedQuantity: qty,
+                    buyPrice: buy,
+                    totalPrice: qty * buy,
+                    unit: 'шт',
+                    matchedProductId: prodId,
+                    matchedProductName: rawName,
+                    matchConfidence: 1.0,
+                    status: ItemStatus.verified,
+                  ));
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
+        final List<String> photos = [];
+        if (p['receipt_url'] != null && p['receipt_url'].toString().isNotEmpty) {
+          photos.add(p['receipt_url'].toString());
+        }
+        if (p['photo_url'] != null && p['photo_url'].toString().isNotEmpty) {
+          photos.add(p['photo_url'].toString());
+        }
+
+        final newDoc = InvoiceDocument(
+          id: 'srv_${targetStoreId}_$pId',
+          storeId: targetStoreId,
+          supplierId: supId,
+          supplierName: supName,
+          invoiceNumber: invNum,
+          incomingNumber: incNum,
+          invoiceDate: date,
+          totalAmount: total,
+          paidAmount: paid,
+          items: itemsList,
+          pagePhotos: photos,
+          status: DocumentStatus.synced,
+          isSynchronized: true,
+          createdAt: date,
+        );
+        await storage.saveInvoice(newDoc);
+      }
+    }
   }
 
   // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj

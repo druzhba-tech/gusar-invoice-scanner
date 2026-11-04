@@ -228,7 +228,10 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
         _matcher.autoMatchDocument(doc, catalog);
       } catch (_) {}
 
-      // 3. Сохранение черновика локально
+      // 3. Сохранение черновика локально с привязкой к активному магазину
+      if (_api.currentStoreId > 0) {
+        doc.storeId = _api.currentStoreId;
+      }
       await _storage.saveInvoice(doc);
 
       setState(() => _isProcessing = false);
