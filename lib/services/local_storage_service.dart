@@ -114,48 +114,105 @@ class LocalStorageService {
     );
   }
 
-  // 2. Получение локальных накладных (с фильтрацией по магазину)
+  // 2. Получение локальных накладных (с фильтрацией по магазину и защитой от повреждения строк)
   Future<List<InvoiceDocument>> getLocalInvoices({int? storeId}) async {
-    final db = await database;
-    final List<Map<String, dynamic>> rows;
-    if (storeId != null && storeId > 0) {
-      rows = await db.query(
-        'invoices',
-        where: 'store_id = ?',
-        whereArgs: [storeId],
-        orderBy: 'created_at DESC',
-      );
-    } else {
-      rows = await db.query('invoices', orderBy: 'created_at DESC');
+    try {
+      final db = await database;
+      List<Map<String, dynamic>> rows;
+      if (storeId != null && storeId > 0) {
+        rows = await db.query(
+          'invoices',
+          where: 'store_id = ? OR is_synchronized = 0 OR store_id IS NULL',
+          whereArgs: [storeId],
+          orderBy: 'created_at DESC',
+        );
+        // Если для выбранного store_id ничего не нашлось, проверяем всю таблицу (на случай смены ID магазина)
+        if (rows.isEmpty) {
+          rows = await db.query('invoices', orderBy: 'created_at DESC');
+        }
+      } else {
+        rows = await db.query('invoices', orderBy: 'created_at DESC');
+      }
+
+      final List<InvoiceDocument> result = [];
+      for (final r in rows) {
+        try {
+          List<InvoiceItem> itemsList = [];
+          final rawItemsStr = r['items_json']?.toString() ?? '[]';
+          if (rawItemsStr.isNotEmpty) {
+            final decodedItems = jsonDecode(rawItemsStr);
+            if (decodedItems is List) {
+              for (final item in decodedItems) {
+                if (item is Map) {
+                  itemsList.add(InvoiceItem.fromJson(Map<String, dynamic>.from(item)));
+                }
+              }
+            }
+          }
+
+          List<String> photosList = [];
+          final rawPhotosStr = r['page_photos_json']?.toString() ?? '[]';
+          if (rawPhotosStr.isNotEmpty) {
+            final decodedPhotos = jsonDecode(rawPhotosStr);
+            if (decodedPhotos is List) {
+              photosList = decodedPhotos.map((e) => e.toString()).toList();
+            }
+          }
+
+          final rawStoreId = r['store_id'];
+          final int parsedStoreId = rawStoreId is int
+              ? rawStoreId
+              : (int.tryParse(rawStoreId?.toString() ?? '') ?? (storeId ?? 1));
+
+          final rawSupId = r['supplier_id'];
+          final int? parsedSupId = rawSupId is int
+              ? rawSupId
+              : int.tryParse(rawSupId?.toString() ?? '');
+
+          final rawTotal = r['total_amount'];
+          final double parsedTotal = rawTotal is num
+              ? rawTotal.toDouble()
+              : (double.tryParse(rawTotal?.toString() ?? '0') ?? 0.0);
+
+          final rawPaid = r['paid_amount'];
+          final double parsedPaid = rawPaid is num
+              ? rawPaid.toDouble()
+              : (double.tryParse(rawPaid?.toString() ?? '0') ?? 0.0);
+
+          final docDate = DateTime.tryParse(r['invoice_date']?.toString() ?? '') ?? DateTime.now();
+          final createdDate = DateTime.tryParse(r['created_at']?.toString() ?? '') ?? docDate;
+
+          result.add(InvoiceDocument(
+            id: r['id']?.toString() ?? 'doc_${DateTime.now().millisecondsSinceEpoch}',
+            storeId: parsedStoreId,
+            supplierId: parsedSupId,
+            supplierName: r['supplier_name']?.toString() ?? 'Поставщик',
+            invoiceNumber: r['invoice_number']?.toString() ?? 'б/н',
+            incomingNumber: r['incoming_number']?.toString() ?? '',
+            invoiceDate: docDate,
+            totalAmount: parsedTotal,
+            paidAmount: parsedPaid,
+            items: itemsList,
+            pagePhotos: photosList,
+            status: DocumentStatus.values.firstWhere(
+              (e) => e.name == r['status']?.toString(),
+              orElse: () => DocumentStatus.draft,
+            ),
+            isSynchronized: r['is_synchronized'] == 1 || r['is_synchronized'] == true,
+            createdAt: createdDate,
+          ));
+        } catch (rowErr) {
+          print('getLocalInvoices row parse warning: $rowErr');
+        }
+      }
+
+      // Сортируем: самые свежие накладные сверху
+      result.sort((a, b) => b.invoiceDate.compareTo(a.invoiceDate));
+      return result;
+    } catch (e) {
+      print('getLocalInvoices db warning: $e');
+      return [];
     }
-
-    return rows.map((r) {
-      final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
-          .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
-          .toList();
-
-      final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
-
-      return InvoiceDocument(
-        id: r['id'] as String,
-        storeId: r['store_id'] as int,
-        supplierId: r['supplier_id'] as int?,
-        supplierName: r['supplier_name'] as String,
-        invoiceNumber: r['invoice_number'] as String,
-        incomingNumber: r['incoming_number'] as String? ?? '',
-        invoiceDate: DateTime.parse(r['invoice_date'] as String),
-        totalAmount: (r['total_amount'] as num).toDouble(),
-        paidAmount: (r['paid_amount'] as num).toDouble(),
-        items: itemsList,
-        pagePhotos: photosList,
-        status: DocumentStatus.values.firstWhere(
-          (e) => e.name == r['status'],
-          orElse: () => DocumentStatus.draft,
-        ),
-        isSynchronized: (r['is_synchronized'] as int) == 1,
-        createdAt: DateTime.parse(r['created_at'] as String),
-      );
-    }).toList();
   }
 
   // 3. Кэширование каталога товаров для офлайн-приёмки

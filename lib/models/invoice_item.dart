@@ -116,32 +116,45 @@ class InvoiceItem {
     };
   }
 
+  static double? _toDoubleOrNull(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString().replaceAll(',', '.'));
+  }
+
+  static int? _toIntOrNull(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString());
+  }
+
   factory InvoiceItem.fromJson(Map<String, dynamic> json) {
     return InvoiceItem(
-      id: json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-      rawName: json['raw_name'] ?? '',
-      quantity: (json['quantity'] as num?)?.toDouble() ?? 1.0,
-      unit: json['unit'] ?? 'шт',
-      buyPrice: (json['buy_price'] as num?)?.toDouble() ?? 0.0,
-      totalPrice: (json['total_price'] as num?)?.toDouble() ?? 0.0,
-      barcode: json['barcode'],
-      matchedProductId: json['matched_product_id'],
-      matchedProductName: json['matched_product_name'],
-      matchedBarcode: json['matched_barcode'],
-      currentRetailPrice: (json['current_retail_price'] as num?)?.toDouble(),
-      lastBuyPrice: (json['last_buy_price'] as num?)?.toDouble(),
-      matchConfidence: (json['match_confidence'] as num?)?.toDouble() ?? 0.0,
-      verifiedQuantity: (json['verified_quantity'] as num?)?.toDouble() ?? 0.0,
-      defectiveQuantity: (json['defective_quantity'] as num?)?.toDouble() ?? 0.0,
-      defectNotes: json['defect_notes'],
+      id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      rawName: json['raw_name']?.toString() ?? json['name']?.toString() ?? '',
+      quantity: _toDoubleOrNull(json['quantity']) ?? 1.0,
+      unit: json['unit']?.toString() ?? 'шт',
+      buyPrice: _toDoubleOrNull(json['buy_price']) ?? 0.0,
+      totalPrice: _toDoubleOrNull(json['total_price']) ?? 0.0,
+      barcode: json['barcode']?.toString(),
+      matchedProductId: _toIntOrNull(json['matched_product_id']),
+      matchedProductName: json['matched_product_name']?.toString(),
+      matchedBarcode: json['matched_barcode']?.toString(),
+      currentRetailPrice: _toDoubleOrNull(json['current_retail_price']),
+      lastBuyPrice: _toDoubleOrNull(json['last_buy_price']),
+      matchConfidence: _toDoubleOrNull(json['match_confidence']) ?? 0.0,
+      verifiedQuantity: _toDoubleOrNull(json['verified_quantity']) ?? 0.0,
+      defectiveQuantity: _toDoubleOrNull(json['defective_quantity']) ?? 0.0,
+      defectNotes: json['defect_notes']?.toString(),
       status: ItemStatus.values.firstWhere(
-        (e) => e.name == json['status'],
+        (e) => e.name == json['status']?.toString(),
         orElse: () => ItemStatus.pending,
       ),
-      isPieceBreakdown: json['is_piece_breakdown'] == true,
-      unitsPerPackage: (json['units_per_package'] as num?)?.toDouble(),
-      packageQuantity: (json['package_quantity'] as num?)?.toDouble(),
-      packageBuyPrice: (json['package_buy_price'] as num?)?.toDouble(),
+      isPieceBreakdown: json['is_piece_breakdown'] == true || json['is_piece_breakdown'] == 1,
+      unitsPerPackage: _toDoubleOrNull(json['units_per_package']),
+      packageQuantity: _toDoubleOrNull(json['package_quantity']),
+      packageBuyPrice: _toDoubleOrNull(json['package_buy_price']),
       pieceBarcode: json['piece_barcode']?.toString(),
     );
   }

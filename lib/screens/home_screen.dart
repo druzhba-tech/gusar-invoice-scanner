@@ -387,43 +387,51 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadData({bool syncWithServer = true, bool showNotification = false}) async {
-    if (_recentInvoices.isEmpty) {
+    if (_recentInvoices.isEmpty && mounted) {
       setState(() => _isLoading = true);
     }
-    final prefs = await SharedPreferences.getInstance();
-    int activeStoreId = _api.currentStoreId;
-    if (activeStoreId <= 0) {
-      activeStoreId = prefs.getInt('store_id') ?? 1;
-    }
-    final localDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
-    String storeName = _api.currentStoreName.isNotEmpty ? _api.currentStoreName : (prefs.getString('store_name') ?? 'Склад gusar.tj');
-    final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
-    final isAuth = prefs.getBool('is_authenticated') ?? false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      int activeStoreId = _api.currentStoreId;
+      if (activeStoreId <= 0) {
+        activeStoreId = prefs.getInt('store_id') ?? 1;
+      }
+      final localDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
+      final String storeName = _api.currentStoreName.isNotEmpty
+          ? _api.currentStoreName
+          : (prefs.getString('store_name') ?? 'Склад gusar.tj');
+      final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
+      final isAuth = prefs.getBool('is_authenticated') ?? false;
 
-    if (mounted) {
-      setState(() {
-        _recentInvoices = localDocs;
-        _storeName = storeName;
-        _loggedUser = loggedUser;
-        _isAuthenticated = isAuth;
-        _isLoading = false;
-      });
-    }
+      if (mounted) {
+        setState(() {
+          _recentInvoices = localDocs;
+          _storeName = storeName;
+          _loggedUser = loggedUser;
+          _isAuthenticated = isAuth;
+          _isLoading = false;
+        });
+      }
 
-    if (syncWithServer) {
-      try {
-        await _api.syncStoreInvoices(storeId: activeStoreId, fastOnly: true);
-        final syncedDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
-        if (mounted) {
-          setState(() {
-            _recentInvoices = syncedDocs;
-            _isLoading = false;
-          });
-          if (showNotification) {
-            TopNotification.showSuccess(context, 'Статусы накладных магазина обновлены');
+      if (syncWithServer) {
+        try {
+          await _api.syncStoreInvoices(storeId: activeStoreId, fastOnly: true);
+          final syncedDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
+          if (mounted) {
+            setState(() {
+              _recentInvoices = syncedDocs;
+              _isLoading = false;
+            });
+            if (showNotification) {
+              TopNotification.showSuccess(context, 'Журнал накладных обновлён (${syncedDocs.length} док.)');
+            }
           }
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 

@@ -107,8 +107,21 @@ class ApiService {
     _isRefreshingToken = true;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username');
-      final savedPass = prefs.getString('saved_password');
+      String? savedUser = prefs.getString('saved_username') ?? prefs.getString('logged_username');
+      String? savedPass = prefs.getString('saved_password');
+
+      if (savedUser == null || savedPass == null || savedUser.isEmpty || savedPass.isEmpty) {
+        final accs = await getSavedAccounts(filterStoreId: currentStoreId);
+        for (final a in accs) {
+          final u = (a['username'] ?? '').toString().trim();
+          final p = (a['password'] ?? '').toString();
+          if (u.isNotEmpty && p.isNotEmpty) {
+            savedUser = u;
+            savedPass = p;
+            break;
+          }
+        }
+      }
 
       if (savedUser == null || savedPass == null || savedUser.isEmpty || savedPass.isEmpty) {
         _isRefreshingToken = false;
@@ -1459,17 +1472,37 @@ class ApiService {
   // Получение накладных конкретного поставщика из базы gusar.tj (отсортированных от новых к старым)
   Future<List<Map<String, dynamic>>> fetchSupplierPurchases(int supplierId, {int? storeId}) async {
     final sId = storeId ?? currentStoreId;
+    if (authToken == null || authToken!.isEmpty || authToken!.startsWith('session_')) {
+      await _trySilentReLogin();
+    }
     try {
-      final response = await _dio.get(
-        '/api/purchases',
-        queryParameters: {
-          'supplier_id': supplierId,
-          if (sId > 0) 'store_id': sId,
-          'limit': 100,
-        },
-      ).timeout(const Duration(seconds: 25));
+      Response? response;
+      try {
+        response = await _dio.get(
+          '/api/purchases',
+          queryParameters: {
+            'supplier_id': supplierId,
+            if (sId > 0) 'store_id': sId,
+            'limit': 200,
+          },
+        ).timeout(const Duration(seconds: 15));
+      } on DioException catch (dioErr) {
+        if (dioErr.response?.statusCode == 401) {
+          final ok = await _trySilentReLogin();
+          if (ok) {
+            response = await _dio.get(
+              '/api/purchases',
+              queryParameters: {
+                'supplier_id': supplierId,
+                if (sId > 0) 'store_id': sId,
+                'limit': 200,
+              },
+            ).timeout(const Duration(seconds: 15));
+          }
+        }
+      }
 
-      if (response.statusCode == 200 && response.data != null) {
+      if (response != null && response.statusCode == 200 && response.data != null) {
         dynamic raw = response.data;
         List<dynamic> items = [];
         if (raw is List) {
@@ -1480,15 +1513,22 @@ class ApiService {
           items = raw['data'];
         }
 
-        final list = items
+        var list = items
             .where((item) => item is Map)
             .map((item) => Map<String, dynamic>.from(item as Map))
+            .where((p) {
+              final pSupId = p['supplier_id'] is int ? p['supplier_id'] as int : int.tryParse(p['supplier_id']?.toString() ?? '');
+              if (pSupId != null && pSupId > 0) {
+                return pSupId == supplierId;
+              }
+              return true;
+            })
             .toList();
 
         // Сортируем: сверху самые последние/свежие, снизу более ранние
         list.sort((a, b) {
-          final dateA = DateTime.tryParse(a['purchase_date']?.toString() ?? a['created_at']?.toString() ?? '') ?? DateTime(2000);
-          final dateB = DateTime.tryParse(b['purchase_date']?.toString() ?? b['created_at']?.toString() ?? '') ?? DateTime(2000);
+          final dateA = DateTime.tryParse(a['purchase_date']?.toString() ?? a['date']?.toString() ?? a['created_at']?.toString() ?? '') ?? DateTime(2000);
+          final dateB = DateTime.tryParse(b['purchase_date']?.toString() ?? b['date']?.toString() ?? b['created_at']?.toString() ?? '') ?? DateTime(2000);
           return dateB.compareTo(dateA);
         });
 
@@ -1927,6 +1967,9 @@ class ApiService {
     }
 
     // 2. Запрашиваем список проведённых накладных магазина с сервера gusar.tj
+    if (authToken == null || authToken!.isEmpty || authToken!.startsWith('session_')) {
+      await _trySilentReLogin();
+    }
     List<Map<String, dynamic>> serverPurchases = [];
     try {
       Response? response;
@@ -1957,15 +2000,20 @@ class ApiService {
         } else if (raw is Map && raw['data'] is List) {
           list = raw['data'];
         }
-        serverPurchases = list
+        final allMapped = list
             .where((e) => e is Map)
             .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+        serverPurchases = allMapped
             .where((p) {
               if (p['store_id'] == null) return true;
               final pStoreId = int.tryParse(p['store_id'].toString());
               return pStoreId == null || pStoreId <= 0 || pStoreId == targetStoreId;
             })
             .toList();
+        if (serverPurchases.isEmpty && allMapped.isNotEmpty) {
+          serverPurchases = allMapped;
+        }
       }
     } catch (e) {
       print('syncStoreInvoices fetch purchases warning: $e');
@@ -2176,10 +2224,10 @@ class ApiService {
               ));
             }
           }
-        } else if (breakdownFetchedCount < 25) {
+        } else if (breakdownFetchedCount < (fastOnly ? 3 : 10)) {
           breakdownFetchedCount++;
           try {
-            final bdResp = await _dio.get('/api/purchases/$pId/sales-breakdown').timeout(const Duration(seconds: 5));
+            final bdResp = await _dio.get('/api/purchases/$pId/sales-breakdown').timeout(const Duration(seconds: 3));
             if (bdResp.statusCode == 200 && bdResp.data is Map && bdResp.data['items'] is List) {
               for (final rawItem in (bdResp.data['items'] as List)) {
                 if (rawItem is Map) {
