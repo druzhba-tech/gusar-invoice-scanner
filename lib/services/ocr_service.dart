@@ -417,19 +417,24 @@ class OcrService {
 
 3. ПРАВИЛА ДЛЯ СТОЛБЦОВ ЦЕН И СКИДОК:
    - Если в таблице есть столбцы "Цена без скидки", "Скидка %" и "Цена со скидкой" (или "Отпускная цена") -> в "buy_price" СТРОГО извлекай ФАКТИЧЕСКУЮ ЦЕНУ ЗА 1 ШТ ПОСЛЕ СКИДКИ (цену к оплате)!
+   - Если указана "Цена" (например 5 сомони) и "Скидка %" (например 5%), то "buy_price" = Цена со скидкой (4.75), а "total_price" = Итого со скидкой (Кол-во * 4.75).
    - Никогда не путай цену за единицу и общую сумму по строке!
 
 4. ПРАВИЛА ДЛЯ СТОЛБЦОВ КОЛИЧЕСТВА И УПАКОВОК:
-   - Если в накладной есть "Кол-во мест" (коробок) и "В одном месте" (штук в коробке) или "Итого шт." -> в "quantity" СТРОГО извлекай ИТОГОВОЕ КОЛИЧЕСТВО В БАЗОВЫХ ЕДИНИЦАХ (штуки, килограммы, литры)!
-   - Не путай числа из названий товаров (например "17", "710N", "2448", "450г") с количеством!
+   - Если в накладной есть столбец "Упаковка" / "Кол-во мест" (например: 1 упаковка) и столбец "Кол-во" (например: 6 шт, цена 5, скидка 5%, цена со скидкой 4.75, итого 28.50) -> в "quantity" СТРОГО извлекай ИТОГОВОЕ КОЛИЧЕСТВО ШТУК (например 6 шт, либо Упак * Шт_в_упак, чтобы quantity * buy_price == total_price)!
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО включать количество упаковок ("1 упаковка", "1 уп") в название товара "name"!
+   - Не путай числа из названий товаров (например "17", "710N", "2448", "450г", "200 гр/18 шт") с количеством!
 
-5. СТРОГОЕ МАТЕМАТИЧЕСКОЕ РАВЕНСТВО:
-   - Для КАЖДОЙ позиции ОБЯЗАТЕЛЬНО должно выполняться: "total_price" = "quantity" * "buy_price" (с учетом округлений до 2 знаков).
+5. БОНУСНЫЕ / СКИДОЧНЫЕ ТОВАРЫ БЕЗ ЦЕНЫ В КОНЦЕ СПИСКА:
+   - Если в конце списка есть товары, выданные в качестве скидки/бонуса/акции БЕЗ ЦЕНЫ (или с ценой 0 / скидкой 100%, где указано только количество) -> обязательно включи их в массив "items" с их точным наименованием "name", количеством "quantity", и "buy_price": 0, "total_price": 0 (система автоматически прибавит это количество к основному товару сверху и пересчитает себестоимость).
+
+6. СТРОГОЕ МАТЕМАТИЧЕСКОЕ РАВЕНСТВО:
+   - Для КАЖДОЙ платной позиции ОБЯЗАТЕЛЬНО должно выполняться: "total_price" = "quantity" * "buy_price" (с учетом округлений до 2 знаков).
    - "total_amount" документа СТРОГО равен сумме всех "total_price" (значение из строки "Итого" / "Ҳамагӣ").
 
-6. СТОЛБЕЦ ЕДИНИЦ ИЗМЕРЕНИЯ И НАИМЕНОВАНИЕ:
-   - Значения "шт", "шт.", "wT.", "wT", "дона", "компл", "кг", "литр", "упак" — это СТРОГО "unit" (единица измерения)!
-   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО помещать "wT.", "шт", "дона" в название товара "name"!
+7. СТОЛБЕЦ ЕДИНИЦ ИЗМЕРЕНИЯ И НАИМЕНОВАНИЕ:
+   - Значения "шт", "шт.", "wT.", "wT", "дона", "компл", "кг", "литр", "упак", "упаковка" — это СТРОГО "unit" (единица измерения)!
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО помещать "wT.", "шт", "дона", "упаковка" в название товара "name"!
    - Название товара ("name") — это ВСЕГДА полное текстовое наименование из графы Товар/Наименование (например: "Принтер HP LaserJet 1020 C5911A A4", "Сканер Bear Paw 2448 TA Pro").
 
 Верни СТРОГО валидный JSON:
@@ -616,7 +621,7 @@ class OcrService {
         }
       }
 
-      if (qty > 0 && (price > 0 || total > 0)) {
+      if (qty > 0 && (price > 0 || total > 0 || (price == 0 && total == 0 && qty <= 500))) {
         items.add(InvoiceItem(
           id: 'item_${DateTime.now().millisecondsSinceEpoch}_$i',
           rawName: rawName,
@@ -628,6 +633,9 @@ class OcrService {
         ));
       }
     }
+
+    // Объединение бесплатных (бонусных/скидочных) товаров без цены с основными позициями выше
+    _mergeBonusItemsIntoMainItems(items);
 
     final double computedTotal = items.fold<double>(0.0, (double sum, i) => sum + i.totalPrice);
     final double totalAmount = (extractedTotalFromFooter > 0 && (extractedTotalFromFooter - computedTotal).abs() <= 1.0)
@@ -844,9 +852,9 @@ class OcrService {
         row = row.replaceAllMapped(RegExp(r'\b(\d{2,3}) (\d{3}[\.,]\d{2})\b'), (m) => '${m[1]}${m[2]}');
 
         final allMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\s*(%)?').allMatches(row).toList();
-        if (allMatches.length >= 2) {
+        if (allMatches.isNotEmpty) {
           final colMatches = _extractTrailingColumnMatches(row, allMatches);
-          if (colMatches.length < 2) continue;
+          if (colMatches.isEmpty) continue;
 
           final List<double> colNums = colMatches
               .map((m) => double.tryParse(m.group(1)!.replaceAll(',', '.')) ?? 0.0)
@@ -858,17 +866,47 @@ class OcrService {
           // Поиск явного количества с единицей измерения ТОЛЬКО в числовых колонках справа
           double? explicitQty;
           final tailPart = row.substring(colMatches.first.start);
-          final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(tailPart);
+          final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|штук|кг|л|литр|дона|д-на)\b', caseSensitive: false).firstMatch(tailPart);
           if (unitMatch != null) {
             explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
           }
 
-          final solved = _solveColumnsWithDiscount(colNums, colIsPct, explicitQty: explicitQty);
+          final String afterLastNum = row.substring(colMatches.last.end);
+          final bool endsWithQtyUnitOnly = RegExp(
+            r'^\s*(?:шт|штук|дона|д-на|уп|упак|упаковка|кор|коробка|блок|ящ|пач)\.?[\s\|\-\—]*$',
+            caseSensitive: false,
+          ).hasMatch(afterLastNum);
+
+          _SolvedRowMath solved;
+          if (colMatches.length == 1) {
+            // Строка бонусного/скидочного товара без цены (указано только количество в конце строки)
+            final singleQty = colNums[0];
+            if (singleQty <= 0 || singleQty > 500 || colIsPct[0]) continue;
+            solved = _SolvedRowMath(0, singleQty, 0.0, 0.0);
+          } else if (endsWithQtyUnitOnly && colMatches.length <= 3) {
+            // Строка без цены вида: "Товар   1 упаковка   6 шт" или "Товар   6 шт"
+            final bonusQty = explicitQty ?? colNums.last;
+            if (bonusQty <= 0 || bonusQty > 1000) continue;
+            solved = _SolvedRowMath(0, bonusQty, 0.0, 0.0);
+          } else {
+            solved = _solveColumnsWithDiscount(colNums, colIsPct, explicitQty: explicitQty);
+          }
+
           final int firstNumIndex = colMatches[solved.usedStartIndex].start;
           var rawName = row.substring(0, firstNumIndex).trim();
 
           rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
           rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+          // Убираем случайно оставшиеся в конце названия служебные слова колонки упаковки/штук
+          rawName = rawName
+              .replaceAll(
+                RegExp(
+                  r'[\s,\-\|]+(?:упаковка|упак|уп|коробка|кор|ящ|блок|штук|шт|дона|цена|скидка)\.?$',
+                  caseSensitive: false,
+                ),
+                '',
+              )
+              .trim();
 
           // Автокоррекция частых ошибок латинского сканера ML Kit
           rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
@@ -886,14 +924,24 @@ class OcrService {
 
           // Интеллектуальное декодирование псевдо-латиницы в человеческий русский язык и срез артикулов
           final decodedName = CyrillicDecoder.decode(rawName);
+          final cleanItemName = decodedName.isNotEmpty ? decodedName : rawName;
 
           if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
             result.add(InvoiceItem(
               id: 'item_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
-              rawName: decodedName.isNotEmpty ? decodedName : rawName,
+              rawName: cleanItemName,
               quantity: qty,
               buyPrice: price,
               totalPrice: total > 0 ? total : double.parse((qty * price).toStringAsFixed(2)),
+            ));
+          } else if (price == 0.0 && total == 0.0 && qty > 0.001 && qty <= 1000.0) {
+            // Бонусный / скидочный товар без цены (в конце списка) — будет объединён с основным товаром выше
+            result.add(InvoiceItem(
+              id: 'item_bonus_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
+              rawName: cleanItemName,
+              quantity: qty,
+              buyPrice: 0.0,
+              totalPrice: 0.0,
             ));
           }
         }
@@ -910,6 +958,9 @@ class OcrService {
     if (items.isEmpty) {
       items.addAll(extractItemsFromRange(0, unifiedRows.length));
     }
+
+    // Объединение бесплатных (бонусных/скидочных) товаров без цены с основными товарами сверху
+    _mergeBonusItemsIntoMainItems(items);
 
     final double computedTotal = items.fold<double>(0.0, (s, i) => s + i.totalPrice);
     final double finalTotal = (detectedTotal > 0 && computedTotal > 0 && (detectedTotal - computedTotal).abs() / computedTotal < 0.25)
@@ -929,15 +980,145 @@ class OcrService {
     );
   }
 
-  /// Выделяет все числовые колонки справа от наименования товара (от 2 до 6 колонок: Кол-во, Цена, Скидка %, Сумма без скидки, Сумма со скидкой),
+  /// Находит товары без цены (выданные в качестве скидки/бонуса/акции, обычно в конце списка),
+  /// прибавляет их количество к тому же товару сверху и пересчитывает цену покупки:
+  /// buyPrice = totalPrice / (paidQty + bonusQty).
+  void _mergeBonusItemsIntoMainItems(List<InvoiceItem> items) {
+    if (items.isEmpty) return;
+
+    String normName(String s) {
+      return s
+          .toLowerCase()
+          .replaceAll('ё', 'е')
+          .replaceAll(
+            RegExp(
+              r'\b(?:бонус|акция|скидка|в\s+скидку|подарок|бесплатно|промо|шт|уп|упак|упаковка|кор|дона)\b',
+              caseSensitive: false,
+            ),
+            ' ',
+          )
+          .replaceAllMapped(RegExp(r'(\d),(\d)'), (m) => '${m[1]}.${m[2]}')
+          .replaceAll(RegExp(r'[^a-zA-Zа-яА-Я0-9ғқӣӯҳҷ\.]+'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+    }
+
+    Set<String> extractNumbers(String s) {
+      return RegExp(r'\b\d+(?:\.\d+)?\b')
+          .allMatches(s)
+          .map((m) => m.group(0)!)
+          .toSet();
+    }
+
+    double calcSimilarity(String a, String b) {
+      final na = normName(a);
+      final nb = normName(b);
+      if (na.isEmpty || nb.isEmpty) return 0.0;
+      if (na == nb) return 1.0;
+
+      final numsA = extractNumbers(na);
+      final numsB = extractNumbers(nb);
+      double numBonus = 0.0;
+      if (numsA.isNotEmpty && numsB.isNotEmpty) {
+        final commonNums = numsA.intersection(numsB);
+        if (commonNums.isNotEmpty) {
+          numBonus = 0.15;
+        } else {
+          // Если в обоих названиях указана разная граммовка/литраж (например 140г vs 70г) — штрафуем
+          numBonus = -0.35;
+        }
+      }
+
+      if (na.length >= 4 && nb.length >= 4 && (na.contains(nb) || nb.contains(na))) {
+        return (0.90 + numBonus).clamp(0.0, 1.0);
+      }
+
+      final wordsA = na.split(' ').where((w) => w.length >= 2).toSet();
+      final wordsB = nb.split(' ').where((w) => w.length >= 2).toSet();
+      double wordSim = 0.0;
+      if (wordsA.isNotEmpty && wordsB.isNotEmpty) {
+        final inter = wordsA.intersection(wordsB).length;
+        wordSim = (2.0 * inter) / (wordsA.length + wordsB.length);
+      }
+
+      Set<String> trigrams(String str) {
+        final sPad = '  $str  ';
+        final res = <String>{};
+        for (int i = 0; i <= sPad.length - 3; i++) {
+          res.add(sPad.substring(i, i + 3));
+        }
+        return res;
+      }
+
+      final triA = trigrams(na);
+      final triB = trigrams(nb);
+      final triInter = triA.intersection(triB).length;
+      final triSim = (triA.isEmpty || triB.isEmpty)
+          ? 0.0
+          : (2.0 * triInter) / (triA.length + triB.length);
+
+      return (0.55 * triSim + 0.45 * wordSim + numBonus).clamp(0.0, 1.0);
+    }
+
+    final List<InvoiceItem> paidItems = items
+        .where((it) => it.buyPrice > 0.001 && it.totalPrice > 0.001 && it.quantity > 0)
+        .toList();
+    final List<InvoiceItem> bonusItems = items
+        .where((it) => (it.buyPrice <= 0.001 || it.totalPrice <= 0.001) && it.quantity > 0)
+        .toList();
+
+    if (bonusItems.isEmpty) return;
+
+    for (final bonus in bonusItems) {
+      InvoiceItem? bestMatch;
+      double bestScore = 0.0;
+
+      for (final paid in paidItems) {
+        final score = calcSimilarity(bonus.rawName, paid.rawName);
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = paid;
+        }
+      }
+
+      if (bestMatch != null && bestScore >= 0.50) {
+        final double newQty = double.parse((bestMatch.quantity + bonus.quantity).toStringAsFixed(3));
+        if (newQty > 0) {
+          bestMatch.quantity = newQty;
+          // Итоговая сумма данного товара делится на общее количество с учётом бонусных (скидочных) товаров
+          bestMatch.buyPrice = double.parse((bestMatch.totalPrice / newQty).toStringAsFixed(2));
+        }
+      }
+    }
+
+    // Удаляем бонусные строки без цены из отдельного списка (они уже добавлены к основным товарам выше)
+    items.removeWhere((it) => it.buyPrice <= 0.001 || it.totalPrice <= 0.001);
+  }
+
+  /// Выделяет все числовые колонки справа от наименования товара (до 8 колонок: Упаковка, Кол-во, Цена, Сумма без скидки, Скидка %, Цена со скидкой, Итого),
   /// не захватывая числа фасовки внутри названия (например: "200 гр/18 шт", "140г х 19", "250 гр х 20 шт").
   List<RegExpMatch> _extractTrailingColumnMatches(String row, List<RegExpMatch> allMatches) {
-    if (allMatches.length < 2) return allMatches;
+    if (allMatches.isEmpty) return [];
 
-    final List<RegExpMatch> selected = [allMatches.last];
+    final last = allMatches.last;
+    final String beforeLast = row.substring(0, last.start);
+    final String afterLast = row.substring(last.end);
+
+    // Если перед последним числом вообще нет букв или это вес/фасовка в самом конце оборванного названия -> пусто
+    if (!RegExp(r'[a-zA-Zа-яА-ЯёЁғқӣӯҳҷҒҚӢӮҲҶ]{2,}').hasMatch(beforeLast)) {
+      return [];
+    }
+    if (RegExp(r'^\s*(?:гр|г|мл|мг|см|мм)(?:\b|[^а-яА-Яa-zA-Z])', caseSensitive: false).hasMatch(afterLast)) {
+      return [];
+    }
+    if (RegExp(r'(?:[\/\*×xхX\-№#]|\bпо)\s*$', caseSensitive: false).hasMatch(beforeLast)) {
+      return [];
+    }
+
+    final List<RegExpMatch> selected = [last];
 
     for (int k = allMatches.length - 2; k >= 0; k--) {
-      if (selected.length >= 6) break;
+      if (selected.length >= 8) break;
 
       final curr = allMatches[k];
       final next = allMatches[k + 1];
@@ -954,16 +1135,22 @@ class OcrService {
         break;
       }
 
+      // 2б. Если после числа идёт "л" / "литр" / "кг", а справа уже есть >= 3 числовых колонок (например "Кола 1.5 л | 1 упак | 6 шт | 5.00 | 30.00") -> это объём/вес в названии!
+      if (selected.length >= 3 &&
+          RegExp(r'^\s*(?:л|литр|кг)(?:\b|[^а-яА-Яa-zA-Z])', caseSensitive: false).hasMatch(between)) {
+        break;
+      }
+
       // 3. Если между этим числом и следующим есть знак дроби или умножения фасовки ("/", "х", "x", "*") -> это фасовка ("200 гр/18", "140г х 19")!
       if (RegExp(r'[\/\*×xхX]').hasMatch(between)) {
         break;
       }
 
-      // 4. Если между числами есть обычный текст (кроме допустимых единиц измерения и валют колонок: шт, кг, уп, кор, тjs, сом, %) -> стоп!
+      // 4. Если между числами есть обычный текст (кроме допустимых единиц измерения, упаковки, скидки и валют колонок) -> стоп!
       final cleanedBetween = between
           .replaceAll(
             RegExp(
-              r'\b(?:шт|уп|упак|кор|пач|бл|блок|кг|л|литр|дона|д-на|компл|tjs|сом|сомони|руб|р|usd|wt|wт)\b',
+              r'\b(?:упаковка|упак|уп|коробка|кор|ящик|ящ|мест|блок|бл|пачка|пач|штук|шт|кг|л|литр|дона|д-на|компл|цена|скидка|со\s+скидкой|итого|сумма|всего|tjs|сом|сомони|руб|р|usd|wt|wт)\b',
               caseSensitive: false,
             ),
             '',
@@ -981,17 +1168,16 @@ class OcrService {
       selected.insert(0, curr);
     }
 
-    // Если по какой-то причине выбралось только 1 число, берём последние 2 числа строки
-    if (selected.length < 2 && allMatches.length >= 2) {
-      return allMatches.sublist(allMatches.length - 2);
-    }
     return selected;
   }
 
-  /// Математический решатель колонок строки накладной с поддержкой скидок (% и суммовых)
+  /// Математический решатель колонок строки накладной с поддержкой:
+  /// - столбца Упаковки (например: 1 упаковка, 6 шт, цена 5 сомони, скидка 5%, цена со скидкой 4.75, итого 28.50)
+  /// - скидок (% и суммовых)
+  /// - бонусных/скидочных строк с нулевой ценой
   /// Возвращает:
-  /// - usedStartIndex: с какого индекса в colNums начинаются реальные колонки таблицы
-  /// - qty: количество
+  /// - usedStartIndex: с какого индекса в colNums начинаются реальные колонки таблицы (включая столбец упаковки, чтобы он не попадал в название)
+  /// - qty: количество в штуках/базовых единицах
   /// - buyPrice: цена за 1 ед. С УЧЁТОМ СКИДКИ (если скидка есть)
   /// - totalPrice: итоговая сумма по строке С УЧЁТОМ СКИДКИ
   _SolvedRowMath _solveColumnsWithDiscount(
@@ -1005,102 +1191,184 @@ class OcrService {
 
     double r2(double v) => double.parse(v.toStringAsFixed(2));
 
+    // Решает колонки [Кол-во, Цена, ...] без ведущего столбца Упаковки
+    _SolvedRowMath? tryCoreColumns(int startIdx, List<double> m, List<bool> mp) {
+      final int len = m.length;
+      if (len < 2) return null;
+
+      // Бонусные строки с нулевой ценой и суммой: [Кол-во, 0, 0] или [Кол-во, Цена, 100%, 0]
+      if (!mp[0] && m[0] > 0 && m[0] <= 1000 && m.last == 0.0 && !mp.last) {
+        if ((len == 2 && m[1] == 0.0) ||
+            (len == 3 && m[1] == 0.0 && m[2] == 0.0) ||
+            (len >= 3 && m.any((v) => v == 100.0)) ||
+            (len >= 4 && m[len - 2] == 0.0)) {
+          return _SolvedRowMath(startIdx, m[0], 0.0, 0.0);
+        }
+      }
+
+      // --- 6 И БОЛЕЕ КОЛОНОК: [Кол-во, Цена_без_скидки, Сумма_без_скидки, Скидка%, Цена_со_скидкой, Итого_со_скидкой] ---
+      if (len >= 6) {
+        final double q = m[0];
+        final double lastVal = m[len - 1];
+        if (!mp[0] && q > 0 && lastVal > 0 && !mp[len - 1]) {
+          // Проверяем [Кол-во, ..., Цена_со_скидкой, Итого_со_скидкой]
+          final double prevVal = m[len - 2];
+          if (!mp[len - 2] && prevVal > 0 && eq(q * prevVal, lastVal)) {
+            return _SolvedRowMath(startIdx, q, r2(lastVal / q), r2(lastVal));
+          }
+          // Проверяем [Кол-во, Цена, Сумма_без_скидки, Скидка%, ..., Итого_со_скидкой]
+          if (!mp[1] && m[1] > 0 && m[2] > 0 && eq(q * m[1], m[2]) && lastVal <= m[2] * 1.01 && lastVal >= m[2] * 0.35) {
+            return _SolvedRowMath(startIdx, q, r2(lastVal / q), r2(lastVal));
+          }
+        }
+      }
+
+      // --- 5 КОЛОНОК ---
+      if (len == 5) {
+        final double q = m[0];
+        // Вариант 5A: [Кол-во, Цена_без_скидки, Скидка%, Цена_со_скидкой, Итого_со_скидкой]
+        // Пример: 6 шт | 5.00 | 5% | 4.75 | 28.50
+        if (!mp[0] && q > 0 && m[3] > 0 && m[4] > 0 && !mp[3] && !mp[4] && eq(q * m[3], m[4])) {
+          return _SolvedRowMath(startIdx, q, r2(m[4] / q), r2(m[4]));
+        }
+        if (!mp[0] && q > 0 && m[1] > 0 && m[2] >= 0 && m[2] < 100 && m[4] > 0 && !mp[4]) {
+          final expectedDiscTotal = q * m[1] * (1.0 - m[2] / 100.0);
+          if (eq(expectedDiscTotal, m[4])) {
+            return _SolvedRowMath(startIdx, q, r2(m[4] / q), r2(m[4]));
+          }
+        }
+
+        // Вариант 5B: [Кол-во, Цена, Сумма_без_скидки, Скидка(% или сумма), Сумма_со_скидкой]
+        if (!mp[0] && !mp[1] && q > 0 && m[1] > 0 && m[2] > 0 && eq(q * m[1], m[2])) {
+          final lastVal = m[4];
+          if (!mp[4] && lastVal > 0 && lastVal <= m[2] * 1.01 && lastVal >= m[2] * 0.35) {
+            return _SolvedRowMath(startIdx, q, r2(lastVal / q), r2(lastVal));
+          } else if (m[3] > 0 && m[3] < 100) {
+            final discTotal = r2(m[2] * (1.0 - m[3] / 100.0));
+            return _SolvedRowMath(startIdx, q, r2(discTotal / q), discTotal);
+          }
+          return _SolvedRowMath(startIdx, q, r2(m[1]), r2(m[2]));
+        }
+      }
+
+      // --- 4 КОЛОНКИ: [m0, m1, m2, m3] ---
+      if (len == 4) {
+        final double q = m[0];
+        // Вариант 4A: [Кол-во, Цена, Скидка %, Сумма со скидкой]
+        // Пример: 6 | 5.00 | 5% | 28.50  или  8 | 60.00 | 7.5% | 444.00
+        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > 0 && m[2] >= 0 && m[2] < 100 && m[3] > 0) {
+          final expectedDiscTotal = q * m[1] * (1.0 - m[2] / 100.0);
+          if (eq(expectedDiscTotal, m[3])) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+        }
+
+        // Вариант 4B: [Кол-во, Скидка %, Цена, Сумма со скидкой]
+        if (!mp[0] && !mp[2] && !mp[3] && q > 0 && m[2] > 0 && m[1] >= 0 && m[1] < 100 && m[3] > 0) {
+          final expectedDiscTotal = q * m[2] * (1.0 - m[1] / 100.0);
+          if (eq(expectedDiscTotal, m[3])) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+        }
+
+        // Вариант 4C: [Кол-во, Цена без скидки, Цена со скидкой, Сумма со скидкой]
+        // Пример: 6 | 5.00 | 4.75 | 28.50
+        if (!mp[0] && !mp[2] && !mp[3] && q > 0 && m[2] > 0 && m[2] <= m[1] * 1.01 && m[3] > 0 && eq(q * m[2], m[3])) {
+          return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+        }
+
+        // Вариант 4D: [Кол-во, Цена, Сумма скидки, Сумма со скидкой]
+        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > 0 && m[2] >= 0 && m[3] > 0 && m[2] < q * m[1]) {
+          if (eq(q * m[1] - m[2], m[3])) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+        }
+
+        // Вариант 4E: [Кол-во, Цена, Сумма без скидки, Скидка (0, % или Сумма со скидкой)]
+        if (!mp[0] && !mp[1] && !mp[2] && q > 0 && m[1] > 0 && m[2] > 0 && eq(q * m[1], m[2])) {
+          if (m[3] == 0) {
+            return _SolvedRowMath(startIdx, q, r2(m[1]), r2(m[2]));
+          } else if (mp[3] || (m[3] > 0 && m[3] <= 50 && m[3] < m[2] * 0.5)) {
+            final discTotal = r2(m[2] * (1.0 - m[3] / 100.0));
+            return _SolvedRowMath(startIdx, q, r2(discTotal / q), discTotal);
+          } else if (m[3] > 0 && m[3] <= m[2] && m[3] >= m[2] * 0.45) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+        }
+
+        // Вариант 4F: [Кол-во, Цена, Скидка %, Цена со скидкой] (без отдельного столбца суммы)
+        // Пример: 6 шт | 5.00 | 5% | 4.75 -> Цена со скидкой = 4.75, Итого = 6 * 4.75 = 28.50
+        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > 0 && m[2] > 0 && m[2] < 100 && m[3] > 0 && m[3] < m[1]) {
+          final expectedDiscPrice = m[1] * (1.0 - m[2] / 100.0);
+          if (eq(expectedDiscPrice, m[3], 0.02, 0.10)) {
+            final discPrice = r2(m[3]);
+            return _SolvedRowMath(startIdx, q, discPrice, r2(q * discPrice));
+          }
+        }
+      }
+
+      // --- 3 КОЛОНКИ: [m0, m1, m2] ---
+      if (len == 3) {
+        final double q = m[0];
+        if (!mp[0] && !mp[1] && !mp[2] && q > 0 && m[1] > 0 && m[2] > 0) {
+          // Вариант 3A: Стандартный [Кол-во, Цена, Сумма]
+          if (eq(q * m[1], m[2])) {
+            return _SolvedRowMath(startIdx, q, r2(m[1]), r2(m[2]));
+          }
+          // Вариант 3B: [Кол-во, Сумма, Цена]
+          if (eq(q * m[2], m[1])) {
+            return _SolvedRowMath(startIdx, q, r2(m[2]), r2(m[1]));
+          }
+          // Вариант 3C: [Кол-во, Цена без скидки, Сумма со скидкой]
+          final undiscounted = q * m[1];
+          if (m[2] < undiscounted && m[2] >= undiscounted * 0.50 && q <= 2000) {
+            return _SolvedRowMath(startIdx, q, r2(m[2] / q), r2(m[2]));
+          }
+        }
+        // Вариант 3D: [Кол-во, Цена, Скидка %] (со знаком %)
+        if (!mp[0] && !mp[1] && mp[2] && q > 0 && m[1] > 0 && m[2] > 0 && m[2] < 100) {
+          final discPrice = r2(m[1] * (1.0 - m[2] / 100.0));
+          return _SolvedRowMath(startIdx, q, discPrice, r2(q * discPrice));
+        }
+      }
+
+      return null;
+    }
+
     _SolvedRowMath? tryExactSlice(int s) {
       final c = nums.sublist(s);
       final p = isPct.sublist(s);
       final int len = c.length;
 
-      // --- 5 ИЛИ 6 КОЛОНОК ---
-      if (len >= 5) {
-        // Вариант 5A: [Кол-во, Цена, Сумма_без_скидки, Скидка(% или сумма), ..., Сумма_со_скидкой]
-        if (!p[0] && !p[1] && c[0] > 0 && c[1] > 0 && c[2] > 0 && eq(c[0] * c[1], c[2])) {
-          final qty = c[0];
-          final lastVal = c[len - 1];
-          if (!p[len - 1] && lastVal > 0 && lastVal <= c[2] * 1.01 && lastVal >= c[2] * 0.4) {
-            return _SolvedRowMath(s, qty, r2(lastVal / qty), r2(lastVal));
-          } else if (c[3] > 0 && c[3] < 100) {
-            final discTotal = r2(c[2] * (1.0 - c[3] / 100.0));
-            return _SolvedRowMath(s, qty, r2(discTotal / qty), discTotal);
-          }
-          return _SolvedRowMath(s, qty, r2(c[1]), r2(c[2]));
+      // 1. Сначала пробуем решить c[0..] как [Кол-во, Цена, ...]
+      final direct = tryCoreColumns(s, c, p);
+      if (direct != null) return direct;
+
+      // 2. Если есть столбец УПАКОВКИ: c[0] = Кол-во упаковок (например: "1 упаковка, 6 шт, цена 5, скидка 5%, цена со скидкой 4.75, итого 28.50")
+      // ВАЖНО: возвращаем usedStartIndex = s, чтобы число упаковок ("1") НЕ попадало в название товара!
+      if (len >= 4 && !p[0] && c[0] >= 1 && c[0] <= 100 && c[0] == c[0].roundToDouble()) {
+        // Случай Упак-А: c[1] уже содержит общее количество штук (например: 1 упак, 6 шт, 5.00, 5%, 4.75, 28.50)
+        final packDirect = tryCoreColumns(s, c.sublist(1), p.sublist(1));
+        if (packDirect != null) {
+          return packDirect;
         }
 
-        // Вариант 5B: [Кол-во, Цена_без_скидки, Скидка%, Цена_со_скидкой, Сумма_со_скидкой]
-        if (!p[0] && c[0] > 0 && c[3] > 0 && c[4] > 0 && eq(c[0] * c[3], c[4])) {
-          return _SolvedRowMath(s, c[0], r2(c[3]), r2(c[4]));
-        }
-
-        // Вариант 5C: [Мест/Упак, В_упак, Кол-во, Цена, Сумма]
-        if (!p[2] && c[2] > 0 && c[3] > 0 && c[4] > 0 && eq(c[2] * c[3], c[4])) {
-          final lastVal = c[len - 1];
-          final total = (len > 5 && lastVal > 0 && lastVal <= c[4]) ? lastVal : c[4];
-          return _SolvedRowMath(s, c[2], r2(total / c[2]), r2(total));
-        }
-      }
-
-      // --- 4 КОЛОНКИ: [c0, c1, c2, c3] ---
-      if (len == 4) {
-        // Вариант 4A: [Кол-во, Цена, Скидка %, Сумма со скидкой]
-        // Пример: 8 | 60.00 | 7.5% | 444.00  (или Скидка = 0%: 8 | 7.50 | 0 | 60.00)
-        if (!p[0] && !p[1] && !p[3] && c[0] > 0 && c[1] > 0 && c[2] >= 0 && c[2] < 100 && c[3] > 0) {
-          final expectedDiscTotal = c[0] * c[1] * (1.0 - c[2] / 100.0);
-          if (eq(expectedDiscTotal, c[3])) {
-            return _SolvedRowMath(s, c[0], r2(c[3] / c[0]), r2(c[3]));
+        // Случай Упак-Б: c[0] = кол-во упаковок, c[1] = штук в 1 упаковке, а сумма посчитана за (c[0] * c[1]) штук
+        if (!p[1] && c[1] >= 1 && c[1] <= 500) {
+          final double totalPieces = c[0] * c[1];
+          final List<double> multipliedCols = [totalPieces, ...c.sublist(2)];
+          final List<bool> multipliedPct = [false, ...p.sublist(2)];
+          final packMultiplied = tryCoreColumns(s, multipliedCols, multipliedPct);
+          if (packMultiplied != null) {
+            return packMultiplied;
           }
         }
 
-        // Вариант 4B: [Кол-во, Скидка %, Цена, Сумма со скидкой]
-        // Пример: 8 | 7.5% | 60.00 | 444.00
-        if (!p[0] && !p[2] && !p[3] && c[0] > 0 && c[2] > 0 && c[1] >= 0 && c[1] < 100 && c[3] > 0) {
-          final expectedDiscTotal = c[0] * c[2] * (1.0 - c[1] / 100.0);
-          if (eq(expectedDiscTotal, c[3])) {
-            return _SolvedRowMath(s, c[0], r2(c[3] / c[0]), r2(c[3]));
-          }
-        }
-
-        // Вариант 4C: [Кол-во, Цена без скидки, Цена со скидкой, Сумма со скидкой]
-        if (!p[0] && !p[2] && !p[3] && c[0] > 0 && c[2] > 0 && c[2] <= c[1] && c[3] > 0 && eq(c[0] * c[2], c[3])) {
-          return _SolvedRowMath(s, c[0], r2(c[2]), r2(c[3]));
-        }
-
-        // Вариант 4D: [Кол-во, Цена, Сумма скидки, Сумма со скидкой]
-        if (!p[0] && !p[1] && !p[3] && c[0] > 0 && c[1] > 0 && c[2] >= 0 && c[3] > 0 && c[2] < c[0] * c[1]) {
-          if (eq(c[0] * c[1] - c[2], c[3])) {
-            return _SolvedRowMath(s, c[0], r2(c[3] / c[0]), r2(c[3]));
-          }
-        }
-
-        // Вариант 4E: [Кол-во, Цена, Сумма без скидки, Скидка (0, % или Сумма со скидкой)]
-        // Пример: 8 | 7.50 | 60.00 | 0  или  8 | 7.50 | 60.00 | 5%  или  8 | 7.50 | 60.00 | 57.00
-        if (!p[0] && !p[1] && !p[2] && c[0] > 0 && c[1] > 0 && c[2] > 0 && eq(c[0] * c[1], c[2])) {
-          final qty = c[0];
-          if (c[3] == 0) {
-            return _SolvedRowMath(s, qty, r2(c[1]), r2(c[2]));
-          } else if (p[3] || (c[3] > 0 && c[3] <= 50 && c[3] < c[2] * 0.5)) {
-            final discTotal = r2(c[2] * (1.0 - c[3] / 100.0));
-            return _SolvedRowMath(s, qty, r2(discTotal / qty), discTotal);
-          } else if (c[3] > 0 && c[3] <= c[2] && c[3] >= c[2] * 0.45) {
-            return _SolvedRowMath(s, qty, r2(c[3] / qty), r2(c[3]));
-          }
-          return _SolvedRowMath(s, qty, r2(c[1]), r2(c[2]));
-        }
-      }
-
-      // --- 3 КОЛОНКИ: [c0, c1, c2] ---
-      if (len == 3) {
-        // Вариант 3A: Стандартный [Кол-во, Цена, Сумма]
-        if (!p[0] && !p[1] && !p[2] && c[0] > 0 && c[1] > 0 && c[2] > 0) {
-          if (eq(c[0] * c[1], c[2])) {
-            return _SolvedRowMath(s, c[0], r2(c[1]), r2(c[2]));
-          }
-          // Вариант 3B: [Кол-во, Сумма, Цена]
-          if (eq(c[0] * c[2], c[1])) {
-            return _SolvedRowMath(s, c[0], r2(c[2]), r2(c[1]));
-          }
-          // Вариант 3C: [Кол-во, Цена без скидки, Сумма со скидкой] (когда скидка уже вычтена в итоговой сумме)
-          final undiscounted = c[0] * c[1];
-          if (c[2] < undiscounted && c[2] >= undiscounted * 0.50 && c[0] <= 2000) {
-            return _SolvedRowMath(s, c[0], r2(c[2] / c[0]), r2(c[2]));
+        // Случай Упак-В: [Упак, Шт_в_упак, Всего_шт, Цена, ...] где c[0] * c[1] == c[2]
+        if (len >= 5 && !p[1] && !p[2] && eq(c[0] * c[1], c[2], 0.01, 0.05)) {
+          final packThree = tryCoreColumns(s, c.sublist(2), p.sublist(2));
+          if (packThree != null) {
+            return packThree;
           }
         }
       }
@@ -1108,8 +1376,8 @@ class OcrService {
       return null;
     }
 
-    // 1. Сначала пробуем решить с самого первого найденного числа (s = 0), затем со сдвигом (если s = 0 было частью названия товара)
-    for (int s = 0; s <= nums.length - 3; s++) {
+    // 1. Пробуем решить с самого первого найденного числа колонки (s = 0), затем со сдвигом
+    for (int s = 0; s <= nums.length - 2; s++) {
       final solved = tryExactSlice(s);
       if (solved != null) {
         return solved;
