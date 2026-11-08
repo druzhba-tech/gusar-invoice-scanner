@@ -10,6 +10,7 @@ import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
 import '../services/matching_service.dart';
 import '../services/invoice_template_service.dart';
+import '../services/ocr_service.dart';
 import 'matching_screen.dart';
 import 'barcode_verifier_screen.dart';
 import 'discrepancy_screen.dart';
@@ -71,6 +72,45 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
   Future<void> _saveAndRefresh() async {
     await _storage.saveInvoice(_doc);
     if (mounted) setState(() {});
+  }
+
+  Future<void> _rescanInvoicePhotos() async {
+    if (_doc.pagePhotos.isEmpty || _isSubmitting) return;
+    setState(() => _isSubmitting = true);
+    try {
+      final newDoc = await OcrService().parseInvoiceWithVisionAi(_doc.pagePhotos);
+      if (newDoc != null && newDoc.items.isNotEmpty) {
+        try {
+          final catalog = await _api.getProducts();
+          _matcher.autoMatchDocument(newDoc, catalog);
+        } catch (_) {}
+        setState(() {
+          _doc.items = newDoc.items;
+          _doc.totalAmount = newDoc.totalAmount;
+          if (_doc.supplierName == 'Поставщик' && newDoc.supplierName != 'Поставщик') {
+            _doc.supplierName = newDoc.supplierName;
+          }
+          _isSubmitting = false;
+        });
+        await _saveAndRefresh();
+        if (mounted) {
+          TopNotification.showSuccess(
+            context,
+            'Накладная пересканирована через ИИ: распознано ${newDoc.items.length} поз.!',
+          );
+        }
+      } else {
+        setState(() => _isSubmitting = false);
+        if (mounted) {
+          TopNotification.showWarning(context, 'Не удалось повторно извлечь строки с фото.');
+        }
+      }
+    } catch (e) {
+      setState(() => _isSubmitting = false);
+      if (mounted) {
+        TopNotification.showError(context, 'Ошибка пересканирования: $e');
+      }
+    }
   }
 
   // Привязка товара к строке накладной
@@ -1738,7 +1778,12 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
-          if (_doc.pagePhotos.isNotEmpty)
+          if (_doc.pagePhotos.isNotEmpty) ...[
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF10B981)),
+              tooltip: 'Пересканировать фото через ИИ',
+              onPressed: _rescanInvoicePhotos,
+            ),
             IconButton(
               icon: const Icon(Icons.photo_library_outlined, color: Color(0xFF38BDF8)),
               tooltip: 'Открыть фото накладной',
@@ -1749,6 +1794,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                 supplierName: _doc.supplierName,
               ),
             ),
+          ],
           IconButton(
             icon: const Icon(Icons.add, color: Color(0xFF38BDF8)),
             tooltip: 'Добавить строку вручную',
