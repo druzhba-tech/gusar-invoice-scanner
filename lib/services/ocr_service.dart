@@ -97,24 +97,21 @@ class OcrService {
 
     InvoiceDocument? doc;
 
-    // 1. Если провайдер Yandex или есть ключ Yandex — вызываем Yandex Cloud Vision (100% кириллица)
-    if ((provider == 'yandex' || geminiKey.isEmpty) && yandexKey.isNotEmpty) {
+    // 1. Всегда приоритетно вызываем Yandex Cloud Vision (100% кириллица и табличная разметка)
+    if (yandexKey.isNotEmpty) {
       doc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, folderId: yandexFolderId);
     }
 
-    // 2. Если Yandex не ответил или выбран Gemini — вызываем Google Gemini Vision AI
-    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty) {
+    // 2. Если Yandex не ответил и есть валидный ключ Gemini — вызываем Google Gemini Vision AI
+    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty && geminiKey.startsWith('AIza')) {
       doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate);
     }
 
-    // 3. Если Gemini не ответил, но Yandex еще не пробовали — резервная попытка через Yandex
-    if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(preparedPaths, yandexKey, folderId: yandexFolderId);
-    }
-
     // 3. Fallback: если облачные нейросети не настроены или не ответили —
-    // используем сверхбыстрый локальный офлайн-парсер Google ML Kit (1.5 сек, как в v1.4.10)
-    doc ??= await _fallbackLocalParse(preparedPaths);
+    // используем сверхбыстрый локальный офлайн-парсер Google ML Kit
+    if (doc == null || doc.items.isEmpty) {
+      doc = await _fallbackLocalParse(preparedPaths);
+    }
 
     // 3.1. АВТО-ВОССТАНОВЛЕНИЕ ОРИЕНТАЦИИ (MULTI-ANGLE AUTO-RECOVERY):
     // Если накладная сфотографирована боком (как на мобильных телефонах при горизонтальной съёмке)
@@ -158,6 +155,93 @@ class OcrService {
     return doc;
   }
 
+  int _toInt(dynamic v) {
+    if (v is num) return v.toInt();
+    if (v == null) return 0;
+    return int.tryParse(v.toString().trim()) ?? 0;
+  }
+
+  double _toDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v == null) return 0.0;
+    return double.tryParse(v.toString().trim().replaceAll(',', '.')) ?? 0.0;
+  }
+
+  List<String> _groupYandexBlocksByRows(List<dynamic> blocks) {
+    final List<_OcrLineBox> rawLines = [];
+    for (var b in blocks) {
+      final lines = b['lines'] as List<dynamic>? ?? [];
+      for (var l in lines) {
+        final text = l['text']?.toString().replaceAll(RegExp(r'[\r\n]+'), ' ').trim() ?? '';
+        if (text.isEmpty) continue;
+        final vertices = l['boundingBox']?['vertices'] as List<dynamic>? ?? [];
+        if (vertices.isNotEmpty) {
+          final xs = vertices.map((v) => _toDouble(v['x'])).toList();
+          final ys = vertices.map((v) => _toDouble(v['y'])).toList();
+          final left = xs.reduce((a, b) => a < b ? a : b);
+          final right = xs.reduce((a, b) => a > b ? a : b);
+          final top = ys.reduce((a, b) => a < b ? a : b);
+          final bottom = ys.reduce((a, b) => a > b ? a : b);
+          rawLines.add(_OcrLineBox(text: text, top: top, bottom: bottom, left: left, right: right));
+        } else {
+          rawLines.add(_OcrLineBox(text: text, top: rawLines.length * 30.0, bottom: rawLines.length * 30.0 + 20.0, left: 0, right: 100));
+        }
+      }
+    }
+
+    rawLines.sort((a, b) {
+      final topDiff = a.top.compareTo(b.top);
+      return topDiff != 0 ? topDiff : a.left.compareTo(b.left);
+    });
+
+    final List<List<_OcrLineBox>> rows = [];
+    for (var line in rawLines) {
+      List<_OcrLineBox>? bestRow;
+      double bestOverlapY = 0.0;
+      for (var row in rows) {
+        bool hasHorizontalOverlap = false;
+        for (var existing in row) {
+          final overlapX = (line.right < existing.right ? line.right : existing.right) -
+              (line.left > existing.left ? line.left : existing.left);
+          final minW = line.width < existing.width ? line.width : existing.width;
+          if (minW > 0 && (overlapX / minW) > 0.25) {
+            hasHorizontalOverlap = true;
+            break;
+          }
+        }
+        if (hasHorizontalOverlap) continue;
+
+        final rowTop = row.map((b) => b.top).reduce((a, b) => a < b ? a : b);
+        final rowBottom = row.map((b) => b.bottom).reduce((a, b) => a > b ? a : b);
+        final overlapY = (line.bottom < rowBottom ? line.bottom : rowBottom) -
+            (line.top > rowTop ? line.top : rowTop);
+        final minH = line.height < (rowBottom - rowTop) ? line.height : (rowBottom - rowTop);
+
+        if (minH > 0 && (overlapY / minH) >= 0.38) {
+          if (overlapY > bestOverlapY) {
+            bestOverlapY = overlapY;
+            bestRow = row;
+          }
+        }
+      }
+      if (bestRow != null) {
+        bestRow.add(line);
+      } else {
+        rows.add([line]);
+      }
+    }
+
+    final List<String> grouped = [];
+    for (final row in rows) {
+      row.sort((a, b) => a.left.compareTo(b.left));
+      final rowText = row.map((l) => l.text).join('  ').trim();
+      if (rowText.length >= 2) {
+        grouped.add(rowText);
+      }
+    }
+    return grouped;
+  }
+
   // =========================================================================
   // РАСПОЗНАВАНИЕ ЧЕРЕЗ YANDEX CLOUD VISION OCR (КИРИЛЛИЦА / РУС / ТАДЖ)
   // =========================================================================
@@ -169,6 +253,7 @@ class OcrService {
   }) async {
     try {
       final List<String> extractedLines = [];
+      final List<String> fallbackBlockLines = [];
 
       for (var path in imagePaths) {
         final bytes = await File(path).readAsBytes();
@@ -196,21 +281,37 @@ class OcrService {
           final resJson = jsonDecode(response.body);
           final textAnnotation = resJson['result']?['textAnnotation'];
           if (textAnnotation != null) {
+            final blocks = textAnnotation['blocks'] as List<dynamic>? ?? [];
+            final pageBlockRows = _groupYandexBlocksByRows(blocks);
+            fallbackBlockLines.addAll(pageBlockRows);
+
+            // Добавляем шапку документа (первые строки из текстовых блоков для распознавания поставщика и № накладной)
+            for (var br in pageBlockRows.take(8)) {
+              final lower = br.toLowerCase();
+              if (lower.contains('накладн') || lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('дата') || br.contains('№')) {
+                extractedLines.add(br);
+              }
+            }
+
             // 1. Извлекаем ячейки таблиц, если Yandex структурировал таблицу
+            // ВАЖНО: Yandex возвращает rowIndex и columnIndex как String ("0", "1"), поэтому используем _toInt()!
             final tables = textAnnotation['tables'] as List<dynamic>? ?? [];
             if (tables.isNotEmpty) {
               for (var t in tables) {
                 final cells = t['cells'] as List<dynamic>? ?? [];
                 final Map<int, List<Map<String, dynamic>>> rowMap = {};
                 for (var c in cells) {
-                  final rIdx = (c['rowIndex'] as num?)?.toInt() ?? 0;
+                  final rIdx = _toInt(c['rowIndex']);
                   rowMap.putIfAbsent(rIdx, () => []).add(c as Map<String, dynamic>);
                 }
                 final sortedRows = rowMap.keys.toList()..sort();
                 for (var r in sortedRows) {
                   final cellsInRow = rowMap[r]!;
-                  cellsInRow.sort((a, b) => ((a['columnIndex'] as num?)?.toInt() ?? 0).compareTo((b['columnIndex'] as num?)?.toInt() ?? 0));
-                  final rowStr = cellsInRow.map((c) => c['text']?.toString().trim() ?? '').where((s) => s.isNotEmpty).join('  ');
+                  cellsInRow.sort((a, b) => _toInt(a['columnIndex']).compareTo(_toInt(b['columnIndex'])));
+                  final rowStr = cellsInRow
+                      .map((c) => c['text']?.toString().replaceAll(RegExp(r'[\r\n]+'), ' ').trim() ?? '')
+                      .where((s) => s.isNotEmpty)
+                      .join('  ');
                   if (rowStr.isNotEmpty) {
                     extractedLines.add(rowStr);
                   }
@@ -218,18 +319,9 @@ class OcrService {
               }
             }
 
-            // 2. Если табличная структура не выделилась, берём строки из текстовых блоков
-            if (extractedLines.isEmpty) {
-              final blocks = textAnnotation['blocks'] as List<dynamic>? ?? [];
-              for (var b in blocks) {
-                final lines = b['lines'] as List<dynamic>? ?? [];
-                for (var l in lines) {
-                  final text = l['text']?.toString().trim() ?? '';
-                  if (text.isNotEmpty) {
-                    extractedLines.add(text);
-                  }
-                }
-              }
+            // 2. Если табличная структура не выделилась, используем сгруппированные по Y строки из блоков
+            if (tables.isEmpty && pageBlockRows.isNotEmpty) {
+              extractedLines.addAll(pageBlockRows);
             }
           }
         } else {
@@ -238,7 +330,13 @@ class OcrService {
       }
 
       if (extractedLines.isNotEmpty) {
-        return _parseUnifiedLines(extractedLines, originalPaths ?? imagePaths);
+        final doc = _parseUnifiedLines(extractedLines, originalPaths ?? imagePaths);
+        if (doc.items.isNotEmpty) {
+          return doc;
+        }
+      }
+      if (fallbackBlockLines.isNotEmpty) {
+        return _parseUnifiedLines(fallbackBlockLines, originalPaths ?? imagePaths);
       }
     } catch (e) {
       print('Yandex Vision error: $e');
@@ -684,18 +782,19 @@ class OcrService {
         // Нормализуем пробелы в тысячах: "27 326,20" -> "27326,20"
         row = row.replaceAllMapped(RegExp(r'(\d)\s+(\d{3})'), (m) => '${m[1]}${m[2]}');
 
-        // Поиск явного количества с единицей измерения: "5 шт."
-        double? explicitQty;
-        final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(row);
-        if (unitMatch != null) {
-          explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
-        }
-
         final numberMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\b').allMatches(row).toList();
         if (numberMatches.length >= 2) {
           final lastNumbers = numberMatches.sublist(numberMatches.length >= 3 ? numberMatches.length - 3 : numberMatches.length - 2);
           final firstNumIndex = lastNumbers.first.start;
           var rawName = row.substring(0, firstNumIndex).trim();
+
+          // Поиск явного количества с единицей измерения ТОЛЬКО в числовых колонках справа (не внутри названия товара!)
+          double? explicitQty;
+          final tailPart = row.substring(firstNumIndex);
+          final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|кг|л|уп|пач|кор|дона|д-на)\b', caseSensitive: false).firstMatch(tailPart);
+          if (unitMatch != null) {
+            explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
+          }
 
           rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
           rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
@@ -705,9 +804,6 @@ class OcrService {
               .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
               .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
               .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
-
-          // Удаляем случайные суффиксы единиц измерения в конце имени
-          rawName = rawName.replaceAll(RegExp(r'\s+(шт|кг|л|уп|пач|кор|дона|д-на|wt\.?)\.?$', caseSensitive: false), '').trim();
 
           if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с') || rawName.toLowerCase().startsWith('дата') || rawName.toLowerCase().startsWith('время')) {
             continue;
@@ -722,11 +818,7 @@ class OcrService {
             final n2 = double.tryParse(lastNumbers[1].group(1)!.replaceAll(',', '.')) ?? 0.0;
             final n3 = double.tryParse(lastNumbers[2].group(1)!.replaceAll(',', '.')) ?? 0.0;
 
-            if (explicitQty != null) {
-              qty = explicitQty;
-              price = (n2 > 0 && n2 < n3) ? n2 : ((n1 > 0 && n1 != qty) ? n1 : n2);
-              total = (n3 > price) ? n3 : (qty * price);
-            } else if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
+            if ((n1 * n2 - n3).abs() <= (n3 * 0.15 + 1.0)) {
               qty = n1;
               price = n2;
               total = n3;
@@ -734,6 +826,10 @@ class OcrService {
               qty = n1;
               price = n3;
               total = n2;
+            } else if (explicitQty != null) {
+              qty = explicitQty;
+              price = (n2 > 0 && n2 < n3) ? n2 : ((n1 > 0 && n1 != qty) ? n1 : n2);
+              total = (n3 > price) ? n3 : (qty * price);
             } else {
               qty = n1;
               price = n2;
