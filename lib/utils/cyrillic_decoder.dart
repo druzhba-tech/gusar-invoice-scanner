@@ -86,10 +86,51 @@ class CyrillicDecoder {
     'nechenbe': 'печенье',
     'pechenye': 'печенье',
     'wokonag': 'шоколад',
+    'wokonaga': 'шоколада',
+    'шокоnаgа': 'шоколада',
     'shokolad': 'шоколад',
     'choko': 'шоколад',
     'baonи': 'вафли',
+    'banu': 'Вафли',
+    'baonu': 'Вафли',
+    'ваnu': 'Вафли',
     'vafli': 'вафли',
+    'koshak': 'Козинак',
+    'ko3uhak': 'Козинак',
+    'коsнак': 'Козинак',
+    'nogconheyhbiй': 'подсолнечный',
+    'nogconheуhый': 'подсолнечный',
+    'nogconheчный': 'подсолнечный',
+    'подсоnнеуный': 'подсолнечный',
+    '9uncbi': 'Чипсы',
+    '9uncы': 'Чипсы',
+    '4uncbi': 'Чипсы',
+    '4uncы': 'Чипсы',
+    'deйc': 'Лейс',
+    'деñс': 'Лейс',
+    'деис': 'Лейс',
+    'neйc': 'Лейс',
+    'waunbik': 'шашлык',
+    'waunыk': 'шашлык',
+    'wawnbik': 'шашлык',
+    'шаunык': 'шашлык',
+    'ocbethehhbiй': 'осветленный',
+    'ocbetnehhbiй': 'осветленный',
+    'освеtneнный': 'осветленный',
+    'ocbetnehный': 'осветленный',
+    'hektap': 'Нектар',
+    'некtар': 'Нектар',
+    'mapb': 'Дары',
+    'dapbi': 'Дары',
+    'марь': 'Дары',
+    'kybahu': 'Кубани',
+    'ky6ahu': 'Кубани',
+    'кубаhu': 'Кубани',
+    'кубaни': 'Кубани',
+    'mynbtморуктовый': 'мультифруктовый',
+    'mynbtmopyktobbiмc': 'мультифруктовый с',
+    'муnьтморуктовыймс': 'мультифруктовый с',
+    'mynbtmopyktobbiй': 'мультифруктовый',
     'koneaca': 'колбаса',
     'kolbasa': 'колбаса',
     'cochckи': 'сосиски',
@@ -153,15 +194,16 @@ class CyrillicDecoder {
     t = t.replaceAll(RegExp(r'^[A-Za-zА-Яа-я]{1,4}\d{2,9}\s+'), '');
     t = t.replaceAll(RegExp(r'^[0-9]{6,14}\s+'), '');
 
-    // 2. Срезаем цифры количества мест в конце строки перед ценой или дублирующийся артикул: " 2", " 1", "(HK931) 2100"
+    // 2. Срезаем дублирующийся артикул в скобках в конце строки: "(HK931) 2100"
     t = t.replaceAll(RegExp(r'\s+\([A-Za-zА-Яа-я0-9\-_]+\)\s+\d+$'), '');
-    t = t.replaceAll(RegExp(r'\s+\d{1,2}$'), '');
 
-    // 3. Нормализация опечаток единиц измерения (1OuT -> 10 шт, 24uT -> 24 шт, 500rp -> 500 гр)
+    // 3. Нормализация опечаток единиц измерения (1OuT -> 10 шт, 24uT -> 24 шт, 500rp -> 500 гр, 140r -> 140г, 0,95n -> 0,95л)
     t = t.replaceAllMapped(RegExp(r'(\d+)[Oo]u[Tt]\b', caseSensitive: false), (m) => '${m[1]}0 шт');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*[uU][tT]\b'), (m) => '${m[1]} шт');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*[wW][tT]\.?\b', caseSensitive: false), (m) => '${m[1]} шт');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*rp\b', caseSensitive: false), (m) => '${m[1]} гр');
+    t = t.replaceAllMapped(RegExp(r'(\d+)\s*r\b'), (m) => '${m[1]}г');
+    t = t.replaceAllMapped(RegExp(r'(\d+[\.,]\d+)\s*n(?=[\/\s]|$)', caseSensitive: false), (m) => '${m[1]}л');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*kr\b', caseSensitive: false), (m) => '${m[1]} кг');
     t = t.replaceAllMapped(RegExp(r'(\d+)\s*k[rg]\b', caseSensitive: false), (m) => '${m[1]} кг');
 

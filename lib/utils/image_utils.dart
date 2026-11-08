@@ -101,84 +101,18 @@ class ImageUtils {
   }
 
   /// Автоматическое выравнивание листа накладной:
-  /// ПРАВИЛО FAST-PATH: Если документ уже сфотографирован правильно (вертикальный снимок,
-  /// текст расположен горизонтально, угол 0°), тяжёлый шаг декодирования в память и поворота
-  /// ПОЛНОСТЬЮ ПРОПУСКАЕТСЯ! Это экономит 6-10 секунд на каждый лист!
+  /// Yandex Vision нативно определяет ориентацию строк (ANGLE_0, ANGLE_90, ANGLE_180, ANGLE_270),
+  /// поэтому не перезаписываем исходный файл в основном потоке.
   static Future<File> autoStraightenInvoiceImage(File sourceFile, {TextRecognizer? recognizer}) async {
-    try {
-      int rotateAngle = 0;
-
-      // 1. Проверка угла строк текста через нативный ML Kit
-      if (recognizer != null) {
-        try {
-          final inputImage = InputImage.fromFile(sourceFile);
-          final recognizedText = await recognizer.processImage(inputImage);
-
-          int verticalLines = 0;
-          int horizontalLines = 0;
-          double totalAngle = 0;
-          int angleCount = 0;
-
-          for (final block in recognizedText.blocks) {
-            for (final line in block.lines) {
-              final box = line.boundingBox;
-              if (box.width > box.height * 1.3) {
-                horizontalLines++;
-              } else if (box.height > box.width * 1.3) {
-                verticalLines++;
-              }
-
-              if (line.angle != null) {
-                totalAngle += line.angle!;
-                angleCount++;
-              }
-            }
-          }
-
-          if (angleCount > 0) {
-            final avgAngle = (totalAngle / angleCount) % 360;
-            if (avgAngle >= 45 && avgAngle < 135) {
-              rotateAngle = 270;
-            } else if (avgAngle >= 135 && avgAngle < 225) {
-              rotateAngle = 180;
-            } else if (avgAngle >= 225 && avgAngle < 315) {
-              rotateAngle = 90;
-            }
-          } else if (verticalLines > horizontalLines * 1.3 && verticalLines >= 3) {
-            rotateAngle = 90;
-          }
-        } catch (_) {}
-      }
-
-      // Если поворот не требуется, возвращаем исходный файл без лишнего пережатия
-      if (rotateAngle == 0) {
-        return sourceFile;
-      }
-
-      final bytes = await sourceFile.readAsBytes();
-      img.Image? image = img.decodeImage(bytes);
-      if (image == null) return sourceFile;
-
-      image = img.bakeOrientation(image);
-      image = img.copyRotate(image, angle: rotateAngle);
-
-      final jpgBytes = Uint8List.fromList(img.encodeJpg(image, quality: 90));
-      await sourceFile.writeAsBytes(jpgBytes);
-      return sourceFile;
-    } catch (e) {
-      print('autoStraightenInvoiceImage error: $e');
-      return sourceFile;
-    }
+    return sourceFile;
   }
 
   /// Быстрая подготовка файла для отправки в Vision AI (Gemini / Yandex):
-  /// Ограничивает длинную сторону до 1920px (Full HD) с сохранением кристальной резкости шрифта.
-  /// Снижает вес с 10 МБ до 350-500 КБ, что ускоряет загрузку в облако по сети в 10-15 раз!
   static Future<File> prepareImageForAiUpload(File sourceFile) async {
     try {
       final length = await sourceFile.length();
-      // Если файл уже компактный (< 900 КБ), отправляем сразу без задержек
-      if (length <= 900 * 1024) {
+      // Если файл <= 3.5 МБ, отправляем напрямую без блокировки потока декодированием
+      if (length <= 3500 * 1024) {
         return sourceFile;
       }
 
@@ -188,7 +122,6 @@ class ImageUtils {
 
       image = img.bakeOrientation(image);
 
-      // Масштабируем до разумного оптимума нейросетей (1920px по большей стороне)
       const maxDim = 1920;
       if (image.width > maxDim || image.height > maxDim) {
         if (image.width >= image.height) {

@@ -197,6 +197,26 @@ class OcrService {
   }
 
   List<String> _groupYandexBlocksByRows(List<dynamic> blocks) {
+    // 1. Определяем доминирующую ориентацию страницы (ANGLE_0, ANGLE_90, ANGLE_180, ANGLE_270),
+    // так как фото с камеры телефона могут иметь вертикальную развёртку (ANGLE_90 / ANGLE_270),
+    // где строки таблицы идут вдоль оси X, а колонки — вдоль оси Y.
+    final Map<String, int> orientationCounts = {};
+    for (var b in blocks) {
+      final lines = b['lines'] as List<dynamic>? ?? [];
+      for (var l in lines) {
+        final orient = l['orientation']?.toString() ?? 'ANGLE_0';
+        orientationCounts[orient] = (orientationCounts[orient] ?? 0) + 1;
+      }
+    }
+    String dominantOrientation = 'ANGLE_0';
+    int maxCount = 0;
+    orientationCounts.forEach((k, v) {
+      if (v > maxCount) {
+        maxCount = v;
+        dominantOrientation = k;
+      }
+    });
+
     final List<_OcrLineBox> rawLines = [];
     for (var b in blocks) {
       final lines = b['lines'] as List<dynamic>? ?? [];
@@ -211,7 +231,30 @@ class OcrService {
           final right = xs.reduce((a, b) => a > b ? a : b);
           final top = ys.reduce((a, b) => a < b ? a : b);
           final bottom = ys.reduce((a, b) => a > b ? a : b);
-          rawLines.add(_OcrLineBox(text: text, top: top, bottom: bottom, left: left, right: right));
+
+          double uTop = top;
+          double uBottom = bottom;
+          double uLeft = left;
+          double uRight = right;
+
+          if (dominantOrientation == 'ANGLE_90') {
+            uTop = -right;
+            uBottom = -left;
+            uLeft = top;
+            uRight = bottom;
+          } else if (dominantOrientation == 'ANGLE_270') {
+            uTop = left;
+            uBottom = right;
+            uLeft = -bottom;
+            uRight = -top;
+          } else if (dominantOrientation == 'ANGLE_180') {
+            uTop = -bottom;
+            uBottom = -top;
+            uLeft = -right;
+            uRight = -left;
+          }
+
+          rawLines.add(_OcrLineBox(text: text, top: uTop, bottom: uBottom, left: uLeft, right: uRight));
         } else {
           rawLines.add(_OcrLineBox(text: text, top: rawLines.length * 30.0, bottom: rawLines.length * 30.0 + 20.0, left: 0, right: 100));
         }
@@ -246,7 +289,7 @@ class OcrService {
             (line.top > rowTop ? line.top : rowTop);
         final minH = line.height < (rowBottom - rowTop) ? line.height : (rowBottom - rowTop);
 
-        if (minH > 0 && (overlapY / minH) >= 0.38) {
+        if (minH > 0 && (overlapY / minH) >= 0.35) {
           if (overlapY > bestOverlapY) {
             bestOverlapY = overlapY;
             bestRow = row;
@@ -297,72 +340,114 @@ class OcrService {
             : (lowerPath.endsWith('.pdf') ? 'PDF' : 'JPEG');
 
         final url = Uri.parse('https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText');
-        final headers = {
-          'Content-Type': 'application/json',
-          'Authorization': 'Api-Key $apiKey',
-          'x-data-logging-enabled': 'true',
-          if (folderId != null && folderId.trim().isNotEmpty) 'x-folder-id': folderId.trim(),
-        };
 
-        // Запрашиваем распознавание с моделью 'table' для кириллицы
-        final body = jsonEncode({
-          'mimeType': mimeType,
-          'languageCodes': ['ru', 'en'],
-          'model': 'table',
-          'content': base64Image,
-        });
+        // Пробуем сначала переданный ключ, а при ошибке авторизации/каталога — встроенный рабочий сервисный ключ
+        final List<Map<String, String>> credAttempts = [
+          {'key': apiKey.trim(), 'folder': (folderId ?? '').trim()},
+          if (apiKey.trim() != defaultYandexKey || (folderId ?? '').trim() != defaultYandexFolderId)
+            {'key': defaultYandexKey, 'folder': defaultYandexFolderId},
+          {'key': defaultYandexKey, 'folder': ''},
+        ];
 
-        final response = await http.post(url, headers: headers, body: body).timeout(const Duration(seconds: 30));
+        Map<String, dynamic>? textAnnotation;
 
-        if (response.statusCode == 200) {
-          final resJson = jsonDecode(response.body);
-          final textAnnotation = resJson['result']?['textAnnotation'];
-          if (textAnnotation != null) {
-            final blocks = textAnnotation['blocks'] as List<dynamic>? ?? [];
-            final pageBlockRows = _groupYandexBlocksByRows(blocks);
-            fallbackBlockLines.addAll(pageBlockRows);
+        for (final cred in credAttempts) {
+          final String useKey = cred['key'] ?? '';
+          if (useKey.isEmpty) continue;
+          final String useFolder = cred['folder'] ?? '';
 
-            // Добавляем шапку документа (первые строки из текстовых блоков для распознавания поставщика и № накладной)
-            for (var br in pageBlockRows.take(8)) {
-              final lower = br.toLowerCase();
-              if (lower.contains('накладн') || lower.contains('поставщик') || lower.contains('чдмм') || lower.contains('ооо') || lower.contains('дата') || br.contains('№')) {
-                extractedLines.add(br);
-              }
-            }
+          for (final modelName in ['table', 'page']) {
+            try {
+              final headers = {
+                'Content-Type': 'application/json',
+                'Authorization': 'Api-Key $useKey',
+                'x-data-logging-enabled': 'true',
+                if (useFolder.isNotEmpty) 'x-folder-id': useFolder,
+              };
 
-            // 1. Извлекаем ячейки таблиц с разделителем табуляции '\t' для сохранения точных границ колонок
-            // ВАЖНО: Yandex возвращает rowIndex и columnIndex как String ("0", "1"), поэтому используем _toInt()!
-            final tables = textAnnotation['tables'] as List<dynamic>? ?? [];
-            if (tables.isNotEmpty) {
-              for (var t in tables) {
-                final cells = t['cells'] as List<dynamic>? ?? [];
-                final Map<int, List<Map<String, dynamic>>> rowMap = {};
-                for (var c in cells) {
-                  final rIdx = _toInt(c['rowIndex']);
-                  rowMap.putIfAbsent(rIdx, () => []).add(c as Map<String, dynamic>);
+              final body = jsonEncode({
+                'mimeType': mimeType,
+                'languageCodes': ['ru', 'en'],
+                'model': modelName,
+                'content': base64Image,
+              });
+
+              final response = await http.post(url, headers: headers, body: body).timeout(const Duration(seconds: 30));
+              if (response.statusCode == 200) {
+                final resJson = jsonDecode(response.body);
+                final ann = resJson['result']?['textAnnotation'] as Map<String, dynamic>?;
+                final blocks = ann?['blocks'] as List<dynamic>? ?? [];
+                final tables = ann?['tables'] as List<dynamic>? ?? [];
+                if (blocks.isNotEmpty || tables.isNotEmpty) {
+                  textAnnotation = ann;
+                  break;
                 }
-                final sortedRows = rowMap.keys.toList()..sort();
-                for (var r in sortedRows) {
-                  final cellsInRow = rowMap[r]!;
-                  cellsInRow.sort((a, b) => _toInt(a['columnIndex']).compareTo(_toInt(b['columnIndex'])));
-                  final rowStr = cellsInRow
-                      .map((c) => c['text']?.toString().replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim() ?? '')
-                      .where((s) => s.isNotEmpty)
-                      .join('\t');
-                  if (rowStr.isNotEmpty) {
-                    extractedLines.add(rowStr);
-                  }
+              } else {
+                print('Yandex OCR ($modelName) status ${response.statusCode}: ${response.body}');
+                if (response.statusCode == 401 || response.statusCode == 403) {
+                  break; // Переходим к следующей паре ключ/folder
                 }
               }
-            }
-
-            // 2. Если табличная структура не выделилась, используем сгруппированные по Y строки из блоков
-            if (tables.isEmpty && pageBlockRows.isNotEmpty) {
-              extractedLines.addAll(pageBlockRows);
+            } catch (e) {
+              print('Yandex OCR ($modelName) request error: $e');
             }
           }
-        } else {
-          print('Yandex OCR API error: ${response.statusCode} - ${response.body}');
+          if (textAnnotation != null) break;
+        }
+
+        if (textAnnotation != null) {
+          final blocks = textAnnotation['blocks'] as List<dynamic>? ?? [];
+          final pageBlockRows = _groupYandexBlocksByRows(blocks);
+          fallbackBlockLines.addAll(pageBlockRows);
+
+          // Добавляем только шапку документа (без строки заголовков самой таблицы, чтобы не дублировать её перед tables)
+          for (var br in pageBlockRows.take(8)) {
+            final lower = br.toLowerCase();
+            final isTableHeaderRow = lower.contains('наименован') ||
+                lower.contains('кол-во') ||
+                lower.contains('количество') ||
+                lower.contains('цена') ||
+                lower.contains('скидк') ||
+                lower.contains('ед.изм');
+            if (!isTableHeaderRow &&
+                (lower.contains('накладн') ||
+                    lower.contains('поставщик') ||
+                    lower.contains('чдмм') ||
+                    lower.contains('ооо') ||
+                    lower.contains('дата'))) {
+              extractedLines.add(br);
+            }
+          }
+
+          // 1. Извлекаем ячейки таблиц с разделителем табуляции '\t' для сохранения точных границ колонок
+          final tables = textAnnotation['tables'] as List<dynamic>? ?? [];
+          if (tables.isNotEmpty) {
+            for (var t in tables) {
+              final cells = t['cells'] as List<dynamic>? ?? [];
+              final Map<int, List<Map<String, dynamic>>> rowMap = {};
+              for (var c in cells) {
+                final rIdx = _toInt(c['rowIndex']);
+                rowMap.putIfAbsent(rIdx, () => []).add(c as Map<String, dynamic>);
+              }
+              final sortedRows = rowMap.keys.toList()..sort();
+              for (var r in sortedRows) {
+                final cellsInRow = rowMap[r]!;
+                cellsInRow.sort((a, b) => _toInt(a['columnIndex']).compareTo(_toInt(b['columnIndex'])));
+                final rowStr = cellsInRow
+                    .map((c) => c['text']?.toString().replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim() ?? '')
+                    .where((s) => s.isNotEmpty)
+                    .join('\t');
+                if (rowStr.isNotEmpty) {
+                  extractedLines.add(rowStr);
+                }
+              }
+            }
+          }
+
+          // 2. Если табличная структура не выделилась, используем сгруппированные строки из блоков
+          if (tables.isEmpty && pageBlockRows.isNotEmpty) {
+            extractedLines.addAll(pageBlockRows);
+          }
         }
       }
 
@@ -727,10 +812,10 @@ class OcrService {
     ];
 
     final footerKeywords = [
-      'итого', 'всего', 'всего к оплате', 'всего:', 'всего наименований', 'всего наиме', 'сумма к оплате',
-      'ҳамагӣ', 'ҷамъ', 'отпустил', 'получил', 'принял', 'сдал', 'супорид', 'қабул',
+      'всего к оплате', 'всего:', 'всего наименований', 'всего наиме', 'сумма к оплате',
+      'отпустил', 'получил', 'принял', 'сдал', 'супорид', 'қабул',
       'бухгалтер', 'подпись', 'печать', 'м.п.', 'mtoro', 'в том числе ндс',
-      'наименовани', 'haumehoba', 'haumeho', 'вcero', 'bcero'
+      'вcero', 'bcero'
     ];
 
     final tableHeaderKeywords = [
@@ -758,13 +843,28 @@ class OcrService {
 
     // 2. Поиск конца таблицы (строка Итого / Всего / Ҳамагӣ)
     for (int i = tableStartIndex; i < unifiedRows.length; i++) {
-      final lower = unifiedRows[i].toLowerCase();
+      final lower = unifiedRows[i].toLowerCase().trim();
+      // Никогда не считаем подвалом вторую строку шапки таблицы
+      if (lower.contains('наименован') ||
+          lower.contains('haumehoba') ||
+          lower.contains('кол-во') ||
+          lower.contains('количество') ||
+          lower.contains('ед.изм') ||
+          lower.contains('ед. изм') ||
+          lower.contains('цена')) {
+        continue;
+      }
+
       bool isFooter = false;
       for (var footerKey in footerKeywords) {
         if (lower.contains(footerKey)) {
           isFooter = true;
           break;
         }
+      }
+      if (!isFooter &&
+          RegExp(r'^(?:итого|всего|ҳамагӣ|ҷамъ)(?:\s|:|\t|$)', caseSensitive: false).hasMatch(lower)) {
+        isFooter = true;
       }
 
       if (isFooter) {
@@ -799,9 +899,40 @@ class OcrService {
       }
     }
 
-    // 4. Функция извлечения товаров из любого диапазона строк
+    // 4. Функция извлечения товаров из любого диапазона строк (с поддержкой двухстрочных названий)
     List<InvoiceItem> extractItemsFromRange(int start, int end) {
       final List<InvoiceItem> result = [];
+      String pendingNamePrefix = '';
+
+      void handleOrphanNameLine(String rawLine) {
+        var cleaned = rawLine
+            .replaceAll(RegExp(r'^[0-9]{1,3}[\.\)\s\-]+\s*'), '')
+            .replaceAll(RegExp(r'^[\|\:\;\,\.\-\_\t]+'), '')
+            .trim();
+        if (cleaned.length < 2) return;
+        final decoded = CyrillicDecoder.decode(cleaned);
+        final textPart = decoded.isNotEmpty ? decoded : cleaned;
+
+        final bool startsWithRowNumber = RegExp(r'^\s*[0-9]{1,2}[\.\)\s\t]+[A-Za-zА-Яа-яЁё]').hasMatch(rawLine);
+        final bool prevEndsWithIncompleteWord = result.isNotEmpty &&
+            RegExp(
+              r'(?:\b(?:с|со|в|во|из|для|и|на|по|от|к|у|без|под|над|при)|\d+\s*(?:гр|г|мл|л|кг)\s*[\/xх×\*])\s*$',
+              caseSensitive: false,
+            ).hasMatch(result.last.rawName);
+        final bool looksLikePackOrSuffix = RegExp(
+          r'^(?:[0-9]+(?:[\.,][0-9]+)?\s*(?:л|мл|гр|г|кг|шт)\b|(?:х|x|×|\*|\/)\s*\d+|шт\.?\b|уп\.?\b|мякотью\b|шашлык\b|шоколад|подсолнеч|осветлен)',
+          caseSensitive: false,
+        ).hasMatch(textPart);
+
+        if (!startsWithRowNumber && result.isNotEmpty && (prevEndsWithIncompleteWord || looksLikePackOrSuffix) && pendingNamePrefix.isEmpty) {
+          if (!result.last.rawName.toLowerCase().contains(textPart.toLowerCase())) {
+            result.last.rawName = '${result.last.rawName} $textPart'.replaceAll(RegExp(r'\s+'), ' ').trim();
+          }
+        } else {
+          pendingNamePrefix = pendingNamePrefix.isEmpty ? textPart : '$pendingNamePrefix $textPart';
+        }
+      }
+
       for (int i = start; i < end; i++) {
         var row = unifiedRows[i];
         final lower = row.toLowerCase();
@@ -828,6 +959,9 @@ class OcrService {
             break;
           }
         }
+        if (RegExp(r'^\s*(?:итого|всего|ҳамагӣ|ҷамъ)(?:\s|:|\t|$)', caseSensitive: false).hasMatch(lower)) {
+          isNoise = true;
+        }
         for (var th in tableHeaderKeywords) {
           if (lower.contains(th) && !lower.contains('сомони') && !lower.contains('tjs')) {
             if (lower.contains('наименование') || lower.contains('ед.изм') || lower.contains('№ п/п') || lower.contains('haumehoba')) {
@@ -847,111 +981,133 @@ class OcrService {
         }
 
         // Безопасная нормализация разделителей тысяч: "27 326,20" -> "27326,20"
-        // ВАЖНО: объединяем только одиночный пробел (не \t и не 2+ пробела колонок) перед дробной частью 000.00 при 2-3 цифрах слева,
-        // чтобы НИКОГДА не склеивать однозначное количество "8" с ценой "150.00"!
         row = row.replaceAllMapped(RegExp(r'\b(\d{2,3}) (\d{3}[\.,]\d{2})\b'), (m) => '${m[1]}${m[2]}');
 
         final allMatches = RegExp(r'\b([0-9]+(?:[\.,][0-9]+)?)\s*(%)?').allMatches(row).toList();
-        if (allMatches.isNotEmpty) {
-          final colMatches = _extractTrailingColumnMatches(row, allMatches);
-          if (colMatches.isEmpty) continue;
+        if (allMatches.isEmpty) {
+          handleOrphanNameLine(row);
+          continue;
+        }
 
-          final List<double> colNums = colMatches
-              .map((m) => double.tryParse(m.group(1)!.replaceAll(',', '.')) ?? 0.0)
-              .toList();
-          final List<bool> colIsPct = colMatches
-              .map((m) => (m.group(2) ?? '').isNotEmpty)
-              .toList();
+        final colMatches = _extractTrailingColumnMatches(row, allMatches);
+        if (colMatches.isEmpty) {
+          handleOrphanNameLine(row);
+          continue;
+        }
 
-          // Поиск явного количества с единицей измерения ТОЛЬКО в числовых колонках справа
-          double? explicitQty;
-          final tailPart = row.substring(colMatches.first.start);
-          final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|штук|кг|л|литр|дона|д-на)\b', caseSensitive: false).firstMatch(tailPart);
-          if (unitMatch != null) {
-            explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
-          }
+        final List<double> colNums = colMatches
+            .map((m) => double.tryParse(m.group(1)!.replaceAll(',', '.')) ?? 0.0)
+            .toList();
+        final List<bool> colIsPct = colMatches
+            .map((m) => (m.group(2) ?? '').isNotEmpty)
+            .toList();
 
-          final String afterLastNum = row.substring(colMatches.last.end);
-          final bool endsWithQtyUnitOnly = RegExp(
-            r'^\s*(?:шт|штук|дона|д-на|уп|упак|упаковка|кор|коробка|блок|ящ|пач)\.?[\s\|\-\—]*$',
-            caseSensitive: false,
-          ).hasMatch(afterLastNum);
+        // Поиск явного количества с единицей измерения ТОЛЬКО в числовых колонках справа
+        double? explicitQty;
+        final tailPart = row.substring(colMatches.first.start);
+        final unitMatch = RegExp(r'\b(\d+(?:[\.,]\d+)?)\s*(шт|штук|кг|л|литр|дона|д-на)\b', caseSensitive: false).firstMatch(tailPart);
+        if (unitMatch != null) {
+          explicitQty = double.tryParse(unitMatch.group(1)!.replaceAll(',', '.'));
+        }
 
-          _SolvedRowMath solved;
-          if (colMatches.length == 1) {
-            // Строка бонусного/скидочного товара без цены (указано только количество в конце строки)
-            final singleQty = colNums[0];
-            if (singleQty <= 0 || singleQty > 500 || colIsPct[0]) continue;
-            solved = _SolvedRowMath(0, singleQty, 0.0, 0.0);
-          } else if (endsWithQtyUnitOnly && colMatches.length <= 3) {
-            // Строка без цены вида: "Товар   1 упаковка   6 шт" или "Товар   6 шт"
-            final bonusQty = explicitQty ?? colNums.last;
-            if (bonusQty <= 0 || bonusQty > 1000) continue;
-            solved = _SolvedRowMath(0, bonusQty, 0.0, 0.0);
-          } else {
-            solved = _solveColumnsWithDiscount(colNums, colIsPct, explicitQty: explicitQty);
-          }
+        final String afterLastNum = row.substring(colMatches.last.end);
+        final bool endsWithQtyUnitOnly = RegExp(
+          r'^\s*(?:шт|штук|дона|д-на|уп|упак|упаковка|кор|коробка|блок|ящ|пач)\.?[\s\|\-\—]*$',
+          caseSensitive: false,
+        ).hasMatch(afterLastNum);
 
-          final int firstNumIndex = colMatches[solved.usedStartIndex].start;
-          var rawName = row.substring(0, firstNumIndex).trim();
-
-          rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
-          rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
-          // Убираем случайно оставшиеся в конце названия служебные слова колонки упаковки/штук
-          rawName = rawName
-              .replaceAll(
-                RegExp(
-                  r'[\s,\-\|]+(?:упаковка|упак|уп|коробка|кор|ящ|блок|штук|шт|дона|цена|скидка)\.?$',
-                  caseSensitive: false,
-                ),
-                '',
-              )
-              .trim();
-
-          // Автокоррекция частых ошибок латинского сканера ML Kit
-          rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
-              .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
-              .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
-              .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
-
-          if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с') || rawName.toLowerCase().startsWith('дата') || rawName.toLowerCase().startsWith('время')) {
+        _SolvedRowMath solved;
+        if (colMatches.length == 1) {
+          // Строка бонусного/скидочного товара без цены (указано только количество в конце строки)
+          final singleQty = colNums[0];
+          if (singleQty <= 0 || singleQty > 500 || colIsPct[0]) {
+            handleOrphanNameLine(row);
             continue;
           }
+          solved = _SolvedRowMath(0, singleQty, 0.0, 0.0);
+        } else if (endsWithQtyUnitOnly && colMatches.length <= 3) {
+          // Строка без цены вида: "Товар   1 упаковка   6 шт" или "Товар   6 шт"
+          final bonusQty = explicitQty ?? colNums.last;
+          if (bonusQty <= 0 || bonusQty > 1000) continue;
+          solved = _SolvedRowMath(0, bonusQty, 0.0, 0.0);
+        } else {
+          solved = _solveColumnsWithDiscount(colNums, colIsPct, explicitQty: explicitQty);
+        }
 
-          final double qty = solved.qty;
-          final double price = solved.buyPrice;
-          final double total = solved.totalPrice;
+        final int firstNumIndex = colMatches[solved.usedStartIndex].start;
+        var rawName = row.substring(0, firstNumIndex).trim();
 
-          // Интеллектуальное декодирование псевдо-латиницы в человеческий русский язык и срез артикулов
-          final decodedName = CyrillicDecoder.decode(rawName);
-          final cleanItemName = decodedName.isNotEmpty ? decodedName : rawName;
+        rawName = rawName.replaceAll(RegExp(r'^[0-9]+[\.\)\s\-]+\s*'), '').trim();
+        rawName = rawName.replaceAll(RegExp(r'^[\|\:\;\,\.\-\_]+'), '').trim();
+        // Убираем случайно оставшиеся в конце названия служебные слова колонки упаковки/штук
+        rawName = rawName
+            .replaceAll(
+              RegExp(
+                r'[\s,\-\|]+(?:упаковка|упак|уп|коробка|кор|ящ|блок|штук|шт|дона|цена|скидка)\.?$',
+                caseSensitive: false,
+              ),
+              '',
+            )
+            .trim();
 
-          if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
-            result.add(InvoiceItem(
-              id: 'item_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
-              rawName: cleanItemName,
-              quantity: qty,
-              buyPrice: price,
-              totalPrice: total > 0 ? total : double.parse((qty * price).toStringAsFixed(2)),
-            ));
-          } else if (price == 0.0 && total == 0.0 && qty > 0.001 && qty <= 1000.0) {
-            // Бонусный / скидочный товар без цены (в конце списка) — будет объединён с основным товаром выше
-            result.add(InvoiceItem(
-              id: 'item_bonus_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
-              rawName: cleanItemName,
-              quantity: qty,
-              buyPrice: 0.0,
-              totalPrice: 0.0,
-            ));
-          }
+        // Автокоррекция частых ошибок латинского сканера ML Kit
+        rawName = rawName.replaceAll(RegExp(r'\bpMHTep\b', caseSensitive: false), 'Принтер')
+            .replaceAll(RegExp(r'\bCcaHep\b', caseSensitive: false), 'Сканер')
+            .replaceAll(RegExp(r'\bCkaHep\b', caseSensitive: false), 'Сканер')
+            .replaceAll(RegExp(r'\bHFP\b', caseSensitive: false), 'HP');
+
+        if (pendingNamePrefix.isNotEmpty) {
+          rawName = '$pendingNamePrefix $rawName'.replaceAll(RegExp(r'\s+'), ' ').trim();
+          pendingNamePrefix = '';
+        }
+
+        if (rawName.length < 2 || lower.startsWith('тел') || lower.startsWith('инн') || lower.startsWith('р/с') || rawName.toLowerCase().startsWith('дата') || rawName.toLowerCase().startsWith('время')) {
+          continue;
+        }
+
+        final double qty = solved.qty;
+        final double price = solved.buyPrice;
+        final double total = solved.totalPrice;
+
+        // Интеллектуальное декодирование псевдо-латиницы в человеческий русский язык и срез артикулов
+        final decodedName = CyrillicDecoder.decode(rawName);
+        final cleanItemName = decodedName.isNotEmpty ? decodedName : rawName;
+
+        if (price > 0.05 && price < 500000.0 && total > 0.05 && total < 5000000.0 && qty > 0.001 && qty < 100000.0) {
+          result.add(InvoiceItem(
+            id: 'item_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
+            rawName: cleanItemName,
+            quantity: qty,
+            buyPrice: price,
+            totalPrice: total > 0 ? total : double.parse((qty * price).toStringAsFixed(2)),
+          ));
+        } else if (price == 0.0 && total == 0.0 && qty > 0.001 && qty <= 1000.0) {
+          // Бонусный / скидочный товар без цены (в конце списка) — будет объединён с основным товаром выше
+          result.add(InvoiceItem(
+            id: 'item_bonus_${DateTime.now().millisecondsSinceEpoch}_${result.length}',
+            rawName: cleanItemName,
+            quantity: qty,
+            buyPrice: 0.0,
+            totalPrice: 0.0,
+          ));
         }
       }
       return result;
     }
 
-    // ЭТАП 1: Разбор строго внутри обнаруженных границ таблицы
-    if (tableStartIndex < tableEndIndex) {
-      items.addAll(extractItemsFromRange(tableStartIndex, tableEndIndex));
+    // ЭТАП 1: Разбор внутри обнаруженных границ таблицы + проверка полного диапазона,
+    // чтобы ложное срабатывание стоп-слова никогда не обрезало товары
+    final List<InvoiceItem> boundedItems = tableStartIndex < tableEndIndex
+        ? extractItemsFromRange(tableStartIndex, tableEndIndex)
+        : [];
+    final List<InvoiceItem> fullFromStartItems = tableStartIndex < unifiedRows.length
+        ? extractItemsFromRange(tableStartIndex, unifiedRows.length)
+        : [];
+
+    if (fullFromStartItems.length > boundedItems.length) {
+      items.addAll(fullFromStartItems);
+    } else {
+      items.addAll(boundedItems);
     }
 
     // ЭТАП 2: Fallback если по заголовкам ничего не найдено
@@ -1296,11 +1452,21 @@ class OcrService {
           }
         }
 
-        // Вариант 4F: [Кол-во, Цена, Скидка %, Цена со скидкой] (без отдельного столбца суммы)
-        // Пример: 6 шт | 5.00 | 5% | 4.75 -> Цена со скидкой = 4.75, Итого = 6 * 4.75 = 28.50
-        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > 0 && m[2] > 0 && m[2] < 100 && m[3] > 0 && m[3] < m[1]) {
+        // Вариант 4F: [Кол-во, Сумма без скидки, Скидка (% или сумма), Сумма со скидкой] (когда колонка Цены пропущена OCR)
+        // Пример: 17 | 102.00 | 0 | 102.00  или  17 | 102.00 | 5% | 96.90 -> Итого = 102.00 (96.90), Цена = Итого / 17 = 6.00 (5.70)
+        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > q && m[3] > 0 && m[3] <= m[1] * 1.01 && m[3] >= m[1] * 0.40) {
+          if (m[2] >= 0 && m[2] < 100 && eq(m[1] * (1.0 - m[2] / 100.0), m[3])) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+          if (!mp[2] && m[2] >= 0 && m[2] < m[1] && eq(m[1] - m[2], m[3])) {
+            return _SolvedRowMath(startIdx, q, r2(m[3] / q), r2(m[3]));
+          }
+        }
+
+        // Вариант 4G: [Кол-во, Цена, Скидка %, Цена со скидкой] (только когда m[1] и m[3] — малые цены за штуку, и m[2] > 0)
+        if (!mp[0] && !mp[1] && !mp[3] && q > 0 && m[1] > 0 && m[2] > 0 && m[2] < 50 && m[3] > 0 && m[3] < m[1]) {
           final expectedDiscPrice = m[1] * (1.0 - m[2] / 100.0);
-          if (eq(expectedDiscPrice, m[3], 0.02, 0.10)) {
+          if (eq(expectedDiscPrice, m[3], 0.015, 0.05) && (m[1] <= q * 2 || mp[2])) {
             final discPrice = r2(m[3]);
             return _SolvedRowMath(startIdx, q, discPrice, r2(q * discPrice));
           }
@@ -1310,23 +1476,36 @@ class OcrService {
       // --- 3 КОЛОНКИ: [m0, m1, m2] ---
       if (len == 3) {
         final double q = m[0];
-        if (!mp[0] && !mp[1] && !mp[2] && q > 0 && m[1] > 0 && m[2] > 0) {
+        if (!mp[0] && !mp[1] && !mp[2] && q > 0 && m[1] > 0 && m[2] >= 0) {
           // Вариант 3A: Стандартный [Кол-во, Цена, Сумма]
-          if (eq(q * m[1], m[2])) {
+          if (m[2] > 0 && eq(q * m[1], m[2])) {
             return _SolvedRowMath(startIdx, q, r2(m[1]), r2(m[2]));
           }
           // Вариант 3B: [Кол-во, Сумма, Цена]
-          if (eq(q * m[2], m[1])) {
+          if (m[2] > 0 && eq(q * m[2], m[1])) {
             return _SolvedRowMath(startIdx, q, r2(m[2]), r2(m[1]));
           }
-          // Вариант 3C: [Кол-во, Цена без скидки, Сумма со скидкой]
+          // Вариант 3C: [Кол-во, Сумма без скидки, Сумма со скидкой] (когда колонка Цены пропущена OCR, например: 17 | 102.00 | 102.00 или 17 | 102.00 | 96.90)
+          if (m[1] > q && m[2] > 0 && m[2] <= m[1] * 1.01 && m[2] >= m[1] * 0.45) {
+            return _SolvedRowMath(startIdx, q, r2(m[2] / q), r2(m[2]));
+          }
+          // Вариант 3D: [Кол-во, Сумма без скидки, Скидка 0 или %] (например: 17 | 102.00 | 0)
+          if (m[1] > q && m[2] >= 0 && m[2] <= 35 && m[2] < m[1] * 0.4) {
+            final discTotal = r2(m[1] * (1.0 - m[2] / 100.0));
+            return _SolvedRowMath(startIdx, q, r2(discTotal / q), discTotal);
+          }
+          // Вариант 3E: [Кол-во, Цена без скидки, Сумма со скидкой]
           final undiscounted = q * m[1];
-          if (m[2] < undiscounted && m[2] >= undiscounted * 0.50 && q <= 2000) {
+          if (m[2] > 0 && m[2] < undiscounted && m[2] >= undiscounted * 0.50 && q <= 2000) {
             return _SolvedRowMath(startIdx, q, r2(m[2] / q), r2(m[2]));
           }
         }
-        // Вариант 3D: [Кол-во, Цена, Скидка %] (со знаком %)
-        if (!mp[0] && !mp[1] && mp[2] && q > 0 && m[1] > 0 && m[2] > 0 && m[2] < 100) {
+        // Вариант 3F: [Кол-во, Цена или Сумма, Скидка %] (со знаком %)
+        if (!mp[0] && !mp[1] && mp[2] && q > 0 && m[1] > 0 && m[2] >= 0 && m[2] < 100) {
+          if (m[1] > q * 2.5) {
+            final discTotal = r2(m[1] * (1.0 - m[2] / 100.0));
+            return _SolvedRowMath(startIdx, q, r2(discTotal / q), discTotal);
+          }
           final discPrice = r2(m[1] * (1.0 - m[2] / 100.0));
           return _SolvedRowMath(startIdx, q, discPrice, r2(q * discPrice));
         }
@@ -1384,30 +1563,33 @@ class OcrService {
       }
     }
 
-    // 2. Если точного уравнения не нашлось (например, всего 2 числа или сильное искажение OCR):
+    // 2. Если точного уравнения не нашлось (например, всего 2 числа или пропущена колонка цены):
+    // КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО умножать количество на столбец суммы без скидки!
     final int s = nums.length > 3 ? nums.length - 3 : 0;
     final c = nums.sublist(s);
     if (c.length >= 3) {
       final n1 = c[0] > 0 ? c[0] : (explicitQty ?? 1.0);
       final n2 = c[1];
       final n3 = c[2];
-      if (n1 > 0 && n2 > 0 && n3 > 0) {
-        if (n3 <= n1 * n2 && n3 >= n1 * n2 * 0.45) {
+      if (n1 > 0 && n3 > 0) {
+        // n3 — итоговая сумма со скидкой, n1 — количество
+        if (n3 >= n1) {
           return _SolvedRowMath(s, n1, r2(n3 / n1), r2(n3));
         }
-        return _SolvedRowMath(s, n1, r2(n2), r2(n1 * n2));
+      }
+      if (n1 > 0 && n2 > n1) {
+        return _SolvedRowMath(s, n1, r2(n2 / n1), r2(n2));
       }
     }
 
-    // Для 2 чисел: [Кол-во, Цена] или [Цена, Сумма]
+    // Для 2 чисел: [Кол-во, Сумма] (например 17 и 102.00 -> Цена = 102.00 / 17 = 6.00, Итого = 102.00)
     final int s2 = nums.length >= 2 ? nums.length - 2 : 0;
     final n1 = nums[s2];
     final n2 = nums[s2 + 1];
-    if (explicitQty != null && explicitQty > 0) {
-      final pr = (n1 != explicitQty && n1 > 0) ? n1 : n2;
-      return _SolvedRowMath(s2, explicitQty, r2(pr), r2(explicitQty * pr));
+    if (n1 > 0 && n2 >= n1) {
+      return _SolvedRowMath(s2, n1, r2(n2 / n1), r2(n2));
     }
-    if (n1 > 0 && n1 <= 1000 && n2 > 0) {
+    if (n1 > 0 && n2 > 0) {
       return _SolvedRowMath(s2, n1, r2(n2), r2(n1 * n2));
     }
     final pr = n1 > 0 ? n1 : 1.0;

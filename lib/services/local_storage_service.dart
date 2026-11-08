@@ -77,17 +77,27 @@ class LocalStorageService {
     return db;
   }
 
-  // 1. Сохранение черновика накладной (со сжатием оригиналов фото до 40 КБ)
+  // 1. Сохранение черновика накладной (с защитой от переполнения CursorWindow 2 МБ в SQLite)
   Future<void> saveInvoice(InvoiceDocument doc) async {
     final db = await database;
 
-    // Сохраняем фотографии страниц накладной в высоком оригинальном качестве (без сжатия в 40 КБ)
     final List<String> optimizedPhotos = [];
     for (final photoPath in doc.pagePhotos) {
-      if (photoPath.isNotEmpty && File(photoPath).existsSync()) {
-        optimizedPhotos.add(photoPath);
-      } else if (photoPath.isNotEmpty) {
-        optimizedPhotos.add(photoPath);
+      final trimmed = photoPath.trim();
+      if (trimmed.isEmpty) continue;
+      // Никогда не сохраняем гигантские base64-строки напрямую в SQLite (они вызывают Row too big to fit into CursorWindow!)
+      if (trimmed.startsWith('data:image') || trimmed.length > 4000) {
+        try {
+          final commaIdx = trimmed.indexOf(',');
+          final b64Part = commaIdx != -1 ? trimmed.substring(commaIdx + 1) : trimmed;
+          final bytes = base64Decode(b64Part);
+          final dbDir = await getDatabasesPath();
+          final filePath = join(dbDir, 'inv_photo_${doc.id}_${optimizedPhotos.length}.jpg');
+          await File(filePath).writeAsBytes(bytes);
+          optimizedPhotos.add(filePath);
+        } catch (_) {}
+      } else {
+        optimizedPhotos.add(trimmed);
       }
     }
     doc.pagePhotos = optimizedPhotos;
@@ -114,31 +124,71 @@ class LocalStorageService {
     );
   }
 
-  // 2. Получение локальных накладных (с фильтрацией по магазину и защитой от повреждения строк)
+  // 2. Получение локальных накладных (построчное чтение без переполнения Android SQLite CursorWindow 2MB)
   Future<List<InvoiceDocument>> getLocalInvoices({int? storeId}) async {
     try {
       final db = await database;
-      List<Map<String, dynamic>> rows;
+
+      // 1. Авто-очистка гигантских base64-строк в page_photos_json внутри движка SQLite (до создания CursorWindow!)
+      try {
+        await db.execute("UPDATE invoices SET page_photos_json = '[]' WHERE LENGTH(page_photos_json) > 100000");
+      } catch (_) {}
+
+      // 2. Сначала запрашиваем ТОЛЬКО лёгкие ID строк (несколько байт на строку — никогда не переполнит CursorWindow!)
+      List<Map<String, dynamic>> idRows = [];
       if (storeId != null && storeId > 0) {
-        rows = await db.query(
-          'invoices',
-          where: 'store_id = ? OR is_synchronized = 0 OR store_id IS NULL',
-          whereArgs: [storeId],
-          orderBy: 'created_at DESC',
+        idRows = await db.rawQuery(
+          'SELECT id FROM invoices WHERE store_id = ? OR is_synchronized = 0 OR store_id IS NULL ORDER BY created_at DESC',
+          [storeId],
         );
-        // Если для выбранного store_id ничего не нашлось, проверяем всю таблицу (на случай смены ID магазина)
-        if (rows.isEmpty) {
-          rows = await db.query('invoices', orderBy: 'created_at DESC');
+        if (idRows.isEmpty) {
+          idRows = await db.rawQuery('SELECT id FROM invoices ORDER BY created_at DESC');
         }
       } else {
-        rows = await db.query('invoices', orderBy: 'created_at DESC');
+        idRows = await db.rawQuery('SELECT id FROM invoices ORDER BY created_at DESC');
       }
 
       final List<InvoiceDocument> result = [];
-      for (final r in rows) {
+
+      // 3. Загружаем каждую накладную по одной (1 строка = отдельный CursorWindow), чтобы сумма всех строк никогда не превышала 2 МБ
+      for (final idMap in idRows) {
+        final String? docId = idMap['id']?.toString();
+        if (docId == null || docId.isEmpty) continue;
+
         try {
+          final singleRows = await db.rawQuery(
+            "SELECT id, store_id, supplier_id, supplier_name, invoice_number, incoming_number, "
+            "invoice_date, total_amount, paid_amount, "
+            "CASE WHEN LENGTH(items_json) > 1500000 THEN '' ELSE items_json END AS items_json, "
+            "CASE WHEN LENGTH(page_photos_json) > 100000 THEN '[]' ELSE page_photos_json END AS page_photos_json, "
+            "status, is_synchronized, created_at "
+            "FROM invoices WHERE id = ? LIMIT 1",
+            [docId],
+          );
+          if (singleRows.isEmpty) continue;
+          final r = singleRows.first;
+
+          String rawItemsStr = r['items_json']?.toString() ?? '[]';
+          // Если items_json был больше 1.5 МБ, читаем его безопасными частями по 400 КБ через SUBSTR
+          if (rawItemsStr.isEmpty) {
+            final sb = StringBuffer();
+            int offset = 1;
+            const int chunkSize = 400000;
+            while (true) {
+              final chunkRows = await db.rawQuery(
+                'SELECT SUBSTR(items_json, ?, ?) AS chunk FROM invoices WHERE id = ? LIMIT 1',
+                [offset, chunkSize, docId],
+              );
+              final part = chunkRows.isNotEmpty ? (chunkRows.first['chunk']?.toString() ?? '') : '';
+              if (part.isEmpty) break;
+              sb.write(part);
+              if (part.length < chunkSize) break;
+              offset += chunkSize;
+            }
+            rawItemsStr = sb.toString();
+          }
+
           List<InvoiceItem> itemsList = [];
-          final rawItemsStr = r['items_json']?.toString() ?? '[]';
           if (rawItemsStr.isNotEmpty) {
             final decodedItems = jsonDecode(rawItemsStr);
             if (decodedItems is List) {
@@ -155,7 +205,10 @@ class LocalStorageService {
           if (rawPhotosStr.isNotEmpty) {
             final decodedPhotos = jsonDecode(rawPhotosStr);
             if (decodedPhotos is List) {
-              photosList = decodedPhotos.map((e) => e.toString()).toList();
+              photosList = decodedPhotos
+                  .map((e) => e.toString())
+                  .where((s) => s.isNotEmpty && s.length < 4000)
+                  .toList();
             }
           }
 
@@ -183,7 +236,7 @@ class LocalStorageService {
           final createdDate = DateTime.tryParse(r['created_at']?.toString() ?? '') ?? docDate;
 
           result.add(InvoiceDocument(
-            id: r['id']?.toString() ?? 'doc_${DateTime.now().millisecondsSinceEpoch}',
+            id: docId,
             storeId: parsedStoreId,
             supplierId: parsedSupId,
             supplierName: r['supplier_name']?.toString() ?? 'Поставщик',
@@ -202,11 +255,11 @@ class LocalStorageService {
             createdAt: createdDate,
           ));
         } catch (rowErr) {
-          print('getLocalInvoices row parse warning: $rowErr');
+          print('getLocalInvoices row parse warning ($docId): $rowErr');
         }
       }
 
-      // Сортируем: самые свежие накладные сверху
+      // Сортируем: черновики и самые свежие накладные сверху
       result.sort((a, b) => b.invoiceDate.compareTo(a.invoiceDate));
       return result;
     } catch (e) {
@@ -266,40 +319,15 @@ class LocalStorageService {
       return null;
     }
     try {
-      final db = await database;
-      final rows = await db.query(
-        'invoices',
-        where: 'LOWER(invoice_number) = ?',
-        whereArgs: [trimmedNum.toLowerCase()],
-        limit: 5,
-      );
-
-      for (var r in rows) {
-        final existingSupplier = (r['supplier_name'] as String? ?? '').toLowerCase();
-        final querySupplier = supplierName.trim().toLowerCase();
-        if (querySupplier.isEmpty || existingSupplier.contains(querySupplier) || querySupplier.contains(existingSupplier)) {
-          final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
-              .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
-              .toList();
-          final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
-          return InvoiceDocument(
-            id: r['id'] as String,
-            storeId: r['store_id'] as int? ?? 1,
-            supplierId: r['supplier_id'] as int?,
-            supplierName: r['supplier_name'] as String? ?? 'Поставщик',
-            invoiceNumber: r['invoice_number'] as String? ?? 'б/н',
-            invoiceDate: DateTime.tryParse(r['invoice_date'] as String? ?? '') ?? DateTime.now(),
-            totalAmount: (r['total_amount'] as num?)?.toDouble() ?? 0.0,
-            paidAmount: (r['paid_amount'] as num?)?.toDouble() ?? 0.0,
-            items: itemsList,
-            pagePhotos: photosList,
-            status: DocumentStatus.values.firstWhere(
-              (s) => s.name == (r['status'] as String? ?? 'draft'),
-              orElse: () => DocumentStatus.draft,
-            ),
-            isSynchronized: (r['is_synchronized'] as int? ?? 0) == 1,
-            createdAt: DateTime.tryParse(r['created_at'] as String? ?? '') ?? DateTime.now(),
-          );
+      final allDocs = await getLocalInvoices();
+      final querySupplier = supplierName.trim().toLowerCase();
+      for (final doc in allDocs) {
+        if (doc.invoiceNumber.trim().toLowerCase() == trimmedNum.toLowerCase() ||
+            (doc.incomingNumber.trim().isNotEmpty && doc.incomingNumber.trim().toLowerCase() == trimmedNum.toLowerCase())) {
+          final existingSupplier = doc.supplierName.trim().toLowerCase();
+          if (querySupplier.isEmpty || existingSupplier.contains(querySupplier) || querySupplier.contains(existingSupplier)) {
+            return doc;
+          }
         }
       }
     } catch (_) {}
@@ -308,32 +336,8 @@ class LocalStorageService {
 
   // 8. Получение неотправленных накладных для офлайн-очереди
   Future<List<InvoiceDocument>> getUnsynchronizedInvoices() async {
-    final db = await database;
-    final rows = await db.query('invoices', where: 'is_synchronized = 0', orderBy: 'created_at ASC');
-    return rows.map((r) {
-      final List<InvoiceItem> itemsList = (jsonDecode(r['items_json'] as String) as List<dynamic>)
-          .map((item) => InvoiceItem.fromJson(item as Map<String, dynamic>))
-          .toList();
-      final photosList = List<String>.from(jsonDecode(r['page_photos_json'] as String));
-      return InvoiceDocument(
-        id: r['id'] as String,
-        storeId: r['store_id'] as int? ?? 1,
-        supplierId: r['supplier_id'] as int?,
-        supplierName: r['supplier_name'] as String? ?? 'Поставщик',
-        invoiceNumber: r['invoice_number'] as String? ?? 'б/н',
-        invoiceDate: DateTime.tryParse(r['invoice_date'] as String? ?? '') ?? DateTime.now(),
-        totalAmount: (r['total_amount'] as num?)?.toDouble() ?? 0.0,
-        paidAmount: (r['paid_amount'] as num?)?.toDouble() ?? 0.0,
-        items: itemsList,
-        pagePhotos: photosList,
-        status: DocumentStatus.values.firstWhere(
-          (s) => s.name == (r['status'] as String? ?? 'draft'),
-          orElse: () => DocumentStatus.draft,
-        ),
-        isSynchronized: false,
-        createdAt: DateTime.tryParse(r['created_at'] as String? ?? '') ?? DateTime.now(),
-      );
-    }).toList();
+    final allDocs = await getLocalInvoices();
+    return allDocs.where((d) => !d.isSynchronized).toList();
   }
 
   // 9. Очистить все связки товаров внутри локальных накладных
