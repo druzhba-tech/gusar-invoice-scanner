@@ -544,13 +544,29 @@ class ApiService {
         }
 
         // Выбираем итоговый userStoreId:
-        // Если пользователь явно сам переключил магазин на экране входа — берем его выбор,
-        // иначе если у аккаунта на сервере привязан конкретный магазин — берем магазин аккаунта!
+        // 1. Приоритет отдаётся прямому выбору пользователя или жесткой привязке аккаунта
         int? userStoreId;
         if (userExplicitlySelectedStore && preferredStoreId != null && preferredStoreId > 0) {
           userStoreId = preferredStoreId;
         } else if (serverStoreId != null && serverStoreId > 0) {
           userStoreId = serverStoreId;
+        } else if (preferredStoreId != null && preferredStoreId > 0) {
+          userStoreId = preferredStoreId;
+        } else {
+          // Ищем сохранённую привязку магазина именно для этого логина
+          final savedAccs = await getSavedAccounts();
+          for (final a in savedAccs) {
+            if ((a['username'] ?? '').toString().trim().toLowerCase() == username.toLowerCase()) {
+              final aId = a['store_id'] is int ? a['store_id'] as int : int.tryParse(a['store_id']?.toString() ?? '');
+              if (aId != null && aId > 0) {
+                userStoreId = aId;
+                if ((a['store_name'] ?? '').toString().trim().isNotEmpty) {
+                  userStoreName = a['store_name'].toString().trim();
+                }
+              }
+              break;
+            }
+          }
         }
 
         // 4. Умное сопоставление логина сотрудника со списком магазинов gusar.tj

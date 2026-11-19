@@ -672,6 +672,32 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _openManualInvoice() async {
+    final nextNumber = await _api.fetchNextSequentialInvoiceNumber(storeId: _api.currentStoreId);
+    final newDoc = InvoiceDocument(
+      id: 'manual_${DateTime.now().millisecondsSinceEpoch}',
+      storeId: _api.currentStoreId,
+      invoiceNumber: nextNumber.isNotEmpty ? nextNumber : 'б/н',
+      supplierName: 'Неизвестный поставщик',
+      invoiceDate: DateTime.now(),
+      totalAmount: 0.0,
+      paidAmount: 0.0,
+      items: [],
+      pagePhotos: [],
+      status: DocumentStatus.draft,
+      isSynchronized: false,
+    );
+
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => InvoiceReviewScreen(document: newDoc),
+        ),
+      ).then((_) => _loadData());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final totalSumToday = _recentInvoices.fold(0.0, (s, doc) => s + doc.totalAmount);
@@ -890,6 +916,65 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ],
+            ),
+
+            const SizedBox(height: 12),
+
+            // Кнопка прямого ручного оприходования без фото
+            InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _openManualInvoice,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [
+                      Color(0xFFD97706), // Amber 600
+                      Color(0xFFB45309), // Amber 700
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFD97706).withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Ручное оприходование',
+                            style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Приёмка товаров по факту без сканирования и фото',
+                            style: TextStyle(color: Colors.white70, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white70, size: 14),
+                  ],
+                ),
+              ),
             ),
 
             const SizedBox(height: 12),

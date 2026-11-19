@@ -139,6 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _passwordCtrl.text = pass;
       if (accStoreId != null && accStoreId > 0 && _stores.any((s) => s['id'] == accStoreId)) {
         _selectedStoreId = accStoreId;
+        _userExplicitlySelectedStore = true; // Фиксируем явный выбор магазина привязанного к аккаунту
       }
       _showSavedAccountsList = false;
       _errorMessage = null;

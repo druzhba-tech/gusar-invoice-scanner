@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
+import 'matching_service.dart';
+import 'packaging_service.dart';
 
 /// Позиция товара в шаблоне накладной поставщика
 class SupplierTemplateItem {
@@ -192,7 +194,7 @@ class InvoiceTemplateService {
   Future<void> learnFromInvoice(InvoiceDocument doc) async {
     await init();
     final normSupplier = _normalize(doc.supplierName);
-    if (normSupplier.isEmpty) return;
+    if (normSupplier.isEmpty || normSupplier == 'неизвестный поставщик') return;
 
     SupplierInvoiceTemplate template = _templates[normSupplier] ??
         SupplierInvoiceTemplate(
@@ -210,6 +212,21 @@ class InvoiceTemplateService {
     if (!template.signatures.contains(doc.supplierName)) {
       template.signatures.add(doc.supplierName);
     }
+    final cleanSupplier = doc.supplierName
+        .replaceAll(RegExp(r'\b(ооо|чдмм|зао|оао|ип|ҷдмм|шбб)\b', caseSensitive: false), '')
+        .trim();
+    if (cleanSupplier.length >= 3 && !template.signatures.contains(cleanSupplier)) {
+      template.signatures.add(cleanSupplier);
+    }
+
+    if (doc.supplierId != null && doc.supplierId! > 0) {
+      try {
+        await MatchingService().saveSupplierAlias(doc.supplierName, doc.supplierId!, doc.supplierName);
+        if (cleanSupplier.isNotEmpty) {
+          await MatchingService().saveSupplierAlias(cleanSupplier, doc.supplierId!, doc.supplierName);
+        }
+      } catch (_) {}
+    }
 
     // Сохраняем все привязанные товары в память шаблона поставщика
     for (var item in doc.items) {
@@ -225,6 +242,23 @@ class InvoiceTemplateService {
           unit: item.unit.isNotEmpty ? item.unit : 'шт',
           lastBuyPrice: item.buyPrice > 0 ? item.buyPrice : 0.0,
         );
+
+        // Обучаем глобальный MatchingService
+        try {
+          await MatchingService().saveAlias(doc.supplierName, item.rawName, item.matchedProductId!);
+        } catch (_) {}
+
+        // Если в названии указана фасовка (например "24 шт", "12 кор"), обучаем PackagingService
+        try {
+          final detectedUnits = PackagingService.detectUnitsFromText(item.rawName);
+          if (detectedUnits != null && detectedUnits > 1) {
+            await PackagingService().saveUnitsPerPackage(
+              name: item.matchedProductName ?? item.rawName,
+              barcode: item.matchedBarcode,
+              units: detectedUnits,
+            );
+          }
+        } catch (_) {}
       }
     }
 

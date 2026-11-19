@@ -104,6 +104,33 @@ class OcrService {
       } catch (_) {}
     }
 
+    // ШАГ 1. САМООБУЧАЮЩИЙСЯ ЛОКАЛЬНЫЙ РАЗБОР (SMART OFFLINE ENGINE):
+    // Если накладная от ранее изученного поставщика — пробуем мгновенный бесплатный разбор без вызова внешнего AI!
+    if (knownTemplate != null && knownTemplate.items.isNotEmpty) {
+      try {
+        final localDoc = await _fallbackLocalParse(preparedPaths);
+        if (localDoc.items.isNotEmpty) {
+          final matchedCount = _templateService.applyTemplateToDocument(localDoc, knownTemplate);
+
+          // Проверяем сходимость математики и качество сопоставления товаров:
+          final double sumOfRows = localDoc.items.fold(0.0, (s, i) => s + i.totalPrice);
+          final bool mathMatches = localDoc.totalAmount > 0 &&
+              (localDoc.totalAmount - sumOfRows).abs() <= 1.0;
+          final double matchRatio = localDoc.items.isNotEmpty
+              ? (matchedCount / localDoc.items.length)
+              : 0.0;
+
+          // Если сумма сошлась ИЛИ распознано большинство товаров шаблона (>= 60%):
+          if (mathMatches || (localDoc.items.length >= 2 && matchRatio >= 0.60)) {
+            // Успех! Накладная полностью собрана локально и бесплатно, внешние AI не вызываются
+            return localDoc;
+          }
+        }
+      } catch (e) {
+        print('Learned template local parse warning: $e');
+      }
+    }
+
     final config = await _getAiConfig();
     final yandexKey = config['yandex_key'] ?? defaultYandexKey;
     final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
@@ -111,7 +138,7 @@ class OcrService {
 
     InvoiceDocument? doc;
 
-    // 1. Всегда приоритетно вызываем Yandex Cloud Vision (100% кириллица и табличная разметка)
+    // 2. Если локальный разбор не подошёл (новый поставщик) — вызываем Яндекс AI (Yandex Vision)
     if (yandexKey.isNotEmpty) {
       doc = await parseInvoiceWithYandexVision(
         preparedPaths,
@@ -121,7 +148,7 @@ class OcrService {
       );
     }
 
-    // 2. Если Yandex не ответил и есть валидный ключ Gemini — вызываем Google Gemini Vision AI
+    // 3. Если Яндекс AI не ответил и есть валидный ключ Gemini — вызываем Google Gemini Vision AI
     if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty && geminiKey.startsWith('AIza')) {
       doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
     }

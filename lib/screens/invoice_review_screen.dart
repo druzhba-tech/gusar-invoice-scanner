@@ -71,6 +71,11 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
 
   Future<void> _saveAndRefresh() async {
     await _storage.saveInvoice(_doc);
+    if (_doc.supplierName.trim().isNotEmpty && _doc.supplierName != 'Неизвестный поставщик') {
+      try {
+        InvoiceTemplateService().learnFromInvoice(_doc);
+      } catch (_) {}
+    }
     if (mounted) setState(() {});
   }
 

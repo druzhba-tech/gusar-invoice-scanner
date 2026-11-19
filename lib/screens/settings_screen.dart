@@ -164,7 +164,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _loginMessage = null;
     });
 
-    final result = await _api.login(user, pass, remember: true);
+    int? targetStoreId = _selectedStoreId > 0 ? _selectedStoreId : null;
+    final savedAccounts = await _api.getSavedAccounts();
+    for (final a in savedAccounts) {
+      if ((a['username'] ?? '').toString().trim().toLowerCase() == user.toLowerCase()) {
+        final aId = a['store_id'] is int ? a['store_id'] as int : int.tryParse(a['store_id']?.toString() ?? '');
+        if (aId != null && aId > 0) {
+          targetStoreId = aId;
+        }
+        break;
+      }
+    }
+
+    final result = await _api.login(
+      user,
+      pass,
+      preferredStoreId: targetStoreId,
+      userExplicitlySelectedStore: targetStoreId != null,
+      remember: true,
+    );
 
     setState(() {
       _isLoggingIn = false;
