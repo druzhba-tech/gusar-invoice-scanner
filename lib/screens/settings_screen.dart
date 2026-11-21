@@ -71,7 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (savedId <= 0 || savedName.trim().isEmpty) {
       savedId = _api.currentStoreId > 0 ? _api.currentStoreId : 3;
-      savedName = _api.currentStoreName.trim().isNotEmpty ? _api.currentStoreName : 'Мағозаи намунавӣ (Тестӣ #3)';
+      savedName = _api.currentStoreName.trim().isNotEmpty ? _api.currentStoreName : 'Мағозаи Дарё';
     }
 
     if (_api.accessibleStores.isNotEmpty && _api.accessibleStores.any((s) => (s['id'] ?? 0) > 0)) {

@@ -17,8 +17,8 @@ class ApiService {
   late Dio _dio;
   String baseUrl = 'https://gusar.tj';
   String? authToken;
-  int currentStoreId = 3; // По умолчанию магазин Мағозаи намунавӣ (Тестӣ #3)
-  String currentStoreName = 'Мағозаи намунавӣ (Тестӣ #3)';
+  int currentStoreId = 3; // По умолчанию магазин Мағозаи Дарё (#3)
+  String currentStoreName = 'Мағозаи Дарё';
   List<Map<String, dynamic>> accessibleStores = [];
 
   String? lastSubmitError;
@@ -30,12 +30,12 @@ class ApiService {
     authToken = prefs.getString('auth_token');
     final savedId = prefs.getInt('store_id');
     final savedName = prefs.getString('store_name');
-    if (savedId != null && savedId > 0 && savedName != null && savedName.trim().isNotEmpty) {
+    if (savedId != null && savedId > 0 && savedName != null && savedName.trim().isNotEmpty && !savedName.contains('Тестӣ') && !savedName.contains('намунавӣ')) {
       currentStoreId = savedId;
-      currentStoreName = savedName.trim();
+      currentStoreName = (savedId == 3) ? 'Мағозаи Дарё' : savedName.trim();
     } else {
-      currentStoreId = 3;
-      currentStoreName = 'Мағозаи намунавӣ (Тестӣ #3)';
+      currentStoreId = (savedId != null && savedId > 0) ? savedId : 3;
+      currentStoreName = (currentStoreId == 3) ? 'Мағозаи Дарё' : 'Мағозаи Дарё';
     }
 
     final savedAcc = prefs.getString('accessible_stores_list');
@@ -207,6 +207,19 @@ class ApiService {
 
   // Загрузка подразделений/складов напрямую из базы gusar.tj (публичный + супер-админский эндпоинты)
   Future<List<Map<String, dynamic>>> fetchStores() async {
+    final Map<int, Map<String, dynamic>> storeMap = {
+      1: {'id': 1, 'name': 'Ашам Маркет', 'address': 'База gusar.tj', 'is_active': true},
+      2: {'id': 2, 'name': 'Мағозаи Арзон', 'address': 'деҳаи Ғӯсар, шаҳри Панҷакент', 'subdomain': 'arzon', 'is_active': true},
+      3: {'id': 3, 'name': 'Мағозаи Дарё', 'address': 'деҳаи Ғӯсар, Мағозаи Дарё', 'subdomain': 'daryo', 'is_active': true},
+      4: {'id': 4, 'name': 'Мағозаи Тестӣ', 'address': 'База gusar.tj', 'is_active': true},
+      5: {'id': 5, 'name': 'Кафе «Амид»', 'address': 'деҳаи Навобод, шаҳри Панҷакент', 'subdomain': 'amid', 'is_active': true},
+      6: {'id': 6, 'name': 'Мағозаи Б', 'address': 'База gusar.tj', 'is_active': true},
+      7: {'id': 7, 'name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'address': 'База gusar.tj', 'is_active': true},
+      8: {'id': 8, 'name': 'Кафеи Тестӣ', 'address': 'База gusar.tj', 'subdomain': 'testcafe8', 'is_active': false},
+      9: {'id': 9, 'name': 'Аптекаи Шервон', 'address': 'База gusar.tj', 'is_active': true},
+      10: {'id': 10, 'name': 'Кафе «Умар»', 'address': 'деҳаи Гусар, шаҳри Панҷакент', 'subdomain': 'umar', 'is_active': true},
+    };
+
     try {
       Response? response;
       // 1. Сначала запрашиваем публичный каталог всех магазинов (всегда открыт, не требует прав суперадмина)
@@ -228,47 +241,64 @@ class ApiService {
           items = raw['data'];
         }
 
-        if (items.isNotEmpty) {
-          final list = items.map((e) {
-            final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1;
-            final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
-            final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
-            final subdomain = e['subdomain']?.toString() ?? '';
-            final isActive = e['is_active'] == true || e['active'] == true || e['is_active'] == 1;
-            return {
-              'id': id,
-              'name': name,
-              'address': address,
-              'subdomain': subdomain,
-              'is_active': isActive,
-            };
-          }).toList();
-          return list;
+        for (final e in items) {
+          final id = e['id'] is int ? e['id'] as int : int.tryParse(e['id']?.toString() ?? '1') ?? 1;
+          final name = e['name']?.toString() ?? 'Магазин gusar.tj #$id';
+          final address = e['address']?.toString() ?? e['description']?.toString() ?? 'База gusar.tj';
+          final subdomain = e['subdomain']?.toString() ?? '';
+          final isActive = e['is_active'] == true || e['active'] == true || e['is_active'] == 1;
+          storeMap[id] = {
+            'id': id,
+            'name': name,
+            'address': address,
+            'subdomain': subdomain,
+            'is_active': isActive,
+          };
         }
       }
     } catch (e) {
       print('fetchStores warning: $e');
     }
-    return [];
+
+    // Всегда проверяем live-информацию о магазине #3 (Мағозаи Дарё)
+    try {
+      final s3Resp = await _dio.get('/api/store/3').timeout(const Duration(seconds: 4));
+      if (s3Resp.statusCode == 200 && s3Resp.data != null && s3Resp.data['name'] != null) {
+        storeMap[3] = {
+          'id': 3,
+          'name': s3Resp.data['name'].toString().trim(),
+          'address': 'Мағозаи Дарё, gusar.tj',
+          'subdomain': 'daryo',
+          'is_active': s3Resp.data['is_active'] ?? true,
+        };
+      }
+    } catch (_) {}
+
+    final result = storeMap.values.toList();
+    result.sort((a, b) => (a['id'] as int).compareTo(b['id'] as int));
+    return result;
   }
 
   // Список известных сотрудников подразделений сети gusar.tj для быстрого выбора
   static const List<Map<String, dynamic>> defaultStaffAccounts = [
     {'username': 'Furuzon', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'ADMIN'},
     {'username': 'кассир', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'CASHIER'},
-    {'username': 'alko7_admin', 'store_id': 7, 'store_name': 'Алкомаркет №7', 'role': 'ADMIN'},
-    {'username': 'kassa7', 'store_id': 7, 'store_name': 'Алкомаркет №7', 'role': 'CASHIER'},
-    {'username': 'testadmin', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'ADMIN'},
-    {'username': 'kassir', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'CASHIER'},
-    {'username': 'Фурушанда', 'store_id': 3, 'store_name': 'Мағозаи намунавӣ (Тестӣ #3)', 'role': 'CASHIER'},
-    {'username': 'umar', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'ADMIN'},
-    {'username': 'Umarbek', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'CASHIER'},
-    {'username': 'Касса', 'store_id': 10, 'store_name': 'Ресторан / Склад #10', 'role': 'CASHIER'},
-    {'username': 'cafe5_admin', 'store_id': 5, 'store_name': 'Кафе AMID #5', 'role': 'ADMIN'},
-    {'username': 'Касса амид', 'store_id': 5, 'store_name': 'Кафе AMID #5', 'role': 'CASHIER'},
-    {'username': 'testadmin4', 'store_id': 4, 'store_name': 'Магазин #4', 'role': 'ADMIN'},
-    {'username': 'shervon', 'store_id': 9, 'store_name': 'Магазин #9', 'role': 'ADMIN'},
-    {'username': 'Umed', 'store_id': 1, 'store_name': 'Магазин #1', 'role': 'ADMIN'},
+    {'username': 'daryo_admin', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
+    {'username': 'daryo', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
+    {'username': 'дарё', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
+    {'username': 'testadmin', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
+    {'username': 'kassir', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'CASHIER'},
+    {'username': 'Фурушанда', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'CASHIER'},
+    {'username': 'alko7_admin', 'store_id': 7, 'store_name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'role': 'ADMIN'},
+    {'username': 'kassa7', 'store_id': 7, 'store_name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'role': 'CASHIER'},
+    {'username': 'umar', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'ADMIN'},
+    {'username': 'Umarbek', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'CASHIER'},
+    {'username': 'Касса', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'CASHIER'},
+    {'username': 'cafe5_admin', 'store_id': 5, 'store_name': 'Кафе «Амид»', 'role': 'ADMIN'},
+    {'username': 'Касса амид', 'store_id': 5, 'store_name': 'Кафе «Амид»', 'role': 'CASHIER'},
+    {'username': 'testadmin4', 'store_id': 4, 'store_name': 'Мағозаи Тестӣ', 'role': 'ADMIN'},
+    {'username': 'shervon', 'store_id': 9, 'store_name': 'Аптекаи Шервон', 'role': 'ADMIN'},
+    {'username': 'Umed', 'store_id': 1, 'store_name': 'Ашам Маркет', 'role': 'ADMIN'},
     {'username': 'superadmin', 'store_id': null, 'store_name': 'Вся сеть gusar.tj', 'role': 'SUPERADMIN'},
   ];
 
@@ -543,6 +573,19 @@ class ApiService {
           } catch (_) {}
         }
 
+        // Если store_id определен сервером, сразу получаем живое название напрямую из базы gusar.tj
+        if (serverStoreId != null && serverStoreId > 0) {
+          try {
+            final stResp = await _dio.get('/api/store/$serverStoreId').timeout(const Duration(seconds: 4));
+            if (stResp.statusCode == 200 && stResp.data != null && stResp.data['name'] != null) {
+              final liveName = stResp.data['name'].toString().trim();
+              if (liveName.isNotEmpty) {
+                userStoreName = liveName;
+              }
+            }
+          } catch (_) {}
+        }
+
         // Выбираем итоговый userStoreId:
         // 1. Приоритет отдаётся прямому выбору пользователя или жесткой привязке аккаунта
         int? userStoreId;
@@ -574,8 +617,14 @@ class ApiService {
           final cleanUser = username.toLowerCase().trim();
           final userDigits = cleanUser.replaceAll(RegExp(r'\D'), '');
 
+          // Если в логине слово "дарё", "daryo" - это Мағозаи Дарё (#3)
+          if (cleanUser.contains('дарё') || cleanUser.contains('daryo')) {
+            userStoreId = 3;
+            userStoreName = 'Мағозаи Дарё';
+          }
+
           // Если в логине есть номер магазина (например "3" или "№3")
-          if (userDigits.isNotEmpty) {
+          if (userStoreId == null && userDigits.isNotEmpty) {
             final parsedDigit = int.tryParse(userDigits);
             if (parsedDigit != null && allStores.any((s) => s['id'] == parsedDigit)) {
               final matched = allStores.firstWhere((s) => s['id'] == parsedDigit);
@@ -584,12 +633,12 @@ class ApiService {
             }
           }
 
-          // Если в логине слово "тест", "намунав", "test" - это Мағозаи намунавӣ (Тестӣ #3)
+          // Если в логине слово "тест", "намунав", "test" - это Мағозаи Дарё (#3)
           if (userStoreId == null && (cleanUser.contains('тест') || cleanUser.contains('намунав') || cleanUser.contains('test'))) {
             final matched = allStores.firstWhere((s) => s['id'] == 3, orElse: () => {});
             if (matched.isNotEmpty && matched['id'] != null) {
               userStoreId = 3;
-              userStoreName = matched['name'] as String;
+              userStoreName = (matched['name'] ?? 'Мағозаи Дарё') as String;
             }
           }
 
@@ -659,18 +708,18 @@ class ApiService {
               ? userStoreName.trim()
               : (allStores.firstWhere((s) => s['id'] == userStoreId, orElse: () => {})['name']?.toString() ?? 'Магазин gusar.tj #$userStoreId');
         } else {
-          // Если магазин не определен ни сервером, ни пользователем - отдаем предпочтение Магазину #3
+          // Если магазин не определен ни сервером, ни пользователем - отдаем предпочтение Магазину #3 (Мағозаи Дарё)
           final defaultStore = allStores.firstWhere(
             (s) => s['id'] == 3,
             orElse: () => allStores.firstWhere(
               (s) => s['is_active'] == true && s['id'] != null && (s['id'] as int) >= 1,
               orElse: () => allStores.isNotEmpty
                   ? allStores.first
-                  : {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'address': 'Магазин gusar.tj'},
+                  : {'id': 3, 'name': 'Мағозаи Дарё', 'address': 'Мағозаи Дарё, gusar.tj'},
             ),
           );
           assignedStoreId = defaultStore['id'] as int;
-          assignedStoreName = defaultStore['name'] as String;
+          assignedStoreName = (assignedStoreId == 3) ? 'Мағозаи Дарё' : (defaultStore['name'] as String);
         }
 
         // ВСЕГДА предоставляем сотруднику полный список доступных магазинов для свободного переключения

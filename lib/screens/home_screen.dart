@@ -29,7 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<InvoiceDocument> _recentInvoices = [];
   bool _isLoading = true;
-  String? _storeName = 'Магазин Gusar #1 (Центральный)';
+  String? _storeName = 'Мағозаи Дарё';
   String? _loggedUser;
   bool _isAuthenticated = false;
   UpdateInfo? _availableUpdate;
@@ -467,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (stores.isEmpty) {
       stores = [
-        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)'},
+        {'id': 3, 'name': 'Мағозаи Дарё'},
         {'id': 2, 'name': 'Мағозаи Арзон'},
       ];
     }
@@ -763,7 +763,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Flexible(
                           child: Text(
-                            _storeName ?? 'Мағозаи намунавӣ (Тестӣ #3)',
+                            _storeName ?? 'Мағозаи Дарё',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.w600),

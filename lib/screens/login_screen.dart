@@ -59,18 +59,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (storesList.isEmpty) {
       storesList = [
+        {'id': 3, 'name': 'Мағозаи Дарё', 'is_active': true},
         {'id': 2, 'name': 'Мағозаи Арзон', 'is_active': true},
-        {'id': 3, 'name': 'Мағозаи намунавӣ (Тестӣ #3)', 'is_active': true},
-        {'id': 7, 'name': 'Алкомаркет №7', 'is_active': true},
+        {'id': 7, 'name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'is_active': true},
       ];
     }
 
     int? defaultId = savedStoreId;
     if (defaultId == null || !storesList.any((s) => s['id'] == defaultId)) {
-      if (storesList.any((s) => s['id'] == 2)) {
-        defaultId = 2;
-      } else if (storesList.any((s) => s['id'] == 3)) {
+      if (storesList.any((s) => s['id'] == 3)) {
         defaultId = 3;
+      } else if (storesList.any((s) => s['id'] == 2)) {
+        defaultId = 2;
       } else {
         defaultId = storesList.first['id'] as int;
       }
