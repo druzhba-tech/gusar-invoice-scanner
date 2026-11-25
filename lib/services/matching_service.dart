@@ -20,8 +20,8 @@ String normalizeProductNameForMatch(String text) {
       .replaceAll('ӯ', 'у')
       .replaceAll('ҷ', 'ч')
       .replaceAll('ӣ', 'и')
-      .replaceAll(RegExp(r'ый\b'), 'ий')
-      .replaceAll(RegExp(r'[^\w\s\d]', unicode: true), ' ')
+      .replaceAll(RegExp(r'[^\p{L}\p{N}\s]', unicode: true), ' ')
+      .replaceAll(RegExp(r'ый(?=\s|$)'), 'ий')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 }
