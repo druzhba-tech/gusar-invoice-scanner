@@ -4,6 +4,70 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/invoice_document.dart';
 import '../models/invoice_item.dart';
 
+/// Разбор весового штрихкода EAN-13 (префиксы 20..29 и 00 для весов Мағозаи Дарё #3)
+class ScaleBarcodeInfo {
+  final bool isScale;
+  final double? weightKg;
+  final String? prefix7;
+  final String? plu5;
+  final int? pluNum;
+
+  const ScaleBarcodeInfo({
+    required this.isScale,
+    this.weightKg,
+    this.prefix7,
+    this.plu5,
+    this.pluNum,
+  });
+}
+
+ScaleBarcodeInfo parseScaleBarcode(String barcode) {
+  final clean = barcode.trim();
+  if (clean.length == 13 && (RegExp(r'^2[0-9]\d{11}$').hasMatch(clean) || RegExp(r'^00\d{11}$').hasMatch(clean))) {
+    final prefix7 = clean.substring(0, 7);
+    final plu5 = clean.substring(2, 7);
+    final pluNum = int.tryParse(plu5);
+    final grams = double.tryParse(clean.substring(7, 12));
+    final weightKg = (grams != null && grams > 0) ? (grams / 1000.0) : null;
+    return ScaleBarcodeInfo(
+      isScale: true,
+      weightKg: weightKg,
+      prefix7: prefix7,
+      plu5: plu5,
+      pluNum: pluNum,
+    );
+  }
+  return const ScaleBarcodeInfo(isScale: false);
+}
+
+bool matchesInvoiceItemBarcode(InvoiceItem it, String rawBarcode, ScaleBarcodeInfo scaleInfo) {
+  final clean = rawBarcode.trim();
+  final candidates = <String>[
+    if (it.matchedBarcode != null && it.matchedBarcode!.trim().isNotEmpty) it.matchedBarcode!.trim(),
+    if (it.barcode != null && it.barcode!.trim().isNotEmpty) it.barcode!.trim(),
+  ];
+
+  for (final cand in candidates) {
+    if (cand == clean) return true;
+    if (scaleInfo.isScale && scaleInfo.prefix7 != null) {
+      // Сопоставление по 7-значному префиксу весов (2000001 / 0000001) или 13-значному шаблону 200000100000X
+      if (cand == scaleInfo.prefix7 || cand.startsWith(scaleInfo.prefix7!)) {
+        return true;
+      }
+      // Сопоставление по числовому коду PLU (например "1", "00001" или "2100001" vs "2000001")
+      if (scaleInfo.pluNum != null) {
+        if (int.tryParse(cand) == scaleInfo.pluNum) return true;
+        if ((cand.length == 7 || cand.length == 13) &&
+            (cand.startsWith('20') || cand.startsWith('21') || cand.startsWith('00')) &&
+            int.tryParse(cand.substring(2, 7)) == scaleInfo.pluNum) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 class BarcodeVerifierScreen extends StatefulWidget {
   final InvoiceDocument document;
 
@@ -38,23 +102,14 @@ class _BarcodeVerifierScreenState extends State<BarcodeVerifierScreen> {
   void _processBarcode(String barcode) {
     HapticFeedback.mediumImpact();
 
-    // 1. Проверяем, не весовой ли это штрихкод (префикс 20...29)
-    double? variableWeight;
-    String cleanBarcode = barcode;
+    // 1. Проверяем, не весовой ли это штрихкод (префиксы 20..29 и 00)
+    final scaleInfo = parseScaleBarcode(barcode);
+    final double? variableWeight = scaleInfo.weightKg;
 
-    if (barcode.length == 13 && barcode.startsWith(RegExp(r'2[0-9]'))) {
-      // Пример: 20 + 5 знаков артикул + 5 знаков вес (граммы) + 1 контрольный
-      final weightGramsStr = barcode.substring(7, 12);
-      final grams = double.tryParse(weightGramsStr);
-      if (grams != null) {
-        variableWeight = grams / 1000.0; // переводим в кг
-      }
-    }
-
-    // 2. Ищем товар в накладной по штрихкоду
+    // 2. Ищем товар в накладной по точному штрихкоду или по префиксу/PLU весов
     InvoiceItem? targetItem;
     for (var it in widget.document.items) {
-      if (it.matchedBarcode == cleanBarcode || it.barcode == cleanBarcode) {
+      if (matchesInvoiceItemBarcode(it, barcode, scaleInfo)) {
         targetItem = it;
         break;
       }

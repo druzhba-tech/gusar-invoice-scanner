@@ -239,15 +239,14 @@ class _AddProductScreenState extends State<AddProductScreen> {
     return (maxPlu + 1).toString();
   }
 
-  // Генерация следующего номера для весов
+  // Генерация следующего номера для весов (7-значный внутренний штрихкод стандарта gusar.tj: 20XXXXX)
   void _generateNextPlu() {
     final nextPlu = _calculateNextPlu();
     final pluNum = int.tryParse(nextPlu) ?? 1;
-    final raw12 = '20${pluNum.toString().padLeft(5, '0')}00000';
-    final check = _calculateEanCheckDigit(raw12);
+    final scaleBarcode7 = '20${pluNum.toString().padLeft(5, '0')}';
     setState(() {
       _pluCtrl.text = nextPlu;
-      _barcodeCtrl.text = '$raw12$check';
+      _barcodeCtrl.text = scaleBarcode7;
     });
   }
 

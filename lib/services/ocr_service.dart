@@ -18,23 +18,15 @@ class OcrService {
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   final InvoiceTemplateService _templateService = InvoiceTemplateService();
 
-  static String get defaultGeminiKey {
-    try {
-      return utf8.decode(base64Decode('QVEuQWI4Uk42SlZ2dDVWZDM2WmItYjFkQ3hUcVRJUEdnOFc5QVAxdDVZRVFvNlhUUkhJZmc='));
-    } catch (_) {
-      return '';
-    }
-  }
+  // Безопасная передача ключей через --dart-define (CI Secrets) или Настройки приложения — без хардкода в репозитории
+  static String get defaultGeminiKey =>
+      const String.fromEnvironment('GEMINI_API_KEY', defaultValue: '').trim();
 
-  static String get defaultYandexKey {
-    try {
-      return utf8.decode(base64Decode('QVFWTnhFNWdxTTI5ZWcwcVFEajRPMFhNcW1QLVB0Z3lpOGdnTzBVeQ=='));
-    } catch (_) {
-      return '';
-    }
-  }
+  static String get defaultYandexKey =>
+      const String.fromEnvironment('YANDEX_API_KEY', defaultValue: '').trim();
 
-  static String get defaultYandexFolderId => 'b1g19395325ob2oao64t';
+  static String get defaultYandexFolderId =>
+      const String.fromEnvironment('YANDEX_FOLDER_ID', defaultValue: '').trim();
 
   Future<Map<String, String>> _getAiConfig() async {
     final prefs = await SharedPreferences.getInstance();
@@ -149,7 +141,7 @@ class OcrService {
     }
 
     // 3. Если Яндекс AI не ответил и есть валидный ключ Gemini — вызываем Google Gemini Vision AI
-    if ((doc == null || doc.items.isEmpty) && geminiKey.isNotEmpty && geminiKey.startsWith('AIza')) {
+    if ((doc == null || doc.items.isEmpty) && geminiKey.trim().length >= 15) {
       doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
     }
 
@@ -161,7 +153,7 @@ class OcrService {
 
     // 3.1. АВТО-ВОССТАНОВЛЕНИЕ ОРИЕНТАЦИИ (MULTI-ANGLE AUTO-RECOVERY):
     // Если накладная сфотографирована боком и первый проход дал 0 товаров —
-    // поворачиваем снимок на 90 градусов и пробуем распознать снова ЧЕРЕЗ YANDEX VISION (с сохранением кириллицы)!
+    // поворачиваем снимок на 90 градусов и пробуем распознать снова через Yandex Vision -> Gemini -> ML Kit
     if ((doc == null || doc.items.isEmpty) && preparedPaths.isNotEmpty) {
       final List<String> currentTryPaths = List<String>.from(preparedPaths);
       for (int rotationAttempt = 1; rotationAttempt <= 3; rotationAttempt++) {
@@ -187,6 +179,14 @@ class OcrService {
             currentTryPaths,
             yandexKey,
             folderId: yandexFolderId,
+            originalPaths: currentTryPaths,
+          );
+        }
+        if ((retryDoc == null || retryDoc.items.isEmpty) && geminiKey.trim().length >= 15) {
+          retryDoc = await _parseWithGemini(
+            currentTryPaths,
+            geminiKey,
+            template: knownTemplate,
             originalPaths: currentTryPaths,
           );
         }
@@ -591,63 +591,74 @@ class OcrService {
         return null;
       }
 
-      // Используем проверенные стабильные модели Google Gemini
+      // Используем проверенные актуальные модели Google Gemini с экспоненциальным повтором на 503/429
       final candidateModels = [
+        'gemini-3.6-flash',
         'gemini-3.5-flash',
         'gemini-3.5-flash-lite',
-        'gemini-3.6-flash',
+        'gemini-3-flash-preview',
+        'gemini-2.5-flash',
         'gemini-flash-latest',
-        'gemini-3.1-flash-lite',
       ];
+      const retryDelaysMs = [900, 2200];
 
       for (var modelName in candidateModels) {
-        try {
-          final url = Uri.parse(
-            'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey',
-          );
+        bool authFailed = false;
+        for (int attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+          try {
+            final url = Uri.parse(
+              'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey',
+            );
 
-          final response = await http.post(
-            url,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'contents': [
-                {'parts': parts}
-              ],
-              'generationConfig': {
-                'response_mime_type': 'application/json',
-                'maxOutputTokens': 8192,
-                'temperature': 0.1,
+            final response = await http.post(
+              url,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'contents': [
+                  {'parts': parts}
+                ],
+                'generationConfig': {
+                  'response_mime_type': 'application/json',
+                  'maxOutputTokens': 8192,
+                  'temperature': 0.1,
+                }
+              }),
+            ).timeout(const Duration(seconds: 45));
+
+            if (response.statusCode == 200) {
+              final resJson = jsonDecode(response.body);
+              final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
+              final cleanJson = _cleanAndRepairJson(rawText);
+              final data = jsonDecode(cleanJson);
+
+              final doc = _buildDocumentFromJson(data, originalPaths ?? imagePaths);
+              if (doc.items.isNotEmpty) {
+                return doc;
               }
-            }),
-          ).timeout(const Duration(seconds: 40));
-
-          if (response.statusCode == 200) {
-            final resJson = jsonDecode(response.body);
-            final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
-            final cleanJson = _cleanAndRepairJson(rawText);
-            final data = jsonDecode(cleanJson);
-
-            final doc = _buildDocumentFromJson(data, originalPaths ?? imagePaths);
-            if (doc.items.isNotEmpty) {
-              return doc;
+              break;
+            } else if (response.statusCode == 400 || response.statusCode == 401 || response.statusCode == 403) {
+              print('Gemini Auth/Param Error (${response.statusCode})');
+              authFailed = true;
+              break;
+            } else if ((response.statusCode == 503 || response.statusCode == 429) && attempt < retryDelaysMs.length) {
+              print('Gemini $modelName busy (${response.statusCode}), retry ${attempt + 1}...');
+              await Future.delayed(Duration(milliseconds: retryDelaysMs[attempt]));
+              continue;
+            } else {
+              print('Gemini $modelName Error: ${response.statusCode}, switching to next model...');
+              await Future.delayed(const Duration(milliseconds: 400));
+              break;
             }
-          } else if (response.statusCode == 400 || response.statusCode == 401 || response.statusCode == 403) {
-            print('Gemini Auth/Param Error (${response.statusCode})');
+          } catch (e) {
+            print('Gemini $modelName attempt ${attempt + 1} failed: $e');
+            if (attempt < retryDelaysMs.length) {
+              await Future.delayed(Duration(milliseconds: retryDelaysMs[attempt]));
+              continue;
+            }
             break;
-          } else if (response.statusCode == 503 || response.statusCode == 429) {
-            print('Gemini $modelName temporary busy (${response.statusCode}), switching to next model...');
-            await Future.delayed(const Duration(milliseconds: 1000));
-            continue;
-          } else {
-            print('Gemini $modelName Error: ${response.statusCode}, switching to next model...');
-            await Future.delayed(const Duration(milliseconds: 500));
-            continue;
           }
-        } catch (e) {
-          print('Gemini $modelName attempt failed: $e, switching to next model...');
-          await Future.delayed(const Duration(milliseconds: 500));
-          continue;
         }
+        if (authFailed) break;
       }
       return null;
     } catch (e) {

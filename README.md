@@ -57,8 +57,8 @@
 ## 📦 Сборка и установка APK
 
 ### Вариант 1: Скачивание готового APK из GitHub
-1. Перейдите в раздел **Releases** репозитория: `https://github.com/dehagusar-png/gusar-invoice-scanner/releases`
-2. Скачайте последний файл `Gusar-Scanner-latest.apk`.
+1. Перейдите в раздел **Releases** репозитория: `https://github.com/druzhba-tech/gusar-invoice-scanner/releases`
+2. Скачайте последний файл `Gusar-Scanner.apk`.
 3. Откройте файл на Android-смартфоне и подтвердите установку.
 
 ### Вариант 2: Локальная сборка (для разработчиков)

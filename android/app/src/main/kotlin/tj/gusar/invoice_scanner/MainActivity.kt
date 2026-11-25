@@ -7,20 +7,56 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
+import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileOutputStream
 
-class MainActivity: FlutterActivity() {
-    private val CHANNEL = "tj.gusar.invoice_scanner/app_installer"
+class MainActivity : FlutterActivity() {
+    private val INSTALLER_CHANNEL = "tj.gusar.invoice_scanner/app_installer"
+    private val SHARED_FILES_CHANNEL = "tj.gusar.invoice_scanner/shared_files"
     private var downloadReceiver: BroadcastReceiver? = null
+    private var sharedFilesChannel: MethodChannel? = null
+    private var pendingSharedPaths: MutableList<String> = mutableListOf()
+    private var activeDownloadId: Long = -1L
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleIncomingShareIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingShareIntent(intent)
+        if (pendingSharedPaths.isNotEmpty() && sharedFilesChannel != null) {
+            val pathsToDeliver = ArrayList(pendingSharedPaths)
+            pendingSharedPaths.clear()
+            sharedFilesChannel?.invokeMethod("onSharedFiles", pathsToDeliver)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+
+        sharedFilesChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHARED_FILES_CHANNEL)
+        sharedFilesChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getInitialSharedFiles" -> {
+                    val pathsToDeliver = ArrayList(pendingSharedPaths)
+                    pendingSharedPaths.clear()
+                    result.success(pathsToDeliver)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, INSTALLER_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "installApk" -> {
                     val filePath = call.argument<String>("filePath")
@@ -57,7 +93,55 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private var activeDownloadId: Long = -1L
+    private fun handleIncomingShareIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action ?: return
+        val type = intent.type ?: ""
+        if (!type.startsWith("image/") && type != "application/pdf") return
+
+        val uris = mutableListOf<Uri>()
+        if (action == Intent.ACTION_SEND) {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            if (uri != null) uris.add(uri)
+        } else if (action == Intent.ACTION_SEND_MULTIPLE) {
+            val list = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+            }
+            if (list != null) uris.addAll(list)
+        }
+
+        for (uri in uris) {
+            val copiedPath = copySharedUriToCache(uri, type)
+            if (copiedPath != null) {
+                pendingSharedPaths.add(copiedPath)
+            }
+        }
+    }
+
+    private fun copySharedUriToCache(uri: Uri, fallbackMime: String): String? {
+        return try {
+            val mime = contentResolver.getType(uri) ?: fallbackMime
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+                ?: if (mime == "application/pdf") "pdf" else "jpg"
+            val outFile = File(cacheDir, "shared_invoice_${System.currentTimeMillis()}_${pendingSharedPaths.size}.$ext")
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(outFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return null
+            outFile.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     private fun startSystemDownload(url: String, title: String, description: String, fileName: String): Long {
         val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -83,8 +167,8 @@ class MainActivity: FlutterActivity() {
                         if (isSameUrl || isSameApp) {
                             val existingId = if (idIdx != -1) cursor.getLong(idIdx) else -1L
                             cursor.close()
-                            registerDownloadReceiver()
                             activeDownloadId = existingId
+                            registerDownloadReceiver()
                             return existingId
                         }
                     }
@@ -122,7 +206,8 @@ class MainActivity: FlutterActivity() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (DownloadManager.ACTION_DOWNLOAD_COMPLETE == intent?.action) {
                     val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                    if (id != -1L) {
+                    // Устанавливаем строго только наш собственный загруженный APK!
+                    if (activeDownloadId != -1L && id == activeDownloadId) {
                         val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                         val query = DownloadManager.Query().setFilterById(id)
                         val cursor = dm.query(query)
@@ -136,6 +221,7 @@ class MainActivity: FlutterActivity() {
                             }
                             cursor.close()
                         }
+                        activeDownloadId = -1L
                     }
                 }
             }
@@ -144,7 +230,7 @@ class MainActivity: FlutterActivity() {
         val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
         if (Build.VERSION.SDK_INT >= 33) {
             try {
-                registerReceiver(downloadReceiver, filter, 2) // Context.RECEIVER_EXPORTED
+                registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED)
             } catch (e: Exception) {
                 registerReceiver(downloadReceiver, filter)
             }

@@ -4,6 +4,7 @@ import '../models/invoice_item.dart';
 import '../models/invoice_document.dart';
 import '../models/product.dart';
 import '../utils/cyrillic_decoder.dart';
+import 'api_service.dart';
 import 'invoice_template_service.dart';
 
 class MatchCandidate {
@@ -40,10 +41,16 @@ class MatchingService {
     await prefs.setBool('aliases_cleaned_v1429', true);
   }
 
-  // Удаление конкретной связки
-  Future<void> removeAlias(String supplierName, String rawName) async {
-    final key = _buildKey(supplierName, rawName);
-    final globalKey = 'global::${_normalizeText(rawName)}';
+  int _resolveStoreId(int? storeId) {
+    if (storeId != null && storeId > 0) return storeId;
+    return ApiService().currentStoreId > 0 ? ApiService().currentStoreId : 3;
+  }
+
+  // Удаление конкретной связки (с изоляцией по store_id)
+  Future<void> removeAlias(String supplierName, String rawName, {int? storeId}) async {
+    final sid = _resolveStoreId(storeId);
+    final key = _buildKey(supplierName, rawName, storeId: sid);
+    final globalKey = 's$sid::global::${_normalizeText(rawName)}';
     _aliasDictionary.remove(key);
     _aliasDictionary.remove(globalKey);
     final prefs = await SharedPreferences.getInstance();
@@ -96,26 +103,31 @@ class MatchingService {
     }
   }
 
-  // Сохранение привязки контрагента из базы
-  Future<void> saveSupplierAlias(String rawOcrSupplier, int supplierId, String supplierName) async {
+  // Сохранение привязки контрагента из базы (изолировано по store_id)
+  Future<void> saveSupplierAlias(String rawOcrSupplier, int supplierId, String supplierName, {int? storeId}) async {
     // Никогда не сохраняем клиентские псевдо-ID (таймстампы)
     if (supplierId <= 0 || supplierId >= 1000000) return;
+    final sid = _resolveStoreId(storeId);
     final norm = _normalizeText(rawOcrSupplier);
     if (norm.isEmpty) return;
-    _supplierAliases[norm] = {'id': supplierId, 'name': supplierName};
+    _supplierAliases['s$sid::$norm'] = {'id': supplierId, 'name': supplierName, 'store_id': sid};
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('counterparty_aliases_dict', jsonEncode(_supplierAliases));
   }
 
-  Map<String, dynamic>? matchSupplier(String rawSupplier) {
+  Map<String, dynamic>? matchSupplier(String rawSupplier, {int? storeId}) {
+    final sid = _resolveStoreId(storeId);
+    final prefix = 's$sid::';
     final norm = _normalizeText(rawSupplier);
     if (norm.isEmpty) return null;
     Map<String, dynamic>? res;
-    if (_supplierAliases.containsKey(norm)) {
-      res = _supplierAliases[norm];
+    if (_supplierAliases.containsKey('$prefix$norm')) {
+      res = _supplierAliases['$prefix$norm'];
     } else {
       for (var entry in _supplierAliases.entries) {
-        if (entry.key.length > 3 && (norm.contains(entry.key) || entry.key.contains(norm))) {
+        if (!entry.key.startsWith(prefix)) continue;
+        final cleanEntryKey = entry.key.substring(prefix.length);
+        if (cleanEntryKey.length > 3 && (norm.contains(cleanEntryKey) || cleanEntryKey.contains(norm))) {
           res = entry.value;
           break;
         }
@@ -128,8 +140,9 @@ class MatchingService {
     return res;
   }
 
-  String _buildKey(String supplier, String rawName) {
-    return '${supplier.trim().toLowerCase()}::${_normalizeText(rawName)}';
+  String _buildKey(String supplier, String rawName, {int? storeId}) {
+    final sid = _resolveStoreId(storeId);
+    return 's$sid::${supplier.trim().toLowerCase()}::${_normalizeText(rawName)}';
   }
 
   // 1. Привязать навсегда по сканированию штрихкода (Scan to Bind)
@@ -138,6 +151,7 @@ class MatchingService {
     required String barcode,
     required String supplierName,
     required List<Product> catalog,
+    int? storeId,
   }) async {
     Product? matchedProduct;
     try {
@@ -148,18 +162,19 @@ class MatchingService {
 
     if (matchedProduct != null) {
       applyMatch(item, matchedProduct, confidence: 1.0);
-      await saveAlias(supplierName, item.rawName, matchedProduct.id);
+      await saveAlias(supplierName, item.rawName, matchedProduct.id, storeId: storeId ?? matchedProduct.storeId);
       return true;
     }
     return false;
   }
 
-  // 2. Сохранение связки в постоянный обучаемый словарь сети (поставщик + глобально)
-  Future<void> saveAlias(String supplierName, String rawName, int productId) async {
+  // 2. Сохранение связки в постоянный обучаемый словарь магазина (изолировано по store_id)
+  Future<void> saveAlias(String supplierName, String rawName, int productId, {int? storeId}) async {
     if (productId <= 0 || productId >= 100000000 || (productId >= 101 && productId <= 110)) return;
+    final sid = _resolveStoreId(storeId);
 
-    final key = _buildKey(supplierName, rawName);
-    final globalKey = 'global::${_normalizeText(rawName)}';
+    final key = _buildKey(supplierName, rawName, storeId: sid);
+    final globalKey = 's$sid::global::${_normalizeText(rawName)}';
 
     _aliasDictionary[key] = productId;
     _aliasDictionary[globalKey] = productId;
@@ -210,11 +225,16 @@ class MatchingService {
   int get rememberedCorrectionsCount => _correctionsDictionary.length;
   int get rememberedSuppliersCount => _supplierAliases.length;
 
-  // 4. Автоматическое сопоставление накладной с каталогом товаров gusar.tj с приоритетом памяти
+  // 4. Автоматическое сопоставление накладной с каталогом товаров gusar.tj с приоритетом памяти (строго по store_id)
   void autoMatchDocument(InvoiceDocument doc, List<Product> catalog) {
-    // Шаг -1: Проверяем память контрагентов
+    final sid = _resolveStoreId(doc.storeId);
+    final storePrefix = 's$sid::';
+    // Фильтруем каталог строго по магазину документа
+    final storeCatalog = catalog.where((p) => p.storeId <= 0 || p.storeId == sid).toList();
+
+    // Шаг -1: Проверяем память контрагентов текущего магазина
     if (doc.supplierId == null) {
-      final matchedSup = matchSupplier(doc.supplierName);
+      final matchedSup = matchSupplier(doc.supplierName, storeId: sid);
       if (matchedSup != null) {
         doc.supplierId = matchedSup['id'] as int;
         doc.supplierName = matchedSup['name'] as String;
@@ -236,20 +256,21 @@ class MatchingService {
 
       if (item.matchedProductId != null) continue;
 
-      // Шаг 1: Проверяем память истории (словарь привязок конкретного поставщика или глобальный)
-      final key = _buildKey(doc.supplierName, item.rawName);
-      final globalKey = 'global::${_normalizeText(item.rawName)}';
+      // Шаг 1: Проверяем память истории строго в рамках текущего store_id
+      final key = _buildKey(doc.supplierName, item.rawName, storeId: sid);
+      final globalKey = 's$sid::global::${_normalizeText(item.rawName)}';
 
       int? savedId = _aliasDictionary[key] ?? _aliasDictionary[globalKey];
 
-      // Если прямого совпадения нет, ищем среди сохраненных связок по высокой токенной схожести (>= 85%)
+      // Если прямого совпадения нет, ищем среди сохраненных связок текущего магазина по схожести (>= 85%)
       if (savedId == null) {
         final normItem = _normalizeText(item.rawName);
         final itemTokens = normItem.split(' ').where((t) => t.length > 2).toSet();
         if (itemTokens.length >= 2) {
           double bestScore = 0.0;
           for (var entry in _aliasDictionary.entries) {
-            final keyStr = entry.key.startsWith('global::') ? entry.key.substring(8) : entry.key.split('::').last;
+            if (!entry.key.startsWith(storePrefix)) continue;
+            final keyStr = entry.key.split('::').last;
             final keyTokens = keyStr.split(' ').where((t) => t.length > 2).toSet();
             if (keyTokens.length >= 2) {
               final inter = itemTokens.intersection(keyTokens).length;
@@ -266,7 +287,7 @@ class MatchingService {
 
       if (savedId != null) {
         try {
-          final prod = catalog.firstWhere((p) => p.id == savedId);
+          final prod = storeCatalog.firstWhere((p) => p.id == savedId);
           applyMatch(item, prod, confidence: 1.0);
           continue;
         } catch (_) {}
@@ -275,7 +296,7 @@ class MatchingService {
       // Шаг 2: Если у строки есть распознанный штрихкод
       if (item.barcode != null && item.barcode!.isNotEmpty) {
         try {
-          final prod = catalog.firstWhere((p) => p.barcode == item.barcode);
+          final prod = storeCatalog.firstWhere((p) => p.barcode == item.barcode);
           applyMatch(item, prod, confidence: 0.99);
           continue;
         } catch (_) {}
@@ -283,7 +304,7 @@ class MatchingService {
 
       // Шаг 3: Нечеткое семантическое сопоставление (Fuzzy Match)
       // В приёмке товаров строго требуется точность >= 85%, чтобы конфеты не матчились на шоколад
-      final candidates = getCandidates(item.rawName, catalog, limit: 1);
+      final candidates = getCandidates(item.rawName, storeCatalog, limit: 1);
       if (candidates.isNotEmpty && candidates.first.score >= 0.85) {
         applyMatch(item, candidates.first.product, confidence: candidates.first.score);
       }

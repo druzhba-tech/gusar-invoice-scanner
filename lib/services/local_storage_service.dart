@@ -26,7 +26,7 @@ class LocalStorageService {
 
     final db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         // Таблица локальных документов накладных
         await db.execute('''
@@ -58,13 +58,23 @@ class LocalStorageService {
             price REAL,
             cost_price REAL,
             stock_quantity REAL,
-            category TEXT
+            category TEXT,
+            payload_json TEXT
           )
         ''');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_store ON products_cache(store_id)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_barcode ON products_cache(store_id, barcode)');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         try {
           await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
+        } catch (_) {}
+        try {
+          await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
+        } catch (_) {}
+        try {
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_store ON products_cache(store_id)');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_barcode ON products_cache(store_id, barcode)');
         } catch (_) {}
       },
     );
@@ -73,8 +83,92 @@ class LocalStorageService {
     try {
       await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
     } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
+    } catch (_) {}
+    try {
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_store ON products_cache(store_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_products_cache_barcode ON products_cache(store_id, barcode)');
+    } catch (_) {}
 
     return db;
+  }
+
+  // Сохранение кэша каталога магазина в SQLite (быстро и без переполнения SharedPreferences)
+  Future<void> saveProductsCache(int storeId, List<Product> products) async {
+    if (storeId <= 0) return;
+    try {
+      final db = await database;
+      await db.transaction((txn) async {
+        await txn.delete('products_cache', where: 'store_id = ?', whereArgs: [storeId]);
+        final batch = txn.batch();
+        for (final p in products) {
+          batch.insert(
+            'products_cache',
+            {
+              'id': p.id,
+              'store_id': storeId,
+              'name': p.name,
+              'barcode': p.barcode ?? '',
+              'price': p.price,
+              'cost_price': p.costPrice,
+              'stock_quantity': p.stockQuantity,
+              'category': p.category ?? '',
+              'payload_json': jsonEncode(p.toJson()),
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await batch.commit(noResult: true);
+      });
+    } catch (e) {
+      print('saveProductsCache warning: $e');
+    }
+  }
+
+  Future<List<Product>> getProductsCache(int storeId) async {
+    if (storeId <= 0) return [];
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'products_cache',
+        columns: ['payload_json', 'id', 'store_id', 'name', 'barcode', 'price', 'cost_price', 'stock_quantity', 'category'],
+        where: 'store_id = ?',
+        whereArgs: [storeId],
+      );
+      final List<Product> result = [];
+      for (final r in rows) {
+        final rawPayload = r['payload_json']?.toString();
+        if (rawPayload != null && rawPayload.isNotEmpty) {
+          try {
+            result.add(Product.fromJson(jsonDecode(rawPayload) as Map<String, dynamic>));
+            continue;
+          } catch (_) {}
+        }
+        result.add(Product(
+          id: (r['id'] as int?) ?? 0,
+          storeId: (r['store_id'] as int?) ?? storeId,
+          name: r['name']?.toString() ?? '',
+          barcode: r['barcode']?.toString(),
+          price: (r['price'] as num?)?.toDouble() ?? 0.0,
+          costPrice: (r['cost_price'] as num?)?.toDouble() ?? 0.0,
+          stockQuantity: (r['stock_quantity'] as num?)?.toDouble() ?? 0.0,
+          category: r['category']?.toString(),
+        ));
+      }
+      return result;
+    } catch (e) {
+      print('getProductsCache warning: $e');
+      return [];
+    }
+  }
+
+  Future<void> clearProductsCache(int storeId) async {
+    if (storeId <= 0) return;
+    try {
+      final db = await database;
+      await db.delete('products_cache', where: 'store_id = ?', whereArgs: [storeId]);
+    } catch (_) {}
   }
 
   // 1. Сохранение черновика накладной (с защитой от переполнения CursorWindow 2 МБ в SQLite)
@@ -134,16 +228,13 @@ class LocalStorageService {
         await db.execute("UPDATE invoices SET page_photos_json = '[]' WHERE LENGTH(page_photos_json) > 100000");
       } catch (_) {}
 
-      // 2. Сначала запрашиваем ТОЛЬКО лёгкие ID строк (несколько байт на строку — никогда не переполнит CursorWindow!)
+      // 2. Сначала запрашиваем ТОЛЬКО лёгкие ID строк со строгой изоляцией по store_id
       List<Map<String, dynamic>> idRows = [];
       if (storeId != null && storeId > 0) {
         idRows = await db.rawQuery(
-          'SELECT id FROM invoices WHERE store_id = ? OR is_synchronized = 0 OR store_id IS NULL ORDER BY created_at DESC',
+          'SELECT id FROM invoices WHERE store_id = ? ORDER BY created_at DESC',
           [storeId],
         );
-        if (idRows.isEmpty) {
-          idRows = await db.rawQuery('SELECT id FROM invoices ORDER BY created_at DESC');
-        }
       } else {
         idRows = await db.rawQuery('SELECT id FROM invoices ORDER BY created_at DESC');
       }

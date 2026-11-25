@@ -51,10 +51,10 @@ android {
 
     signingConfigs {
         release {
-            keyAlias 'gusarkey'
-            keyPassword 'gusar_pass_2026'
+            keyAlias System.getenv('KEY_ALIAS') ?: 'gusarkey'
+            keyPassword System.getenv('KEY_PASSWORD') ?: 'gusar_pass_2026'
             storeFile file('gusar_release.keystore')
-            storePassword 'gusar_pass_2026'
+            storePassword System.getenv('KEYSTORE_PASSWORD') ?: 'gusar_pass_2026'
         }
     }
 

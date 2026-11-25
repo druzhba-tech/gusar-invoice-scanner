@@ -201,7 +201,7 @@ class Product {
 
     return Product(
       id: parsedId,
-      storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '1') ?? 1,
+      storeId: json['store_id'] is int ? json['store_id'] : int.tryParse(json['store_id']?.toString() ?? '3') ?? 3,
       name: name,
       barcode: barcode,
       article: article,

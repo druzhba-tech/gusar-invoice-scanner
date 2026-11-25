@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,6 +43,8 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTimeRange? _customDateRange;
   String _amountFilterType = 'all'; // 'all', 'under500', '500_2000', '2000_10000', 'over10000'
 
+  static const MethodChannel _sharedFilesChannel = MethodChannel('tj.gusar.invoice_scanner/shared_files');
+
   @override
   void initState() {
     super.initState();
@@ -50,8 +53,37 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _searchQuery = _searchCtrl.text);
       }
     });
+    _initSharedFilesListener();
     _loadData();
     _checkUpdates();
+  }
+
+  Future<void> _initSharedFilesListener() async {
+    _sharedFilesChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onSharedFiles' && call.arguments is List) {
+        final paths = (call.arguments as List).map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+        _openSharedFilesInScanner(paths);
+      }
+    });
+    try {
+      final initial = await _sharedFilesChannel.invokeMethod<List<dynamic>>('getInitialSharedFiles');
+      if (initial != null && initial.isNotEmpty) {
+        final paths = initial.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+        if (paths.isNotEmpty && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _openSharedFilesInScanner(paths));
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _openSharedFilesInScanner(List<String> paths) {
+    if (paths.isEmpty || !mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CameraScannerScreen(preselectedImages: paths),
+      ),
+    ).then((_) => _loadData());
   }
 
   @override
@@ -394,7 +426,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final prefs = await SharedPreferences.getInstance();
       int activeStoreId = _api.currentStoreId;
       if (activeStoreId <= 0) {
-        activeStoreId = prefs.getInt('store_id') ?? 1;
+        activeStoreId = prefs.getInt('store_id') ?? 3;
       }
       final localDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
       final String storeName = _api.currentStoreName.isNotEmpty

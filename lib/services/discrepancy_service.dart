@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -21,14 +21,22 @@ class DiscrepancyService {
     required String receiverName,
     required String driverName,
   }) async {
-    // 1. Загружаем шрифты Roboto с полной поддержкой кириллицы (русский + таджикский языки)
+    // 1. Загружаем встроенные офлайн-шрифты Roboto с полной поддержкой кириллицы (русский + таджикский ӯқғҳҷӣ)
     pw.Font? ttfRegular;
     pw.Font? ttfBold;
     try {
-      ttfRegular = await PdfGoogleFonts.robotoRegular();
-      ttfBold = await PdfGoogleFonts.robotoBold();
-    } catch (e) {
-      print('PdfGoogleFonts error: $e');
+      final regData = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
+      final boldData = await rootBundle.load('assets/fonts/Roboto-Bold.ttf');
+      ttfRegular = pw.Font.ttf(regData);
+      ttfBold = pw.Font.ttf(boldData);
+    } catch (assetErr) {
+      print('Local Roboto font asset warning: $assetErr');
+      try {
+        ttfRegular = await PdfGoogleFonts.robotoRegular();
+        ttfBold = await PdfGoogleFonts.robotoBold();
+      } catch (e) {
+        print('PdfGoogleFonts error: $e');
+      }
     }
 
     final theme = (ttfRegular != null && ttfBold != null)
@@ -60,13 +68,11 @@ class DiscrepancyService {
     }
 
     pdf.addPage(
-      pw.Page(
+      pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.symmetric(horizontal: 32, vertical: 28),
         build: (pw.Context context) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
+          return [
               // Шапка документа
               pw.Row(
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
@@ -247,7 +253,7 @@ class DiscrepancyService {
                 ),
               ),
 
-              pw.Spacer(),
+              pw.SizedBox(height: 20),
 
               // Блок официальных подписей сторон
               pw.Container(
@@ -308,8 +314,7 @@ class DiscrepancyService {
                   style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey600),
                 ),
               ),
-            ],
-          );
+            ];
         },
       ),
     );

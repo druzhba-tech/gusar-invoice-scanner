@@ -279,28 +279,8 @@ class ApiService {
     return result;
   }
 
-  // Список известных сотрудников подразделений сети gusar.tj для быстрого выбора
-  static const List<Map<String, dynamic>> defaultStaffAccounts = [
-    {'username': 'Furuzon', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'ADMIN'},
-    {'username': 'кассир', 'store_id': 2, 'store_name': 'Мағозаи Арзон', 'role': 'CASHIER'},
-    {'username': 'daryo_admin', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
-    {'username': 'daryo', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
-    {'username': 'дарё', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
-    {'username': 'testadmin', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'ADMIN'},
-    {'username': 'kassir', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'CASHIER'},
-    {'username': 'Фурушанда', 'store_id': 3, 'store_name': 'Мағозаи Дарё', 'role': 'CASHIER'},
-    {'username': 'alko7_admin', 'store_id': 7, 'store_name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'role': 'ADMIN'},
-    {'username': 'kassa7', 'store_id': 7, 'store_name': 'Алкомаркет №7 (Шароб ва Нӯшокиҳо)', 'role': 'CASHIER'},
-    {'username': 'umar', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'ADMIN'},
-    {'username': 'Umarbek', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'CASHIER'},
-    {'username': 'Касса', 'store_id': 10, 'store_name': 'Кафе «Умар»', 'role': 'CASHIER'},
-    {'username': 'cafe5_admin', 'store_id': 5, 'store_name': 'Кафе «Амид»', 'role': 'ADMIN'},
-    {'username': 'Касса амид', 'store_id': 5, 'store_name': 'Кафе «Амид»', 'role': 'CASHIER'},
-    {'username': 'testadmin4', 'store_id': 4, 'store_name': 'Мағозаи Тестӣ', 'role': 'ADMIN'},
-    {'username': 'shervon', 'store_id': 9, 'store_name': 'Аптекаи Шервон', 'role': 'ADMIN'},
-    {'username': 'Umed', 'store_id': 1, 'store_name': 'Ашам Маркет', 'role': 'ADMIN'},
-    {'username': 'superadmin', 'store_id': null, 'store_name': 'Вся сеть gusar.tj', 'role': 'SUPERADMIN'},
-  ];
+  // Список сотрудников не хранится в публичном коде — используются только сохранённые на устройстве аккаунты
+  static const List<Map<String, dynamic>> defaultStaffAccounts = [];
 
   // 0. Управление списком сохранённых аккаунтов (логинов и паролей) для быстрого входа
   Future<List<Map<String, dynamic>>> getSavedAccounts({int? filterStoreId}) async {
@@ -754,14 +734,30 @@ class ApiService {
         final errText = dioErr.response?.data?['message'] ?? dioErr.response?.data?['error'] ?? 'Неверный логин или пароль';
         return {'success': false, 'message': 'Ошибка авторизации ($errText).'};
       }
-      // Офлайн-авторизация при временном отсутствии интернета
+      // Строгий офлайн-вход: разрешается ТОЛЬКО если логин и пароль совпадают с ранее подтверждённым аккаунтом на устройстве!
+      final savedAccounts = await getSavedAccounts();
+      final matchedOffline = savedAccounts.firstWhere(
+        (a) =>
+            (a['username'] ?? '').toString().trim().toLowerCase() == username.trim().toLowerCase() &&
+            (a['password'] ?? '').toString().isNotEmpty &&
+            (a['password'] ?? '').toString() == password,
+        orElse: () => {},
+      );
+      if (matchedOffline.isEmpty) {
+        return {
+          'success': false,
+          'message': 'Нет связи с сервером gusar.tj. Для первого входа или смены пароля требуется интернет.',
+        };
+      }
       await prefs.setString('logged_username', username);
       await prefs.setBool('is_authenticated', true);
-      final savedId = preferredStoreId ?? prefs.getInt('store_id') ?? currentStoreId;
+      final savedId = (matchedOffline['store_id'] is int ? matchedOffline['store_id'] as int : null) ??
+          preferredStoreId ??
+          prefs.getInt('store_id') ??
+          currentStoreId;
       final fallbackId = savedId > 0 ? savedId : 3;
-      final fallbackName = prefs.getString('store_name') ?? currentStoreName;
+      final fallbackName = (matchedOffline['store_name'] ?? prefs.getString('store_name') ?? currentStoreName).toString();
       await updateStore(fallbackId, fallbackName);
-      await saveAccountCredentials(username, password, storeId: fallbackId, storeName: fallbackName);
       if (accessibleStores.isEmpty) {
         accessibleStores = [
           {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
@@ -773,22 +769,9 @@ class ApiService {
         'message': 'Вход выполнен (офлайн-режим для $fallbackName).'
       };
     } catch (e) {
-      await prefs.setString('logged_username', username);
-      await prefs.setBool('is_authenticated', true);
-      final savedId = preferredStoreId ?? prefs.getInt('store_id') ?? currentStoreId;
-      final fallbackId = savedId > 0 ? savedId : 3;
-      final fallbackName = prefs.getString('store_name') ?? currentStoreName;
-      await updateStore(fallbackId, fallbackName);
-      await saveAccountCredentials(username, password, storeId: fallbackId, storeName: fallbackName);
-      if (accessibleStores.isEmpty) {
-        accessibleStores = [
-          {'id': fallbackId, 'name': fallbackName, 'address': 'Магазин сотрудника $username'}
-        ];
-      }
-      await prefs.setString('accessible_stores_list', jsonEncode(accessibleStores));
       return {
-        'success': true,
-        'message': 'Вход выполнен (локальный режим).'
+        'success': false,
+        'message': 'Ошибка подключения к серверу gusar.tj. Проверьте интернет и повторите вход.',
       };
     }
   }
@@ -830,22 +813,20 @@ class ApiService {
     Product(id: 110, storeId: 1, name: 'Шоколад Алёнка молочный 100г', barcode: '4600605001234', price: 12.00, costPrice: 9.20, stockQuantity: 65),
   ];
 
-  // 2. Получение актуального каталога товаров и остатков магазина из gusar.tj
+  // 2. Получение актуального каталога товаров и остатков магазина из gusar.tj (кэш в SQLite по store_id)
   Future<List<Product>> getProducts({bool forceRefresh = false}) async {
-    final prefs = await SharedPreferences.getInstance();
+    final targetStoreId = currentStoreId;
 
     if (!forceRefresh && _cachedProducts.isNotEmpty) {
       return _cachedProducts;
     }
 
-    // Загрузка сохраненного кеша из SharedPreferences
-    final localJson = prefs.getString('cached_products_list');
-    if (localJson != null && _cachedProducts.isEmpty && !forceRefresh) {
+    // Загрузка сохраненного кэша конкретного магазина из SQLite (быстро и без переполнения SharedPreferences)
+    if (_cachedProducts.isEmpty && !forceRefresh) {
       try {
-        final list = jsonDecode(localJson) as List;
-        final prods = list.map((p) => Product.fromJson(p as Map<String, dynamic>)).toList();
-        if (prods.isNotEmpty) {
-          _cachedProducts = prods;
+        final sqliteProds = await LocalStorageService().getProductsCache(targetStoreId);
+        if (sqliteProds.isNotEmpty) {
+          _cachedProducts = sqliteProds;
           return _cachedProducts;
         }
       } catch (_) {}
@@ -858,12 +839,12 @@ class ApiService {
         response = await _dio.get(
           '/api/products',
           queryParameters: {
-            'store_id': currentStoreId,
+            'store_id': targetStoreId,
             'limit': 10000,
           },
         ).timeout(const Duration(seconds: 45));
       } catch (_) {
-        response = await _dio.get('/api/products', queryParameters: {'limit': 10000}).timeout(const Duration(seconds: 45));
+        response = await _dio.get('/api/products', queryParameters: {'store_id': targetStoreId, 'limit': 10000}).timeout(const Duration(seconds: 45));
       }
 
       if (response != null && response.statusCode == 200 && response.data != null) {
@@ -884,11 +865,12 @@ class ApiService {
               .where((p) => p is Map)
               .map((p) => Product.fromJson(Map<String, dynamic>.from(p as Map)))
               .where((p) => p.id > 0 && p.id < 100000000 && !(p.id >= 101 && p.id <= 110))
+              .where((p) => p.storeId <= 0 || p.storeId == targetStoreId)
               .toList();
 
           if (serverProds.isNotEmpty) {
             _cachedProducts = serverProds;
-            await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
+            await LocalStorageService().saveProductsCache(targetStoreId, _cachedProducts);
             return _cachedProducts;
           }
         }
@@ -923,11 +905,11 @@ class ApiService {
       if (cand == null && p.article != null && RegExp(r'^\d{1,5}$').hasMatch(p.article!.trim())) {
         cand = int.tryParse(p.article!.trim());
       }
-      // 3. Проверяем штрихкод весов или короткий числовой штрихкод
+      // 3. Проверяем штрихкод весов (7-значный 20XXXXX или 13-значный 20/21/00) или короткий числовой штрихкод
       if (cand == null && (p.isWeighted || p.unit == 'кг')) {
         if (p.barcode != null && RegExp(r'^\d{1,5}$').hasMatch(p.barcode!.trim())) {
           cand = int.tryParse(p.barcode!.trim());
-        } else if (p.barcode != null && p.barcode!.length == 13 && (p.barcode!.startsWith('20') || p.barcode!.startsWith('21'))) {
+        } else if (p.barcode != null && (p.barcode!.length == 7 || p.barcode!.length == 13) && (p.barcode!.startsWith('20') || p.barcode!.startsWith('21') || p.barcode!.startsWith('00'))) {
           cand = int.tryParse(p.barcode!.substring(2, 7));
         }
       }
@@ -1059,8 +1041,7 @@ class ApiService {
     } else {
       _cachedProducts.add(prod);
     }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('cached_products_list', jsonEncode(_cachedProducts.map((p) => p.toJson()).toList()));
+    await LocalStorageService().saveProductsCache(currentStoreId, _cachedProducts);
   }
 
   // Поиск товара напрямую на сервере gusar.tj для получения подтверждённого серверного ID
@@ -1787,10 +1768,10 @@ class ApiService {
           'message': 'Доступ запрещён (403): учетная запись не имеет прав на списание долгов поставщикам. Требуются права Администратора или Менеджера.',
         };
       }
-      // Запасной маршрут через counterparties/payment
+      // Запасной маршрут через v2/counterparties/payment
       try {
         final resp = await _dio.post(
-          '/api/counterparties/payment',
+          '/api/v2/counterparties/payment',
           data: {
             'supplier_id': supplierId,
             ...payload,
@@ -1881,7 +1862,7 @@ class ApiService {
     final clean = invoiceNumber.trim().toLowerCase();
     if (clean.isEmpty) return false;
     try {
-      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': currentStoreId});
+      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': currentStoreId, 'limit': 200});
       dynamic items = response.data;
       if (items is Map && items['purchases'] is List) items = items['purchases'];
       if (items is Map && items['data'] is List) items = items['data'];
@@ -2071,14 +2052,11 @@ class ApiService {
             .toList();
         serverPurchases = allMapped
             .where((p) {
-              if (p['store_id'] == null) return true;
+              if (p['store_id'] == null) return false;
               final pStoreId = int.tryParse(p['store_id'].toString());
-              return pStoreId == null || pStoreId <= 0 || pStoreId == targetStoreId;
+              return pStoreId != null && pStoreId == targetStoreId;
             })
             .toList();
-        if (serverPurchases.isEmpty && allMapped.isNotEmpty) {
-          serverPurchases = allMapped;
-        }
       }
     } catch (e) {
       print('syncStoreInvoices fetch purchases warning: $e');
@@ -2351,8 +2329,8 @@ class ApiService {
     }
   }
 
-  // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj
-  Future<bool> submitPurchase(InvoiceDocument document) async {
+  // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj (с idempotencyKey и защитой от бесконечного повтора)
+  Future<bool> submitPurchase(InvoiceDocument document, {int retryDepth = 0}) async {
     lastSubmitError = null;
     try {
       final isDebt = document.paidAmount <= 0;
@@ -2526,7 +2504,8 @@ class ApiService {
         'unpaid_amount': double.parse(debtAmount.toStringAsFixed(2)),
         'payment_status': isDebt ? 'debt' : (debtAmount > 0.001 ? 'partial' : 'paid'),
         'is_debt': (isDebt || debtAmount > 0.001) ? 1 : 0,
-        'payment_source': paid > 0 ? 'cash' : 'unpaid',
+        'payment_source': paid > 0 ? 'cash_drawer' : 'unpaid',
+        'idempotencyKey': 'gscan_${currentStoreId}_${document.id}',
         'notes': 'Накладная №$cleanInvNum (Вх. №: $cleanIncoming) от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : (debtAmount > 0.001 ? "ОПЛАЧЕНО: ${paid.toStringAsFixed(2)} TJS, ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : "ОПЛАЧЕНО ПОЛНОСТЬЮ: ${paid.toStringAsFixed(2)} TJS")}]',
         'items': itemsPayload,
       };
@@ -2540,10 +2519,10 @@ class ApiService {
         return false;
       }
     } on DioException catch (dioErr) {
-      if (dioErr.response?.statusCode == 401) {
+      if (dioErr.response?.statusCode == 401 && retryDepth < 1) {
         final relogOk = await _trySilentReLogin();
         if (relogOk) {
-          return submitPurchase(document);
+          return submitPurchase(document, retryDepth: retryDepth + 1);
         }
       }
 

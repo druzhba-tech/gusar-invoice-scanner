@@ -95,7 +95,7 @@ class InvoiceDocument {
   factory InvoiceDocument.fromJson(Map<String, dynamic> json) {
     return InvoiceDocument(
       id: json['id'] ?? '',
-      storeId: json['store_id'] ?? 1,
+      storeId: json['store_id'] ?? 3,
       supplierId: json['supplier_id'],
       supplierName: json['supplier_name'] ?? 'Неизвестный поставщик',
       invoiceNumber: json['invoice_number'] ?? 'б/н',
