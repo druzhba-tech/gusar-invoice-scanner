@@ -70,12 +70,27 @@ jobs:
             git push origin HEAD:${{ github.ref_name }} || true
           fi
 
-      - name: 🛠️ Build Release APK
+      - name: 🔍 Static Analysis & Unit Tests
         run: |
           if [ -d "scanner-app" ]; then
             cd scanner-app
           fi
-          flutter build apk --release --no-tree-shake-icons
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+          flutter test
+
+      - name: 🛠️ Build Release APK
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -d "scanner-app" ]; then
+            cd scanner-app
+          fi
+          flutter build apk --release --no-tree-shake-icons \
+            --dart-define=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+            --dart-define=YANDEX_API_KEY="${{ secrets.YANDEX_API_KEY }}" \
+            --dart-define=YANDEX_FOLDER_ID="${{ secrets.YANDEX_FOLDER_ID }}"
           cp build/app/outputs/flutter-apk/app-release.apk Gusar-Scanner.apk
           RAW_VER=$(grep '^version:' pubspec.yaml | head -n 1 | awk '{print $2}' | cut -d'+' -f1)
           echo "APP_VER=v$RAW_VER" >> $GITHUB_ENV
