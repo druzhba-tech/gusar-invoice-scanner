@@ -7,6 +7,25 @@ import '../utils/cyrillic_decoder.dart';
 import 'api_service.dart';
 import 'invoice_template_service.dart';
 
+/// Единая фонетическая нормализация (русский + таджикский: ё=е, ый=ий, ғ=г, қ=к, ҳ=х, ӯ=у, ҷ=ч, ӣ=и)
+/// Позволяет точно сопоставлять «сок добрий» с «Сок Добрый Яблочный» даже при опечатках
+String normalizeProductNameForMatch(String text) {
+  final decoded = CyrillicDecoder.decode(text);
+  return decoded
+      .toLowerCase()
+      .replaceAll('ё', 'е')
+      .replaceAll('ғ', 'г')
+      .replaceAll('қ', 'к')
+      .replaceAll('ҳ', 'х')
+      .replaceAll('ӯ', 'у')
+      .replaceAll('ҷ', 'ч')
+      .replaceAll('ӣ', 'и')
+      .replaceAll(RegExp(r'ый\b'), 'ий')
+      .replaceAll(RegExp(r'[^\w\s\d]', unicode: true), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
 class MatchCandidate {
   final Product product;
   final double score; // 0.0 to 1.0
@@ -19,9 +38,13 @@ class MatchingService {
   factory MatchingService() => _instance;
   MatchingService._internal();
 
-  // Словарь синонимов: "supplier::raw_name" -> productId и "global::raw_name" -> productId
+  // Словарь синонимов: "s3::supplier::raw_name" -> productId (для 1-к-1 автопривязки)
   Map<String, int> _aliasDictionary = {};
   Map<String, int> get aliasDictionary => Map.unmodifiable(_aliasDictionary);
+
+  // Мульти-вариантный словарь: если общее имя ("сок добрий") привязывалось к 2+ разным вкусам,
+  // храним список всех productId, чтобы НЕ привязывать вслепую к одному вкусу, а показать их первыми!
+  Map<String, List<int>> _multiAliases = {};
 
   // Обучаемая память исправлений пользователя: "rawOcrText" -> "cleanText"
   Map<String, String> _correctionsDictionary = {};
@@ -78,6 +101,19 @@ class MatchingService {
           const genericWords = {'сливки', 'со вкусом', 'сыр', 'соль', 'шоколад', 'конфеты', 'печенье', 'молоко', 'масло', 'сахар'};
           return genericWords.contains(cleanKey);
         });
+      } catch (_) {}
+    }
+
+    final rawMulti = prefs.getString('supplier_multi_aliases_dict');
+    if (rawMulti != null) {
+      try {
+        final decoded = jsonDecode(rawMulti) as Map<String, dynamic>;
+        _multiAliases = decoded.map((k, v) => MapEntry(
+              k,
+              (v is List)
+                  ? v.map((e) => int.tryParse(e.toString()) ?? 0).where((id) => id > 0 && id < 100000000).toList()
+                  : <int>[],
+            ));
       } catch (_) {}
     }
 
@@ -168,19 +204,78 @@ class MatchingService {
     return false;
   }
 
-  // 2. Сохранение связки в постоянный обучаемый словарь магазина (изолировано по store_id)
-  Future<void> saveAlias(String supplierName, String rawName, int productId, {int? storeId}) async {
+  // Синхронизация централизованного словаря синонимов с сервером gusar.tj для текущего магазина
+  Future<void> syncFromServer({int? storeId}) async {
+    final sid = _resolveStoreId(storeId);
+    final serverRows = await ApiService().fetchSupplierAliases(storeId: sid);
+    if (serverRows.isEmpty) return;
+
+    final Map<String, Set<int>> grouped = {};
+    for (final row in serverRows) {
+      final pid = row['product_id'] is int
+          ? row['product_id'] as int
+          : int.tryParse(row['product_id']?.toString() ?? '') ?? 0;
+      if (pid <= 0 || pid >= 100000000 || (pid >= 101 && pid <= 110)) continue;
+      final supNorm = normalizeProductNameForMatch((row['supplier_name_norm'] ?? '').toString());
+      final rawNorm = normalizeProductNameForMatch((row['raw_name_norm'] ?? row['raw_name'] ?? '').toString());
+      if (rawNorm.length < 3) continue;
+
+      final supKey = 's$sid::$supNorm::$rawNorm';
+      final globalKey = 's$sid::global::$rawNorm';
+      grouped.putIfAbsent(supKey, () => <int>{}).add(pid);
+      grouped.putIfAbsent(globalKey, () => <int>{}).add(pid);
+    }
+
+    for (final entry in grouped.entries) {
+      final ids = entry.value.toList();
+      _multiAliases[entry.key] = ids;
+      if (ids.length == 1) {
+        _aliasDictionary[entry.key] = ids.first;
+      } else {
+        // Несколько разных товаров на одно общее название ("сок добрий"): не привязываем вслепую!
+        _aliasDictionary.remove(entry.key);
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('supplier_aliases_dict', jsonEncode(_aliasDictionary));
+    await prefs.setString('supplier_multi_aliases_dict', jsonEncode(_multiAliases));
+  }
+
+  // 2. Сохранение связки в постоянный обучаемый словарь магазина (локально + сервер gusar.tj)
+  Future<void> saveAlias(String supplierName, String rawName, int productId, {int? storeId, int? supplierId}) async {
     if (productId <= 0 || productId >= 100000000 || (productId >= 101 && productId <= 110)) return;
     final sid = _resolveStoreId(storeId);
 
     final key = _buildKey(supplierName, rawName, storeId: sid);
     final globalKey = 's$sid::global::${_normalizeText(rawName)}';
 
-    _aliasDictionary[key] = productId;
-    _aliasDictionary[globalKey] = productId;
+    for (final k in [key, globalKey]) {
+      final existingList = List<int>.from(_multiAliases[k] ?? <int>[]);
+      if (!existingList.contains(productId)) {
+        existingList.insert(0, productId);
+      }
+      _multiAliases[k] = existingList;
+      if (existingList.length == 1) {
+        _aliasDictionary[k] = productId;
+      } else {
+        // Обнаружен второй вариант на то же общее название — переводим в режим быстрого выбора!
+        _aliasDictionary.remove(k);
+      }
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('supplier_aliases_dict', jsonEncode(_aliasDictionary));
+    await prefs.setString('supplier_multi_aliases_dict', jsonEncode(_multiAliases));
+
+    // Фоновая синхронизация на сервер gusar.tj (доступно всем устройствам магазина)
+    ApiService().saveSupplierAliasOnServer(
+      supplierName: supplierName,
+      rawName: rawName,
+      productId: productId,
+      supplierId: supplierId,
+      storeId: sid,
+    );
   }
 
   // 3. Запоминание ручного исправления названия (самообучение системы)
@@ -260,10 +355,14 @@ class MatchingService {
       final key = _buildKey(doc.supplierName, item.rawName, storeId: sid);
       final globalKey = 's$sid::global::${_normalizeText(item.rawName)}';
 
-      int? savedId = _aliasDictionary[key] ?? _aliasDictionary[globalKey];
+      // Защита от автопривязки общих названий ("сок добрий"), имеющих 2+ вкусов/товаров:
+      final multiIds = _multiAliases[key] ?? _multiAliases[globalKey];
+      final bool isAmbiguousMultiVariant = multiIds != null && multiIds.length > 1;
 
-      // Если прямого совпадения нет, ищем среди сохраненных связок текущего магазина по схожести (>= 85%)
-      if (savedId == null) {
+      int? savedId = isAmbiguousMultiVariant ? null : (_aliasDictionary[key] ?? _aliasDictionary[globalKey]);
+
+      // Если прямого совпадения нет (и название не помечено как многовариантное), ищем по схожести (>= 85%)
+      if (savedId == null && !isAmbiguousMultiVariant) {
         final normItem = _normalizeText(item.rawName);
         final itemTokens = normItem.split(' ').where((t) => t.length > 2).toSet();
         if (itemTokens.length >= 2) {
@@ -321,14 +420,26 @@ class MatchingService {
     item.status = ItemStatus.matched;
   }
 
-  // 5. Получение ТОП-3 похожих кандидатов для 1-тап выбора
-  List<MatchCandidate> getCandidates(String rawName, List<Product> catalog, {int limit = 3}) {
+  // 5. Получение ТОП-3 похожих кандидатов для 1-тап выбора (с приоритетом известных вариантов из словаря)
+  List<MatchCandidate> getCandidates(String rawName, List<Product> catalog, {int limit = 3, int? storeId, String? supplierName}) {
     final cleanInput = _normalizeText(rawName);
     final inputTokens = cleanInput.split(' ').where((t) => t.length > 1).toSet();
+
+    final sid = _resolveStoreId(storeId);
+    final Set<int> preferredIds = <int>{};
+    if (supplierName != null && supplierName.trim().isNotEmpty) {
+      preferredIds.addAll(_multiAliases[_buildKey(supplierName, rawName, storeId: sid)] ?? const <int>[]);
+    }
+    preferredIds.addAll(_multiAliases['s$sid::global::$cleanInput'] ?? const <int>[]);
 
     final List<MatchCandidate> scoredList = [];
 
     for (var prod in catalog) {
+      if (preferredIds.contains(prod.id)) {
+        scoredList.add(MatchCandidate(product: prod, score: 0.98));
+        continue;
+      }
+
       final cleanTarget = _normalizeText(prod.name);
       final targetTokens = cleanTarget.split(' ').where((t) => t.length > 1).toSet();
 
@@ -337,6 +448,11 @@ class MatchingService {
       final intersection = inputTokens.intersection(targetTokens).length;
       final union = inputTokens.union(targetTokens).length;
       double score = union > 0 ? (intersection / union) : 0.0;
+
+      // Бонус если все слова из короткого названия накладной (например "сок добрий") входят в название товара базы ("сок добрый яблочный")
+      if (inputTokens.length >= 2 && intersection == inputTokens.length) {
+        score = (score + 0.2).clamp(0.0, 0.84);
+      }
 
       // Бонус за точное вхождение подстроки дается только если короткая строка составляет не менее 65% длины длинной
       if (cleanTarget.length >= 8 && cleanInput.length >= 8) {
@@ -358,12 +474,5 @@ class MatchingService {
     return scoredList.take(limit).toList();
   }
 
-  String _normalizeText(String text) {
-    final decoded = CyrillicDecoder.decode(text);
-    return decoded
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s\d]', unicode: true), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
+  String _normalizeText(String text) => normalizeProductNameForMatch(text);
 }

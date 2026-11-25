@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/invoice_document.dart';
 import '../services/api_service.dart';
 import '../services/local_storage_service.dart';
+import '../services/matching_service.dart';
 import '../services/updater_service.dart';
 import 'camera_scanner_screen.dart';
 import 'invoice_review_screen.dart';
@@ -55,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     _initSharedFilesListener();
     _loadData();
+    MatchingService().syncFromServer().catchError((_) {});
     _checkUpdates();
   }
 

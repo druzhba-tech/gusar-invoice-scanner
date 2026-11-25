@@ -3,6 +3,7 @@ import 'package:gusar_invoice_scanner/models/invoice_document.dart';
 import 'package:gusar_invoice_scanner/models/invoice_item.dart';
 import 'package:gusar_invoice_scanner/models/product.dart';
 import 'package:gusar_invoice_scanner/screens/barcode_verifier_screen.dart';
+import 'package:gusar_invoice_scanner/services/matching_service.dart';
 
 void main() {
   group('Scale Barcode Verifier (Store #3 & #2 EAN-13 20/00 formats)', () {
@@ -64,6 +65,27 @@ void main() {
 
       final prod = Product.fromJson({'id': 40572, 'name': 'Бодом колифор', 'price': 120});
       expect(prod.storeId, 3);
+    });
+  });
+
+  group('TJ/RU Phonetic Normalization & Smart Matching', () {
+    test('normalizes Russian/Tajik spelling variants cleanly', () {
+      expect(normalizeProductNameForMatch('сок добрий'), normalizeProductNameForMatch('Сок Добрый'));
+      expect(normalizeProductNameForMatch('Сок яблочний добрий'), normalizeProductNameForMatch('Сок Яблочный Добрый'));
+      expect(normalizeProductNameForMatch('Шӯрбои Ғӯсарӣ'), 'шурбои гусари');
+    });
+
+    test('ranks "Сок Добрый Яблочный" at top for "сок добрий" without blind auto-locking across flavors', () {
+      final matcher = MatchingService();
+      final catalog = [
+        Product(id: 5001, storeId: 3, name: 'Сок Добрый Яблочный 1л', price: 14),
+        Product(id: 5002, storeId: 3, name: 'Сок Добрый Персик 1л', price: 14),
+        Product(id: 5003, storeId: 3, name: 'Молоко 1л', price: 12),
+      ];
+      final cands = matcher.getCandidates('сок добрий', catalog, storeId: 3);
+      expect(cands.length, 2);
+      expect(cands.first.product.name, contains('Сок Добрый'));
+      expect(cands.first.score, lessThan(0.85)); // Never blindly auto-lock ambiguous flavor!
     });
   });
 }

@@ -2427,6 +2427,52 @@ class ApiService {
     }
   }
 
+  // Синхронизация централизованного словаря синонимов поставщиков с сервером gusar.tj
+  Future<List<Map<String, dynamic>>> fetchSupplierAliases({int? storeId}) async {
+    final targetStoreId = jwtLockedStoreId ?? storeId ?? currentStoreId;
+    if (targetStoreId <= 0) return [];
+    try {
+      final resp = await _dio.get(
+        '/api/supplier-aliases',
+        queryParameters: {'store_id': targetStoreId},
+      ).timeout(const Duration(seconds: 8));
+      if (resp.statusCode == 200 && resp.data is Map && resp.data['aliases'] is List) {
+        return (resp.data['aliases'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      }
+    } catch (e) {
+      print('fetchSupplierAliases warning: $e');
+    }
+    return [];
+  }
+
+  Future<void> saveSupplierAliasOnServer({
+    required String supplierName,
+    required String rawName,
+    required int productId,
+    int? supplierId,
+    int? storeId,
+  }) async {
+    final targetStoreId = jwtLockedStoreId ?? storeId ?? currentStoreId;
+    if (targetStoreId <= 0 || productId <= 0 || productId >= 100000000) return;
+    try {
+      await _dio.post(
+        '/api/supplier-aliases',
+        data: {
+          'store_id': targetStoreId,
+          'supplier_name': supplierName.trim(),
+          'raw_name': rawName.trim(),
+          'product_id': productId,
+          if (supplierId != null && supplierId > 0 && supplierId < 1000000) 'supplier_id': supplierId,
+        },
+      ).timeout(const Duration(seconds: 8));
+    } catch (e) {
+      print('saveSupplierAliasOnServer warning: $e');
+    }
+  }
+
   // 7. Отправка приходной накладной и прямое зачисление в остатки базы gusar.tj (с idempotencyKey и защитой от бесконечного повтора)
   Future<bool> submitPurchase(InvoiceDocument document, {int retryDepth = 0}) async {
     lastSubmitError = null;
