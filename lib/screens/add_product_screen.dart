@@ -421,12 +421,22 @@ class _AddProductScreenState extends State<AddProductScreen> {
         unit: _selectedUnit,
         pluCode: _pluCtrl.text.trim().isNotEmpty ? _pluCtrl.text.trim() : null,
         localImagePath: imageToSave?.path,
+        allowLocalFallback: false,
       );
 
       setState(() => _isSaving = false);
 
+      if (created == null || created.id <= 0 || created.id >= 100000000) {
+        if (mounted) {
+          final errMsg = _api.lastCreateProductError ??
+              'Не удалось зарегистрировать товар в базе gusar.tj. Проверьте интернет и права доступа.';
+          TopNotification.showError(context, errMsg);
+        }
+        return;
+      }
+
       if (mounted) {
-        TopNotification.showSuccess(context, 'Товар "$name" успешно добавлен в базу!');
+        TopNotification.showSuccess(context, 'Товар "$name" успешно добавлен в базу gusar.tj (ID: ${created.id})!');
         Navigator.pop(context, created);
       }
     } catch (e) {
@@ -1015,46 +1025,38 @@ class _AddProductScreenState extends State<AddProductScreen> {
     }
   }
 
-  // Секция цен
+  // Секция цен: Закупка и Розничная цена рядом (крупные), ниже явная карточка Маржи/Наценки и Оптовая цена
   Widget _buildPricingSection() {
+    final cost = double.tryParse(_costPriceCtrl.text.replaceAll(',', '.').trim()) ?? 0.0;
+    final retail = double.tryParse(_retailPriceCtrl.text.replaceAll(',', '.').trim()) ?? 0.0;
+    final profit = retail - cost;
+    final bool hasBoth = cost > 0 && retail > 0;
+    final double markupPct = hasBoth ? ((retail - cost) / cost) * 100.0 : 0.0;
+    final double marginPct = hasBoth ? ((retail - cost) / retail) * 100.0 : 0.0;
+    final bool isLoss = hasBoth && profit < 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              'Цены и наценка',
-              style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-            if (_markupPercentage != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  'Наценка: $_markupPercentage',
-                  style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold),
-                ),
-              ),
-          ],
+        const Text(
+          'Цены и маржа',
+          style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Закупка (себестоимость)
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Закупка (себестоимость)', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  const Text('Закупка (себест.)', style: TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
                   TextFormField(
                     controller: _costPriceCtrl,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                    style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
                     decoration: InputDecoration(
                       hintText: '0.00',
                       hintStyle: const TextStyle(color: Colors.white38),
@@ -1062,7 +1064,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                       suffixStyle: const TextStyle(color: Colors.white54, fontSize: 12),
                       filled: true,
                       fillColor: const Color(0xFF1E293B),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
                     onChanged: (_) => setState(() {}),
@@ -1071,27 +1073,47 @@ class _AddProductScreenState extends State<AddProductScreen> {
               ),
             ),
             const SizedBox(width: 12),
-            // Оптовая цена
+            // Розничная цена (продажа) — крупная, рядом с закупкой!
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Оптовая цена', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  const Text('Розничная цена *', style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
                   TextFormField(
-                    controller: _wholesalePriceCtrl,
+                    controller: _retailPriceCtrl,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 15, fontWeight: FontWeight.w600),
+                    style: const TextStyle(color: Color(0xFF10B981), fontSize: 17, fontWeight: FontWeight.bold),
                     decoration: InputDecoration(
                       hintText: '0.00',
                       hintStyle: const TextStyle(color: Colors.white38),
                       suffixText: 'TJS',
-                      suffixStyle: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
+                      suffixStyle: const TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.bold),
                       filled: true,
                       fillColor: const Color(0xFF1E293B),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: const Color(0xFF10B981).withOpacity(0.45), width: 1.2),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.8),
+                      ),
+                      errorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Colors.redAccent, width: 1.2),
+                      ),
+                      focusedErrorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Colors.redAccent, width: 1.5),
+                      ),
                     ),
+                    validator: (val) {
+                      final price = double.tryParse((val ?? '').replaceAll(',', '.')) ?? 0;
+                      if (price <= 0) return 'Укажите розничную цену';
+                      return null;
+                    },
                     onChanged: (_) => setState(() {}),
                   ),
                 ],
@@ -1099,32 +1121,76 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ),
           ],
         ),
+        if (hasBoth) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: isLoss
+                  ? const Color(0xFFEF4444).withOpacity(0.16)
+                  : const Color(0xFF10B981).withOpacity(0.14),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: isLoss
+                    ? const Color(0xFFEF4444).withOpacity(0.5)
+                    : const Color(0xFF10B981).withOpacity(0.4),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      isLoss ? Icons.warning_amber_rounded : Icons.trending_up_rounded,
+                      color: isLoss ? const Color(0xFFF87171) : const Color(0xFF34D399),
+                      size: 18,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Наценка: ${markupPct >= 0 ? '+' : ''}${markupPct.toStringAsFixed(1)}%',
+                      style: TextStyle(
+                        color: isLoss ? const Color(0xFFFCA5A5) : const Color(0xFF34D399),
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  'Маржа: ${marginPct.toStringAsFixed(1)}% (${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)} TJS)',
+                  style: TextStyle(
+                    color: isLoss ? const Color(0xFFFCA5A5) : Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
-        // Розничная цена (продажа)
+        // Оптовая цена (опционально)
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Розничная цена (продажа) *', style: TextStyle(color: Colors.white54, fontSize: 11)),
+            const Text('Оптовая цена (необязательно)', style: TextStyle(color: Colors.white54, fontSize: 11)),
             const SizedBox(height: 4),
             TextFormField(
-              controller: _retailPriceCtrl,
+              controller: _wholesalePriceCtrl,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 15, fontWeight: FontWeight.w600),
               decoration: InputDecoration(
                 hintText: '0.00',
                 hintStyle: const TextStyle(color: Colors.white38),
                 suffixText: 'TJS',
-                suffixStyle: const TextStyle(color: Color(0xFF10B981), fontSize: 13, fontWeight: FontWeight.bold),
+                suffixStyle: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
                 filled: true,
                 fillColor: const Color(0xFF1E293B),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               ),
-              validator: (val) {
-                final price = double.tryParse((val ?? '').replaceAll(',', '.')) ?? 0;
-                if (price <= 0) return 'Укажите розничную цену';
-                return null;
-              },
               onChanged: (_) => setState(() {}),
             ),
           ],

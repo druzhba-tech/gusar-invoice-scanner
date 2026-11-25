@@ -26,7 +26,7 @@ class LocalStorageService {
 
     final db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         // Таблица локальных документов накладных
         await db.execute('''
@@ -40,6 +40,7 @@ class LocalStorageService {
             invoice_date TEXT,
             total_amount REAL,
             paid_amount REAL,
+            payment_source TEXT,
             items_json TEXT,
             page_photos_json TEXT,
             status TEXT,
@@ -70,6 +71,9 @@ class LocalStorageService {
           await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
         } catch (_) {}
         try {
+          await db.execute('ALTER TABLE invoices ADD COLUMN payment_source TEXT;');
+        } catch (_) {}
+        try {
           await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
         } catch (_) {}
         try {
@@ -82,6 +86,9 @@ class LocalStorageService {
     // Гарантированная миграция существующей локальной БД без потери данных
     try {
       await db.execute('ALTER TABLE invoices ADD COLUMN incoming_number TEXT;');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE invoices ADD COLUMN payment_source TEXT;');
     } catch (_) {}
     try {
       await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
@@ -208,6 +215,7 @@ class LocalStorageService {
         'invoice_date': doc.invoiceDate.toIso8601String(),
         'total_amount': doc.totalAmount,
         'paid_amount': doc.paidAmount,
+        'payment_source': doc.paymentSource,
         'items_json': jsonEncode(doc.items.map((i) => i.toJson()).toList()),
         'page_photos_json': jsonEncode(doc.pagePhotos),
         'status': doc.status.name,
@@ -249,7 +257,7 @@ class LocalStorageService {
         try {
           final singleRows = await db.rawQuery(
             "SELECT id, store_id, supplier_id, supplier_name, invoice_number, incoming_number, "
-            "invoice_date, total_amount, paid_amount, "
+            "invoice_date, total_amount, paid_amount, payment_source, "
             "CASE WHEN LENGTH(items_json) > 1500000 THEN '' ELSE items_json END AS items_json, "
             "CASE WHEN LENGTH(page_photos_json) > 100000 THEN '[]' ELSE page_photos_json END AS page_photos_json, "
             "status, is_synchronized, created_at "
@@ -336,6 +344,9 @@ class LocalStorageService {
             invoiceDate: docDate,
             totalAmount: parsedTotal,
             paidAmount: parsedPaid,
+            paymentSource: (r['payment_source']?.toString().trim().isNotEmpty == true)
+                ? r['payment_source'].toString().trim()
+                : 'cash_drawer',
             items: itemsList,
             pagePhotos: photosList,
             status: DocumentStatus.values.firstWhere(

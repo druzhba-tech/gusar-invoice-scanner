@@ -1620,12 +1620,14 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
       backgroundColor: Colors.transparent,
       enableDrag: true,
       builder: (bSheetCtx) => _InvoicePaymentSheet(
+        docId: _doc.id,
         totalInvoiceSum: totalInvoiceSum,
         storeName: _api.currentStoreName,
         supplierName: _doc.supplierName,
         initialInvoiceNumber: _doc.invoiceNumber,
         initialIncomingNumber: _doc.incomingNumber,
         initialPaidAmount: _doc.paidAmount,
+        initialPaymentSource: _doc.paymentSource,
         initiallyDebt: _doc.paidAmount <= 0.001 && _doc.status != DocumentStatus.draft,
       ),
     );
@@ -1635,6 +1637,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     final String finalInvoiceNum = (paymentResult['invoice_number'] as String?) ?? '';
     final String finalIncomingNum = (paymentResult['incoming_number'] as String?) ?? '';
     final double finalPaidAmount = (paymentResult['paid_amount'] as double?) ?? 0.0;
+    final String finalPaymentSource = (paymentResult['payment_source'] as String?) ?? 'cash_drawer';
 
     setState(() {
       if (finalInvoiceNum.isNotEmpty) {
@@ -1644,6 +1647,7 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         _doc.incomingNumber = finalIncomingNum;
       }
       _doc.paidAmount = finalPaidAmount;
+      _doc.paymentSource = finalPaymentSource;
       // Гарантированная санитаризация: сбрасываем старые псевдо-ID перед отправкой
       if (_doc.supplierId != null && (_doc.supplierId! <= 0 || _doc.supplierId! >= 1000000)) {
         _doc.supplierId = null;
@@ -2678,21 +2682,25 @@ class _ItemBarcodeScannerModalState extends State<_ItemBarcodeScannerModal> {
 }
 
 class _InvoicePaymentSheet extends StatefulWidget {
+  final String docId;
   final double totalInvoiceSum;
   final String storeName;
   final String supplierName;
   final String initialInvoiceNumber;
   final String initialIncomingNumber;
   final double initialPaidAmount;
+  final String initialPaymentSource;
   final bool initiallyDebt;
 
   const _InvoicePaymentSheet({
+    required this.docId,
     required this.totalInvoiceSum,
     required this.storeName,
     required this.supplierName,
     required this.initialInvoiceNumber,
     this.initialIncomingNumber = '',
     required this.initialPaidAmount,
+    this.initialPaymentSource = 'cash_drawer',
     required this.initiallyDebt,
   });
 
@@ -2702,6 +2710,7 @@ class _InvoicePaymentSheet extends StatefulWidget {
 
 class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
   late bool _isDebtSelected;
+  late String _paymentSource; // 'cash_drawer', 'bank', 'owner_pocket'
   late TextEditingController _payAmountCtrl;
   late TextEditingController _invoiceNumCtrl;
   late TextEditingController _incomingNumCtrl;
@@ -2711,6 +2720,9 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
   void initState() {
     super.initState();
     _isDebtSelected = widget.initiallyDebt || widget.initialPaidAmount <= 0.001;
+    _paymentSource = const {'cash_drawer', 'bank', 'owner_pocket'}.contains(widget.initialPaymentSource)
+        ? widget.initialPaymentSource
+        : 'cash_drawer';
     final initialText = _isDebtSelected
         ? ''
         : (widget.initialPaidAmount > 0
@@ -2725,15 +2737,14 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
     );
     _payAmountCtrl.addListener(_onAmountChanged);
 
-    if (_invoiceNumCtrl.text.isEmpty || _invoiceNumCtrl.text == 'б/н') {
-      _reloadNextNumber();
-    }
+    // Всегда синхронизируем системный номер с базой gusar.tj (исключая текущий черновик)
+    _reloadNextNumber();
   }
 
   Future<void> _reloadNextNumber() async {
     setState(() => _isLoadingNextNum = true);
     try {
-      final nextSeq = await ApiService().fetchNextSequentialInvoiceNumber();
+      final nextSeq = await ApiService().fetchNextSequentialInvoiceNumber(excludeDocId: widget.docId);
       if (mounted) {
         setState(() {
           _invoiceNumCtrl.text = nextSeq;
@@ -2865,7 +2876,7 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
                   ),
-                  child: const Text('Автоматически (без редактирования)', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.w600)),
+                  child: const Text('Авто (из базы)', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.w600)),
                 ),
               ],
             ),
@@ -3021,6 +3032,118 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
             const SizedBox(height: 14),
 
             if (!_isDebtSelected) ...[
+              const Text(
+                'Откуда оплачено (источник средств):',
+                style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => setState(() => _paymentSource = 'cash_drawer'),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+                        decoration: BoxDecoration(
+                          color: _paymentSource == 'cash_drawer'
+                              ? const Color(0xFF10B981).withOpacity(0.2)
+                              : const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _paymentSource == 'cash_drawer' ? const Color(0xFF10B981) : Colors.white12,
+                            width: _paymentSource == 'cash_drawer' ? 1.5 : 1.0,
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            Icon(Icons.point_of_sale_rounded,
+                                color: _paymentSource == 'cash_drawer' ? const Color(0xFF34D399) : Colors.white54,
+                                size: 18),
+                            const SizedBox(height: 3),
+                            Text('Касса',
+                                style: TextStyle(
+                                  color: _paymentSource == 'cash_drawer' ? Colors.white : Colors.white60,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                )),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => setState(() => _paymentSource = 'bank'),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+                        decoration: BoxDecoration(
+                          color: _paymentSource == 'bank'
+                              ? const Color(0xFF0284C7).withOpacity(0.22)
+                              : const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _paymentSource == 'bank' ? const Color(0xFF38BDF8) : Colors.white12,
+                            width: _paymentSource == 'bank' ? 1.5 : 1.0,
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            Icon(Icons.account_balance_rounded,
+                                color: _paymentSource == 'bank' ? const Color(0xFF38BDF8) : Colors.white54,
+                                size: 18),
+                            const SizedBox(height: 3),
+                            Text('Счёт / Банк',
+                                style: TextStyle(
+                                  color: _paymentSource == 'bank' ? Colors.white : Colors.white60,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                )),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => setState(() => _paymentSource = 'owner_pocket'),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+                        decoration: BoxDecoration(
+                          color: _paymentSource == 'owner_pocket'
+                              ? const Color(0xFFF59E0B).withOpacity(0.2)
+                              : const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _paymentSource == 'owner_pocket' ? const Color(0xFFF59E0B) : Colors.white12,
+                            width: _paymentSource == 'owner_pocket' ? 1.5 : 1.0,
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            Icon(Icons.account_balance_wallet_rounded,
+                                color: _paymentSource == 'owner_pocket' ? const Color(0xFFFBBF24) : Colors.white54,
+                                size: 18),
+                            const SizedBox(height: 3),
+                            Text('Сейф / Свои',
+                                style: TextStyle(
+                                  color: _paymentSource == 'owner_pocket' ? Colors.white : Colors.white60,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                )),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
               const Text(
                 'Сумма фактической оплаты (сомони):',
                 style: TextStyle(color: Colors.white70, fontSize: 12),
@@ -3197,6 +3320,7 @@ class _InvoicePaymentSheetState extends State<_InvoicePaymentSheet> {
                         'is_debt': _isDebtSelected || finalPaid <= 0.001,
                         'paid_amount': finalPaid,
                         'debt_amount': finalDebt,
+                        'payment_source': _isDebtSelected ? 'unpaid' : _paymentSource,
                         'invoice_number': _invoiceNumCtrl.text.trim(),
                         'incoming_number': _incomingNumCtrl.text.trim(),
                       });

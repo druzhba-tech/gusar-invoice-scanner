@@ -51,6 +51,16 @@ void main() {
     test('InvoiceDocument and Product default storeId to 3 when missing', () {
       final doc = InvoiceDocument.fromJson({'id': 'inv1', 'items': []});
       expect(doc.storeId, 3);
+      expect(doc.paymentSource, 'cash_drawer');
+
+      final bankDoc = InvoiceDocument.fromJson({
+        'id': 'inv2',
+        'store_id': 3,
+        'payment_source': 'bank',
+        'items': [],
+      });
+      expect(bankDoc.paymentSource, 'bank');
+      expect(bankDoc.toJson()['payment_source'], 'bank');
 
       final prod = Product.fromJson({'id': 40572, 'name': 'Бодом колифор', 'price': 120});
       expect(prod.storeId, 3);

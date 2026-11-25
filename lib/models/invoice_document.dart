@@ -19,6 +19,7 @@ class InvoiceDocument {
   DateTime invoiceDate;
   double totalAmount;
   double paidAmount;
+  String paymentSource; // 'cash_drawer', 'bank', 'owner_pocket'
   List<InvoiceItem> items;
   List<String> pagePhotos;
   String? driverSignaturePath;
@@ -37,6 +38,7 @@ class InvoiceDocument {
     required this.invoiceDate,
     required this.totalAmount,
     this.paidAmount = 0.0,
+    this.paymentSource = 'cash_drawer',
     required this.items,
     this.pagePhotos = const [],
     this.driverSignaturePath,
@@ -82,6 +84,7 @@ class InvoiceDocument {
       'invoice_date': invoiceDate.toIso8601String(),
       'total_amount': totalAmount,
       'paid_amount': paidAmount,
+      'payment_source': paymentSource,
       'items': items.map((i) => i.toJson()).toList(),
       'page_photos': pagePhotos,
       'driver_signature_path': driverSignaturePath,
@@ -105,6 +108,9 @@ class InvoiceDocument {
           : DateTime.now(),
       totalAmount: (json['total_amount'] as num?)?.toDouble() ?? 0.0,
       paidAmount: (json['paid_amount'] as num?)?.toDouble() ?? 0.0,
+      paymentSource: (json['payment_source']?.toString().trim().isNotEmpty == true)
+          ? json['payment_source'].toString().trim()
+          : 'cash_drawer',
       items: (json['items'] as List<dynamic>?)
               ?.map((item) => InvoiceItem.fromJson(item))
               .toList() ?? [],

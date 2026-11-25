@@ -44,7 +44,7 @@ class OcrService {
     }
 
     final savedProvider = prefs.getString('ai_provider');
-    final activeProvider = savedProvider ?? (savedYandexKey.isNotEmpty ? 'yandex' : 'gemini');
+    final activeProvider = savedProvider ?? (savedGeminiKey.isNotEmpty ? 'gemini' : 'yandex');
 
     return {
       'provider': activeProvider,
@@ -124,25 +124,38 @@ class OcrService {
     }
 
     final config = await _getAiConfig();
+    final activeProvider = config['provider'] ?? 'gemini';
     final yandexKey = config['yandex_key'] ?? defaultYandexKey;
     final geminiKey = config['gemini_key'] ?? defaultGeminiKey;
     final yandexFolderId = config['yandex_folder_id'] ?? defaultYandexFolderId;
 
     InvoiceDocument? doc;
 
-    // 2. Если локальный разбор не подошёл (новый поставщик) — вызываем Яндекс AI (Yandex Vision)
-    if (yandexKey.isNotEmpty) {
-      doc = await parseInvoiceWithYandexVision(
-        preparedPaths,
-        yandexKey,
-        folderId: yandexFolderId,
-        originalPaths: preparedPaths,
-      );
-    }
-
-    // 3. Если Яндекс AI не ответил и есть валидный ключ Gemini — вызываем Google Gemini Vision AI
-    if ((doc == null || doc.items.isEmpty) && geminiKey.trim().length >= 15) {
-      doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+    // 2. Уважаем выбранный пользователем провайдер (по умолчанию Gemini 3.6/3.5, с резервом на Yandex)
+    if (activeProvider == 'gemini') {
+      if (geminiKey.trim().length >= 15) {
+        doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+      }
+      if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
+        doc = await parseInvoiceWithYandexVision(
+          preparedPaths,
+          yandexKey,
+          folderId: yandexFolderId,
+          originalPaths: preparedPaths,
+        );
+      }
+    } else {
+      if (yandexKey.isNotEmpty) {
+        doc = await parseInvoiceWithYandexVision(
+          preparedPaths,
+          yandexKey,
+          folderId: yandexFolderId,
+          originalPaths: preparedPaths,
+        );
+      }
+      if ((doc == null || doc.items.isEmpty) && geminiKey.trim().length >= 15) {
+        doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+      }
     }
 
     // 3. Fallback: если облачные нейросети не настроены или не ответили —

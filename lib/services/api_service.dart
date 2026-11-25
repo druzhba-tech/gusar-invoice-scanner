@@ -22,7 +22,41 @@ class ApiService {
   List<Map<String, dynamic>> accessibleStores = [];
 
   String? lastSubmitError;
+  String? lastCreateProductError;
   bool _isRefreshingToken = false;
+
+  String? _extractRoleFromJwt(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length == 3) {
+        final normalized = base64Url.normalize(parts[1]);
+        final payloadStr = utf8.decode(base64Url.decode(normalized));
+        final payload = jsonDecode(payloadStr);
+        if (payload is Map && payload['role'] != null) {
+          return payload['role'].toString().trim().toUpperCase();
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Если пользователь НЕ SUPERADMIN и в его JWT-токене закреплён store_id,
+  /// возвращаем этот store_id — приложение НЕ имеет права слать запросы к другому магазину (иначе 403!).
+  int? get jwtLockedStoreId {
+    final tok = authToken;
+    if (tok == null || tok.isEmpty) return null;
+    final role = _extractRoleFromJwt(tok);
+    if (role == 'SUPERADMIN' || role == 'SUPER_ADMIN') return null;
+    final jwtSid = _extractStoreIdFromJwt(tok);
+    return (jwtSid != null && jwtSid > 0) ? jwtSid : null;
+  }
+
+  bool get isSuperAdmin {
+    final tok = authToken;
+    if (tok == null || tok.isEmpty) return false;
+    final role = _extractRoleFromJwt(tok);
+    return role == 'SUPERADMIN' || role == 'SUPER_ADMIN';
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -30,7 +64,19 @@ class ApiService {
     authToken = prefs.getString('auth_token');
     final savedId = prefs.getInt('store_id');
     final savedName = prefs.getString('store_name');
-    if (savedId != null && savedId > 0 && savedName != null && savedName.trim().isNotEmpty && !savedName.contains('Тестӣ') && !savedName.contains('намунавӣ')) {
+    final lockedId = jwtLockedStoreId;
+    if (lockedId != null && lockedId > 0) {
+      currentStoreId = lockedId;
+      await prefs.setInt('store_id', lockedId);
+      if (savedId == lockedId && savedName != null && savedName.trim().isNotEmpty) {
+        currentStoreName = savedName.trim();
+      } else {
+        currentStoreName = lockedId == 3
+            ? 'Мағозаи Дарё'
+            : (lockedId == 2 ? 'Мағозаи Арзон' : 'Магазин gusar.tj #$lockedId');
+        await prefs.setString('store_name', currentStoreName);
+      }
+    } else if (savedId != null && savedId > 0 && savedName != null && savedName.trim().isNotEmpty && !savedName.contains('Тестӣ') && !savedName.contains('намунавӣ')) {
       currentStoreId = savedId;
       currentStoreName = (savedId == 3) ? 'Мағозаи Дарё' : savedName.trim();
     } else {
@@ -75,6 +121,20 @@ class ApiService {
         onRequest: (options, handler) {
           if (authToken != null && authToken!.isNotEmpty) {
             options.headers['Authorization'] = 'Bearer $authToken';
+          }
+          // Защита от 403 Cross-Store: для не-SUPERADMIN всегда принудительно синхронизируем store_id из JWT
+          final lockedSid = jwtLockedStoreId;
+          if (lockedSid != null && lockedSid > 0) {
+            currentStoreId = lockedSid;
+            if (options.queryParameters.containsKey('store_id')) {
+              options.queryParameters['store_id'] = lockedSid;
+            }
+            if (options.data is Map) {
+              final map = Map<String, dynamic>.from(options.data as Map);
+              if (map.containsKey('store_id')) map['store_id'] = lockedSid;
+              if (map.containsKey('storeId')) map['storeId'] = lockedSid;
+              options.data = map;
+            }
           }
           options.headers['X-Store-ID'] = currentStoreId.toString();
           return handler.next(options);
@@ -180,8 +240,11 @@ class ApiService {
   }
 
   Future<void> updateStore(int id, String name) async {
-    final validId = id > 0 ? id : 2;
-    final validName = name.trim().isNotEmpty ? name.trim() : 'Мағозаи Арзон';
+    final lockedSid = jwtLockedStoreId;
+    final validId = (lockedSid != null && lockedSid > 0) ? lockedSid : (id > 0 ? id : 3);
+    final validName = (lockedSid != null && lockedSid > 0 && id != lockedSid)
+        ? (lockedSid == 3 ? 'Мағозаи Дарё' : (lockedSid == 2 ? 'Мағозаи Арзон' : 'Магазин gusar.tj #$lockedSid'))
+        : (name.trim().isNotEmpty ? name.trim() : 'Мағозаи Дарё');
     currentStoreId = validId;
     currentStoreName = validName;
     _cachedProducts = []; // ВАЖНО: очищаем память от товаров старого магазина!
@@ -195,7 +258,8 @@ class ApiService {
   }
 
   void updateStoreId(int id) async {
-    final validId = id > 0 ? id : 2;
+    final lockedSid = jwtLockedStoreId;
+    final validId = (lockedSid != null && lockedSid > 0) ? lockedSid : (id > 0 ? id : 3);
     currentStoreId = validId;
     _cachedProducts = [];
     _cachedSuppliers = [];
@@ -1161,6 +1225,8 @@ class ApiService {
   }) async {
     final cleanBarcode = barcode.trim();
     Product? created;
+    lastCreateProductError = null;
+    bool serverRejectedHard = false;
 
     String? base64Image;
     if (localImagePath != null && localImagePath.isNotEmpty) {
@@ -1177,6 +1243,7 @@ class ApiService {
 
     try {
       final isWeight = productType == ProductType.weight || unit == 'кг';
+      final effectiveStoreId = jwtLockedStoreId ?? currentStoreId;
       final response = await _dio.post('/api/products', data: {
         'name': name.trim(),
         'barcode': cleanBarcode,
@@ -1185,17 +1252,17 @@ class ApiService {
             : (RegExp(r'^\d{1,6}$').hasMatch(cleanBarcode) ? cleanBarcode : null),
         'is_weighted': isWeight,
         'price': price,
-        'wholesale_price': wholesalePrice,
+        if (wholesalePrice != null && wholesalePrice > 0) 'wholesale_price': wholesalePrice,
         'cost_price': costPrice,
-        'category_id': categoryId,
+        if (categoryId != null && categoryId > 0) 'category_id': categoryId,
         'category': category ?? 'Продукты',
-        'store_id': currentStoreId,
-        'storeId': currentStoreId,
+        'store_id': effectiveStoreId,
+        'storeId': effectiveStoreId,
         'stock_quantity': 0,
         'product_type': productType.idName,
         'unit': unit,
-        'plu_code': pluCode,
-        'image_url': imageUrl,
+        if (pluCode != null && pluCode.isNotEmpty) 'plu_code': pluCode,
+        if (imageUrl != null && imageUrl.isNotEmpty) 'image_url': imageUrl,
         if (base64Image != null) 'imageBase64': base64Image,
       }).timeout(const Duration(seconds: 25));
 
@@ -1221,12 +1288,27 @@ class ApiService {
           } catch (_) {}
         }
       }
+    } on DioException catch (dioErr) {
+      final code = dioErr.response?.statusCode;
+      final respData = dioErr.response?.data;
+      final serverMsg = (respData is Map)
+          ? (respData['error'] ?? respData['message'])?.toString()
+          : null;
+      if (code != null && code >= 400 && code < 500) {
+        // Сервер явно отклонил запрос (403 доступ, 409 дубликат штрихкода, 400 валидация) — ЗАПРЕЩЕНО создавать фейковый локальный ID!
+        serverRejectedHard = true;
+        lastCreateProductError = serverMsg ?? 'Сервер отклонил создание товара (HTTP $code)';
+      } else {
+        lastCreateProductError = serverMsg ?? dioErr.message ?? 'Ошибка сети при создании товара';
+      }
+      print('Create product on gusar.tj server DioException ($code): $lastCreateProductError');
     } catch (e) {
+      lastCreateProductError = e.toString();
       print('Create product on gusar.tj server error: $e');
     }
 
-    // Если сервер недоступен и РАЗРЕШЕН локальный fallback (например, оффлайн добавление товара)
-    if (created == null && allowLocalFallback) {
+    // Локальный fallback разрешён ТОЛЬКО при отсутствии интернета (никогда при отказе сервера 4xx!)
+    if (created == null && allowLocalFallback && !serverRejectedHard) {
       created = Product(
         id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         storeId: currentStoreId,
@@ -1899,25 +1981,39 @@ class ApiService {
   }
 
   // 6.1 Получение следующего последовательного системного номера накладной из базы gusar.tj
-  Future<String> fetchNextSequentialInvoiceNumber({int? storeId}) async {
+  // Строго берёт max(invoice_number) с сервера + unsynced офлайн-черновики (исключая текущий документ и удалённые накладные)
+  Future<String> fetchNextSequentialInvoiceNumber({int? storeId, String? excludeDocId}) async {
     int maxNum = 0;
-    final targetStoreId = storeId ?? currentStoreId;
+    final targetStoreId = jwtLockedStoreId ?? storeId ?? currentStoreId;
+    bool gotServerData = false;
 
     // 1. Опрашиваем онлайн-сервер gusar.tj
     try {
-      final response = await _dio.get('/api/purchases', queryParameters: {'store_id': targetStoreId}).timeout(const Duration(seconds: 7));
+      final response = await _dio.get(
+        '/api/purchases',
+        queryParameters: {'store_id': targetStoreId, 'limit': 200},
+      ).timeout(const Duration(seconds: 7));
       if (response.statusCode == 200 && response.data != null) {
         dynamic items = response.data;
         if (items is Map && items['purchases'] is List) items = items['purchases'];
         if (items is Map && items['data'] is List) items = items['data'];
 
         if (items is List) {
+          gotServerData = true;
           for (var p in items) {
-            final inv = p['invoice_number']?.toString().trim() ?? p['invoice_no']?.toString().trim() ?? p['id']?.toString().trim() ?? '';
-            final match = RegExp(r'\d+').firstMatch(inv);
-            if (match != null) {
-              final n = int.tryParse(match.group(0)!);
-              if (n != null && n > maxNum) maxNum = n;
+            if (p is! Map) continue;
+            final st = (p['status'] ?? '').toString().toLowerCase();
+            if (st == 'deleted' || st == 'cancelled') continue;
+            final pSid = int.tryParse(p['store_id']?.toString() ?? '');
+            if (pSid != null && pSid > 0 && pSid != targetStoreId) continue;
+
+            // Читаем строго invoice_number / invoice_no (НИКОГДА не p['id']!)
+            final inv = (p['invoice_number'] ?? p['invoice_no'] ?? '').toString().trim();
+            if (inv.isEmpty) continue;
+            final exactNum = int.tryParse(inv) ??
+                int.tryParse(RegExp(r'^\D*(\d{1,5})$').firstMatch(inv)?.group(1) ?? '');
+            if (exactNum != null && exactNum > maxNum && exactNum < 100000) {
+              maxNum = exactNum;
             }
           }
         }
@@ -1926,17 +2022,19 @@ class ApiService {
       print('Online getPurchases next num warning: $e');
     }
 
-    // 2. Также проверяем локальную БД телефона (на случай если товаровед оприходовал офлайн)
+    // 2. Учитываем только НЕсинхронизированные офлайн-накладные этого магазина (кроме текущего открытого черновика!)
     try {
       final storage = LocalStorageService();
-      final localDocs = await storage.getLocalInvoices(
-        storeId: currentStoreId > 0 ? currentStoreId : null,
-      );
+      final localDocs = await storage.getLocalInvoices(storeId: targetStoreId);
       for (var doc in localDocs) {
-        final match = RegExp(r'\d+').firstMatch(doc.invoiceNumber);
-        if (match != null) {
-          final n = int.tryParse(match.group(0)!);
-          if (n != null && n > maxNum) maxNum = n;
+        if (excludeDocId != null && doc.id == excludeDocId) continue;
+        // Если сервер ответил, синхронизированные локальные записи уже учтены выше — не даём старому кэшу завышать номер!
+        if (gotServerData && doc.isSynchronized) continue;
+        if (doc.status == DocumentStatus.draft && !doc.isSynchronized && gotServerData) continue;
+        final cleanInv = doc.invoiceNumber.trim();
+        final n = int.tryParse(cleanInv);
+        if (n != null && n > maxNum && n < 100000) {
+          maxNum = n;
         }
       }
     } catch (_) {}
@@ -2487,8 +2585,11 @@ class ApiService {
           ? document.incomingNumber.trim()
           : (document.invoiceNumber.trim() != cleanInvNum ? document.invoiceNumber.trim() : 'б/н');
 
+      final String effectivePaymentSource = paid > 0
+          ? (document.paymentSource.trim().isNotEmpty ? document.paymentSource.trim() : 'cash_drawer')
+          : 'unpaid';
       final purchasePayload = {
-        'store_id': currentStoreId,
+        'store_id': jwtLockedStoreId ?? currentStoreId,
         'supplier_id': verifiedSupplierId,
         'invoice_number': cleanInvNum,
         'invoice_no': cleanInvNum,
@@ -2504,8 +2605,9 @@ class ApiService {
         'unpaid_amount': double.parse(debtAmount.toStringAsFixed(2)),
         'payment_status': isDebt ? 'debt' : (debtAmount > 0.001 ? 'partial' : 'paid'),
         'is_debt': (isDebt || debtAmount > 0.001) ? 1 : 0,
-        'payment_source': paid > 0 ? 'cash_drawer' : 'unpaid',
-        'idempotencyKey': 'gscan_${currentStoreId}_${document.id}',
+        'payment_source': effectivePaymentSource,
+        'source': effectivePaymentSource,
+        'idempotencyKey': 'gscan_${jwtLockedStoreId ?? currentStoreId}_${document.id}',
         'notes': 'Накладная №$cleanInvNum (Вх. №: $cleanIncoming) от ${document.invoiceDate.toIso8601String().substring(0, 10)} (Поставщик: ${document.supplierName}) [${isDebt ? "В ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : (debtAmount > 0.001 ? "ОПЛАЧЕНО: ${paid.toStringAsFixed(2)} TJS, ДОЛГ: ${debtAmount.toStringAsFixed(2)} TJS" : "ОПЛАЧЕНО ПОЛНОСТЬЮ: ${paid.toStringAsFixed(2)} TJS")}]',
         'items': itemsPayload,
       };

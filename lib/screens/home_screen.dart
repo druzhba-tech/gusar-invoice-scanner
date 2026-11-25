@@ -490,6 +490,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showStoreSwitcherDialog() async {
+    // Защита от 403 Cross-Store: если аккаунт привязан к одному магазину в JWT, запрещаем переключение на чужой склад
+    if (_api.jwtLockedStoreId != null) {
+      TopNotification.showInfo(
+        context,
+        'Ваш аккаунт привязан к магазину «${_api.currentStoreName}». Для работы с другим магазином войдите под его логином.',
+      );
+      return;
+    }
+
     List<Map<String, dynamic>> stores = [];
     try {
       stores = await _api.fetchStores();
