@@ -99,10 +99,18 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
         });
         await _saveAndRefresh();
         if (mounted) {
-          TopNotification.showSuccess(
-            context,
-            'Накладная пересканирована через ИИ: распознано ${newDoc.items.length} поз.!',
-          );
+          final engine = OcrService().lastUsedEngine;
+          if (engine == 'mlkit_offline') {
+            TopNotification.showWarning(
+              context,
+              '⚠️ ИИ недоступен (${OcrService().lastAiError ?? "нет сети"}) — распознано офлайн (${newDoc.items.length} поз.), проверьте строки!',
+            );
+          } else {
+            TopNotification.showSuccess(
+              context,
+              'Накладная пересканирована ($engine): распознано ${newDoc.items.length} поз.!',
+            );
+          }
         }
       } else {
         setState(() => _isSubmitting = false);

@@ -237,6 +237,12 @@ class _CameraScannerScreenState extends State<CameraScannerScreen> {
       setState(() => _isProcessing = false);
 
       if (mounted) {
+        if (_ocr.lastUsedEngine == 'mlkit_offline') {
+          TopNotification.showWarning(
+            context,
+            '⚠️ ИИ временно недоступен (${_ocr.lastAiError ?? "нет сети"}) — распознано офлайн, проверьте строки!',
+          );
+        }
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => InvoiceReviewScreen(document: doc)),

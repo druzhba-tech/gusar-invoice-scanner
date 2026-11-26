@@ -4,6 +4,7 @@ import 'package:gusar_invoice_scanner/models/invoice_item.dart';
 import 'package:gusar_invoice_scanner/models/product.dart';
 import 'package:gusar_invoice_scanner/screens/barcode_verifier_screen.dart';
 import 'package:gusar_invoice_scanner/services/matching_service.dart';
+import 'package:gusar_invoice_scanner/services/ocr_service.dart';
 
 void main() {
   group('Scale Barcode Verifier (Store #3 & #2 EAN-13 20/00 formats)', () {
@@ -86,6 +87,39 @@ void main() {
       expect(cands.length, 2);
       expect(cands.first.product.name, contains('Сок Добрый'));
       expect(cands.first.score, lessThan(0.85)); // Never blindly auto-lock ambiguous flavor!
+    });
+  });
+
+  group('Gemini Vision OCR Pipeline Guards (v1.4.46)', () {
+    test('detects accurate MIME types for PDF, PNG, WebP and JPEG invoices', () {
+      expect(detectInvoiceMimeType('/storage/emulated/0/inv.PDF'), 'application/pdf');
+      expect(detectInvoiceMimeType('/tmp/scan.png'), 'image/png');
+      expect(detectInvoiceMimeType('/tmp/scan.webp'), 'image/webp');
+      expect(detectInvoiceMimeType('/tmp/photo.jpg'), 'image/jpeg');
+    });
+
+    test('skips Gemini thought blocks and extracts JSON response part cleanly', () {
+      final response = {
+        'candidates': [
+          {
+            'content': {
+              'parts': [
+                {'thought': true, 'text': 'Let me analyze the table carefully...'},
+                {'text': '{"supplier_name":"ООО Тест","items":[{"name":"Сок Добрый","quantity":6,"buy_price":10,"total_price":60}]}'},
+              ]
+            }
+          }
+        ]
+      };
+      final extracted = extractGeminiResponseText(response);
+      expect(extracted, contains('"supplier_name":"ООО Тест"'));
+      expect(extracted, isNot(contains('Let me analyze')));
+    });
+
+    test('candidate Gemini model list excludes retired 2.5-flash and includes active 3.x models', () {
+      expect(kGeminiInvoiceModels, isNot(contains('gemini-2.5-flash')));
+      expect(kGeminiInvoiceModels, contains('gemini-3.5-flash-lite'));
+      expect(kGeminiInvoiceModels, contains('gemini-3.1-flash-lite'));
     });
   });
 }

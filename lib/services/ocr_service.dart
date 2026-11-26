@@ -10,10 +10,51 @@ import '../utils/cyrillic_decoder.dart';
 import 'invoice_template_service.dart';
 import 'api_service.dart';
 
+/// Определение корректного MIME-типа файла накладной для Gemini Vision API
+String detectInvoiceMimeType(String filePath) {
+  final lower = filePath.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+/// Безопасное извлечение JSON-ответа из Gemini (пропускает блоки `thought: true` в моделях Thinking)
+String extractGeminiResponseText(Map<String, dynamic> resJson) {
+  final candidates = resJson['candidates'];
+  if (candidates is! List || candidates.isEmpty) return '';
+  final parts = candidates[0]?['content']?['parts'];
+  if (parts is! List || parts.isEmpty) return '';
+
+  String fallback = '';
+  for (final p in parts) {
+    if (p is! Map) continue;
+    final text = p['text']?.toString() ?? '';
+    if (text.trim().isEmpty) continue;
+    if (p['thought'] == true) continue;
+    fallback = text;
+    if (text.contains('{')) {
+      return text;
+    }
+  }
+  return fallback;
+}
+
+/// Актуальный список рабочих моделей Gemini Vision (без закрытой gemini-2.5-flash)
+const List<String> kGeminiInvoiceModels = [
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+];
+
 class OcrService {
   static final OcrService _instance = OcrService._internal();
   factory OcrService() => _instance;
   OcrService._internal();
+
+  String lastUsedEngine = 'unknown';
+  String? lastAiError;
 
   final TextRecognizer _mlKitRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   final InvoiceTemplateService _templateService = InvoiceTemplateService();
@@ -86,41 +127,16 @@ class OcrService {
       }
     }
 
-    // ШАГ 0.5: ПРОВЕРКА ЗАПОМНЕННОГО ШАБЛОНА ПОСТАВЩИКА
+    // ШАГ 0.5: ПРОВЕРКА ЗАПОМНЕННОГО ШАБЛОНА ПОСТАВЩИКА (только как подсказка для Vision AI — НЕ заменяет ИИ!)
+    lastUsedEngine = 'unknown';
+    lastAiError = null;
     await _templateService.init();
     SupplierInvoiceTemplate? knownTemplate;
-    if (preparedPaths.isNotEmpty) {
+    if (preparedPaths.isNotEmpty && !preparedPaths.first.toLowerCase().endsWith('.pdf')) {
       try {
         final quickSampleText = await extractTextOffline(preparedPaths.first);
         knownTemplate = _templateService.detectTemplateFromOcrText(quickSampleText);
       } catch (_) {}
-    }
-
-    // ШАГ 1. САМООБУЧАЮЩИЙСЯ ЛОКАЛЬНЫЙ РАЗБОР (SMART OFFLINE ENGINE):
-    // Если накладная от ранее изученного поставщика — пробуем мгновенный бесплатный разбор без вызова внешнего AI!
-    if (knownTemplate != null && knownTemplate.items.isNotEmpty) {
-      try {
-        final localDoc = await _fallbackLocalParse(preparedPaths);
-        if (localDoc.items.isNotEmpty) {
-          final matchedCount = _templateService.applyTemplateToDocument(localDoc, knownTemplate);
-
-          // Проверяем сходимость математики и качество сопоставления товаров:
-          final double sumOfRows = localDoc.items.fold(0.0, (s, i) => s + i.totalPrice);
-          final bool mathMatches = localDoc.totalAmount > 0 &&
-              (localDoc.totalAmount - sumOfRows).abs() <= 1.0;
-          final double matchRatio = localDoc.items.isNotEmpty
-              ? (matchedCount / localDoc.items.length)
-              : 0.0;
-
-          // Если сумма сошлась ИЛИ распознано большинство товаров шаблона (>= 60%):
-          if (mathMatches || (localDoc.items.length >= 2 && matchRatio >= 0.60)) {
-            // Успех! Накладная полностью собрана локально и бесплатно, внешние AI не вызываются
-            return localDoc;
-          }
-        }
-      } catch (e) {
-        print('Learned template local parse warning: $e');
-      }
     }
 
     final config = await _getAiConfig();
@@ -131,10 +147,16 @@ class OcrService {
 
     InvoiceDocument? doc;
 
-    // 2. Уважаем выбранный пользователем провайдер (по умолчанию Gemini 3.6/3.5, с резервом на Yandex)
-    if (activeProvider == 'gemini') {
-      if (geminiKey.trim().length >= 15) {
-        doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+    // 1. Всегда сначала вызываем облачный Vision AI (Gemini с резервом на Yandex),
+    // т.к. локальный ML Kit (latin) не поддерживает кириллицу и искажает наименования!
+    if (activeProvider == 'gemini' || yandexKey.isEmpty) {
+      if (geminiKey.trim().length >= 15 || defaultGeminiKey.trim().length >= 15) {
+        doc = await _parseWithGemini(
+          preparedPaths,
+          geminiKey.trim().length >= 15 ? geminiKey : defaultGeminiKey,
+          template: knownTemplate,
+          originalPaths: preparedPaths,
+        );
       }
       if ((doc == null || doc.items.isEmpty) && yandexKey.isNotEmpty) {
         doc = await parseInvoiceWithYandexVision(
@@ -143,6 +165,9 @@ class OcrService {
           folderId: yandexFolderId,
           originalPaths: preparedPaths,
         );
+        if (doc != null && doc.items.isNotEmpty) {
+          lastUsedEngine = 'yandex_ocr';
+        }
       }
     } else {
       if (yandexKey.isNotEmpty) {
@@ -152,16 +177,26 @@ class OcrService {
           folderId: yandexFolderId,
           originalPaths: preparedPaths,
         );
+        if (doc != null && doc.items.isNotEmpty) {
+          lastUsedEngine = 'yandex_ocr';
+        }
       }
-      if ((doc == null || doc.items.isEmpty) && geminiKey.trim().length >= 15) {
-        doc = await _parseWithGemini(preparedPaths, geminiKey, template: knownTemplate, originalPaths: preparedPaths);
+      if ((doc == null || doc.items.isEmpty) && (geminiKey.trim().length >= 15 || defaultGeminiKey.trim().length >= 15)) {
+        doc = await _parseWithGemini(
+          preparedPaths,
+          geminiKey.trim().length >= 15 ? geminiKey : defaultGeminiKey,
+          template: knownTemplate,
+          originalPaths: preparedPaths,
+        );
       }
     }
 
-    // 3. Fallback: если облачные нейросети не настроены или не ответили —
-    // используем сверхбыстрый локальный офлайн-парсер Google ML Kit
+    // 2. Fallback: если облачные нейросети не ответили — локальный офлайн-парсер (с явным флагом для предупреждения в UI)
     if (doc == null || doc.items.isEmpty) {
       doc = await _fallbackLocalParse(preparedPaths);
+      if (doc.items.isNotEmpty) {
+        lastUsedEngine = 'mlkit_offline';
+      }
     }
 
     // 3.1. АВТО-ВОССТАНОВЛЕНИЕ ОРИЕНТАЦИИ (MULTI-ANGLE AUTO-RECOVERY):
@@ -589,89 +624,115 @@ class OcrService {
         parts.add({'text': hint});
       }
 
-      for (var path in imagePaths) {
-        final bytes = await File(path).readAsBytes();
+      for (var filePath in imagePaths) {
+        final File sourceFile = File(filePath);
+        final File uploadFile = filePath.toLowerCase().endsWith('.pdf')
+            ? sourceFile
+            : await ImageUtils.prepareImageForAiUpload(sourceFile);
+        final bytes = await uploadFile.readAsBytes();
         final base64Image = base64Encode(bytes);
         parts.add({
           'inline_data': {
-            'mime_type': 'image/jpeg',
+            'mime_type': detectInvoiceMimeType(uploadFile.path),
             'data': base64Image,
           }
         });
       }
 
-      if (apiKey.trim().isEmpty) {
+      // Пробуем сначала переданный ключ; если в телефоне остался старый/истёкший ключ,
+      // автоматически переключаемся на встроенный рабочий ключ из APK (defaultGeminiKey).
+      final List<String> keysToTry = [
+        if (apiKey.trim().length >= 15) apiKey.trim(),
+        if (defaultGeminiKey.trim().length >= 15 && defaultGeminiKey.trim() != apiKey.trim())
+          defaultGeminiKey.trim(),
+      ];
+      if (keysToTry.isEmpty) {
+        lastAiError = 'Не задан GEMINI_API_KEY';
         return null;
       }
 
-      // Используем проверенные актуальные модели Google Gemini с экспоненциальным повтором на 503/429
-      final candidateModels = [
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3-flash-preview',
-        'gemini-2.5-flash',
-        'gemini-flash-latest',
-      ];
-      const retryDelaysMs = [900, 2200];
+      for (final activeKey in keysToTry) {
+        bool keyRejected = false;
+        for (var modelName in kGeminiInvoiceModels) {
+          // Для перегруженной модели 3.8-flash делаем 1 быструю попытку (12с), чтобы сразу перейти к быстрым lite-моделям
+          final bool isFastFailModel = modelName == 'gemini-3.8-flash';
+          final int maxAttempts = isFastFailModel ? 1 : 2;
+          final Duration reqTimeout = Duration(seconds: isFastFailModel ? 12 : 35);
 
-      for (var modelName in candidateModels) {
-        bool authFailed = false;
-        for (int attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
-          try {
-            final url = Uri.parse(
-              'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey',
-            );
+          for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+              final url = Uri.parse(
+                'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$activeKey',
+              );
 
-            final response = await http.post(
-              url,
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({
-                'contents': [
-                  {'parts': parts}
-                ],
-                'generationConfig': {
-                  'response_mime_type': 'application/json',
-                  'maxOutputTokens': 8192,
-                  'temperature': 0.1,
+              final response = await http.post(
+                url,
+                headers: {'Content-Type': 'application/json'},
+                body: jsonEncode({
+                  'contents': [
+                    {'parts': parts}
+                  ],
+                  'generationConfig': {
+                    'response_mime_type': 'application/json',
+                    'maxOutputTokens': 16384,
+                    'temperature': 0.0,
+                  }
+                }),
+              ).timeout(reqTimeout);
+
+              if (response.statusCode == 200) {
+                final resJson = jsonDecode(response.body) as Map<String, dynamic>;
+                final rawText = extractGeminiResponseText(resJson);
+                if (rawText.trim().isEmpty) {
+                  lastAiError = '$modelName вернул пустой ответ';
+                  break;
                 }
-              }),
-            ).timeout(const Duration(seconds: 45));
+                final cleanJson = _cleanAndRepairJson(rawText);
+                final data = jsonDecode(cleanJson);
 
-            if (response.statusCode == 200) {
-              final resJson = jsonDecode(response.body);
-              final rawText = resJson['candidates']?[0]?['content']?['parts']?[0]?['text'] ?? '';
-              final cleanJson = _cleanAndRepairJson(rawText);
-              final data = jsonDecode(cleanJson);
-
-              final doc = _buildDocumentFromJson(data, originalPaths ?? imagePaths);
-              if (doc.items.isNotEmpty) {
-                return doc;
+                final doc = _buildDocumentFromJson(data, originalPaths ?? imagePaths);
+                if (doc.items.isNotEmpty) {
+                  lastUsedEngine = 'gemini:$modelName';
+                  lastAiError = null;
+                  return doc;
+                }
+                lastAiError = '$modelName: 0 строк в таблице';
+                break;
+              } else if (response.statusCode == 401 || response.statusCode == 403) {
+                lastAiError = 'Ошибка ключа Gemini (${response.statusCode})';
+                print('Gemini Auth Error (${response.statusCode})');
+                keyRejected = true;
+                break;
+              } else if (response.statusCode == 400) {
+                final bodyLower = response.body.toLowerCase();
+                if (bodyLower.contains('api key') || bodyLower.contains('api_key_invalid')) {
+                  lastAiError = 'Неверный ключ Gemini (400)';
+                  keyRejected = true;
+                  break;
+                }
+                lastAiError = 'Gemini $modelName HTTP 400';
+                break;
+              } else if ((response.statusCode == 503 || response.statusCode == 429) && attempt + 1 < maxAttempts) {
+                lastAiError = 'Gemini $modelName перегружен (${response.statusCode})';
+                await Future.delayed(const Duration(milliseconds: 900));
+                continue;
+              } else {
+                lastAiError = 'Gemini $modelName HTTP ${response.statusCode}';
+                print('Gemini $modelName Error: ${response.statusCode}, switching to next model...');
+                break;
+              }
+            } catch (e) {
+              lastAiError = 'Gemini $modelName: $e';
+              print('Gemini $modelName attempt ${attempt + 1} failed: $e');
+              if (attempt + 1 < maxAttempts) {
+                await Future.delayed(const Duration(milliseconds: 900));
+                continue;
               }
               break;
-            } else if (response.statusCode == 400 || response.statusCode == 401 || response.statusCode == 403) {
-              print('Gemini Auth/Param Error (${response.statusCode})');
-              authFailed = true;
-              break;
-            } else if ((response.statusCode == 503 || response.statusCode == 429) && attempt < retryDelaysMs.length) {
-              print('Gemini $modelName busy (${response.statusCode}), retry ${attempt + 1}...');
-              await Future.delayed(Duration(milliseconds: retryDelaysMs[attempt]));
-              continue;
-            } else {
-              print('Gemini $modelName Error: ${response.statusCode}, switching to next model...');
-              await Future.delayed(const Duration(milliseconds: 400));
-              break;
             }
-          } catch (e) {
-            print('Gemini $modelName attempt ${attempt + 1} failed: $e');
-            if (attempt < retryDelaysMs.length) {
-              await Future.delayed(Duration(milliseconds: retryDelaysMs[attempt]));
-              continue;
-            }
-            break;
           }
+          if (keyRejected) break;
         }
-        if (authFailed) break;
       }
       return null;
     } catch (e) {
