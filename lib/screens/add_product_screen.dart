@@ -9,6 +9,7 @@ import '../services/api_service.dart';
 import '../utils/image_utils.dart';
 import '../utils/top_notification.dart';
 import '../widgets/barcode_scanner_dialog.dart';
+import 'square_camera_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   final String? initialName;
@@ -250,37 +251,48 @@ class _AddProductScreenState extends State<AddProductScreen> {
     });
   }
 
-  // Выбор фото (камера или галерея) с обрезкой до 1:1 (квадрат)
+  // Выбор фото (встроенная камера 1:1 или галерея) с обрезкой до 1:1 (квадрат)
   Future<void> _pickImage(ImageSource source) async {
     try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
-        imageQuality: 92,
-      );
+      File? sourceFile;
+      if (source == ImageSource.camera) {
+        sourceFile = await SquareCameraScreen.capture(context);
+      } else {
+        final picked = await _picker.pickImage(
+          source: source,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 92,
+        );
+        if (picked != null) {
+          sourceFile = File(picked.path);
+        }
+      }
 
-      if (picked != null) {
+      if (sourceFile != null) {
         // Сохраняем во внутреннее хранилище приложения в строгом формате 1:1
         final appDir = await getApplicationDocumentsDirectory();
         final fileName = 'prod_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final targetPath = '${appDir.path}/$fileName';
 
         final savedImage = await ImageUtils.cropToSquareAndCompress(
-          File(picked.path),
+          sourceFile,
           targetPath,
           maxSize: 550,
           quality: 80,
           maxKb: 40,
         );
 
+        if (!mounted) return;
         setState(() {
           _imageFile = savedImage;
           _imageRotationTurns = 0;
         });
       }
     } catch (e) {
-      TopNotification.showError(context, 'Ошибка при загрузке фото: $e');
+      if (mounted) {
+        TopNotification.showError(context, 'Ошибка при загрузке фото: $e');
+      }
     }
   }
 
@@ -305,7 +317,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                   backgroundColor: Color(0xFF10B981),
                   child: Icon(Icons.camera_alt_rounded, color: Colors.white),
                 ),
-                title: const Text('Сделать снимок на камеру', style: TextStyle(color: Colors.white)),
+                title: const Text('Сделать снимок на камеру (1:1)', style: TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
                   _pickImage(ImageSource.camera);

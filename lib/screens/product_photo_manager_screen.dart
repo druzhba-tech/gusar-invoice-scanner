@@ -14,6 +14,7 @@ import '../utils/top_notification.dart';
 import '../widgets/barcode_scanner_dialog.dart';
 import '../widgets/product_image_widget.dart';
 import 'add_product_screen.dart';
+import 'square_camera_screen.dart';
 
 typedef LinkedProductsScreen = ProductPhotoManagerScreen;
 
@@ -1115,15 +1116,22 @@ class _ProductEditorSheetState extends State<_ProductEditorSheet> {
 
   Future<void> _pickAndCompressImage(ImageSource source) async {
     try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
-        imageQuality: 92,
-      );
+      File? originalFile;
+      if (source == ImageSource.camera) {
+        originalFile = await SquareCameraScreen.capture(context);
+      } else {
+        final picked = await _picker.pickImage(
+          source: source,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 92,
+        );
+        if (picked != null) {
+          originalFile = File(picked.path);
+        }
+      }
 
-      if (picked != null) {
-        final originalFile = File(picked.path);
+      if (originalFile != null) {
         final originalSize = await originalFile.length();
 
         final appDir = await getApplicationDocumentsDirectory();
@@ -1143,6 +1151,7 @@ class _ProductEditorSheetState extends State<_ProductEditorSheet> {
         final origMb = (originalSize / (1024 * 1024)).toStringAsFixed(1);
         final compKb = (compressedSize / 1024).toStringAsFixed(0);
 
+        if (!mounted) return;
         setState(() {
           _currentImageFile = savedFile;
           _rotationTurns = 0;
@@ -1152,7 +1161,9 @@ class _ProductEditorSheetState extends State<_ProductEditorSheet> {
         HapticFeedback.mediumImpact();
       }
     } catch (e) {
-      TopNotification.showError(context, 'Ошибка съёмки/выбора фото: $e');
+      if (mounted) {
+        TopNotification.showError(context, 'Ошибка съёмки/выбора фото: $e');
+      }
     }
   }
 
