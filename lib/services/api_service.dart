@@ -23,6 +23,7 @@ class ApiService {
 
   String? lastSubmitError;
   String? lastCreateProductError;
+  String? lastUpdateProductError;
   bool _isRefreshingToken = false;
 
   String? _extractRoleFromJwt(String token) {
@@ -1337,6 +1338,7 @@ class ApiService {
   Future<Product?> updateProduct(Product product) async {
     final idx = _cachedProducts.indexWhere((p) => p.id == product.id);
     Product? updated;
+    lastUpdateProductError = null;
 
     try {
       final payload = {
@@ -1353,10 +1355,22 @@ class ApiService {
         'storeId': currentStoreId,
       };
 
-      final response = await _dio.put(
-        '/api/products/${product.id}',
-        data: payload,
-      ).timeout(const Duration(seconds: 25));
+      Response response;
+      try {
+        response = await _dio.put(
+          '/api/products/${product.id}',
+          data: payload,
+        ).timeout(const Duration(seconds: 25));
+      } on DioException catch (dioErr) {
+        if (dioErr.response?.statusCode == 401 && await _trySilentReLogin()) {
+          response = await _dio.put(
+            '/api/products/${product.id}',
+            data: payload,
+          ).timeout(const Duration(seconds: 25));
+        } else {
+          rethrow;
+        }
+      }
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final data = response.data;
@@ -1367,8 +1381,20 @@ class ApiService {
             updated = Product.fromJson(data['product'] as Map<String, dynamic>);
           }
         }
+      } else {
+        lastUpdateProductError = 'HTTP ${response.statusCode}';
       }
+    } on DioException catch (dioErr) {
+      final code = dioErr.response?.statusCode;
+      final respData = dioErr.response?.data;
+      final serverMsg = (respData is Map)
+          ? (respData['error'] ?? respData['message'])?.toString()
+          : null;
+      lastUpdateProductError = serverMsg ??
+          (code != null ? 'Ошибка сервера (HTTP $code)' : (dioErr.message ?? 'Ошибка сети'));
+      print('Update product on gusar.tj error ($code): $lastUpdateProductError');
     } catch (e) {
+      lastUpdateProductError = e.toString();
       print('Update product on gusar.tj error: $e');
     }
 

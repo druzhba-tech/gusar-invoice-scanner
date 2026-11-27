@@ -986,6 +986,241 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
     );
   }
 
+  // 5.1 Быстрое изменение розничной цены привязанного товара
+  void _editRetailPrice(InvoiceItem item) {
+    final current = item.currentRetailPrice;
+    final initialText = (current != null && current > 0) ? current.toStringAsFixed(2) : '';
+    final retailCtrl = TextEditingController(
+      text: initialText,
+    );
+    if (initialText.isNotEmpty) {
+      retailCtrl.selection = TextSelection(baseOffset: 0, extentOffset: initialText.length);
+    }
+
+    String? errorText;
+    bool isSaving = false;
+
+    showDialog(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          final parsed = double.tryParse(retailCtrl.text.replaceAll(',', '.').trim());
+          final hasBuyPrice = item.buyPrice > 0;
+          final double? marginAmount = (parsed != null && hasBuyPrice) ? (parsed - item.buyPrice) : null;
+          final double? marginPct = (marginAmount != null && item.buyPrice > 0)
+              ? (marginAmount / item.buyPrice) * 100.0
+              : null;
+          final isLossOrZeroMargin = marginAmount != null && marginAmount <= 0;
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.sell_outlined, color: Color(0xFF38BDF8), size: 22),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Розничная цена',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.matchedProductName ?? item.rawName,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Закупка: ${item.buyPrice.toStringAsFixed(2)} TJS / ${item.unit}',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: retailCtrl,
+                    autofocus: true,
+                    enabled: !isSaving,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                    ],
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    decoration: InputDecoration(
+                      labelText: 'Новая розничная цена (TJS)',
+                      hintText: '0.00',
+                      hintStyle: const TextStyle(color: Colors.white24),
+                      labelStyle: const TextStyle(color: Colors.white60),
+                      suffixText: 'TJS',
+                      suffixStyle: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                      errorText: errorText,
+                      border: const OutlineInputBorder(),
+                      focusedBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF38BDF8), width: 1.5),
+                      ),
+                    ),
+                    onChanged: (_) {
+                      setDlgState(() => errorText = null);
+                    },
+                  ),
+                  if (marginAmount != null && marginPct != null) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: (isLossOrZeroMargin ? Colors.redAccent : const Color(0xFF10B981)).withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: (isLossOrZeroMargin ? Colors.redAccent : const Color(0xFF10B981)).withOpacity(0.35),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isLossOrZeroMargin ? Icons.warning_amber_rounded : Icons.trending_up_rounded,
+                            size: 16,
+                            color: isLossOrZeroMargin ? Colors.redAccent : const Color(0xFF10B981),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Наценка: ${marginPct >= 0 ? '+' : ''}${marginPct.toStringAsFixed(1)}% (${marginAmount >= 0 ? '+' : ''}${marginAmount.toStringAsFixed(2)} TJS)',
+                              style: TextStyle(
+                                color: isLossOrZeroMargin ? Colors.redAccent : const Color(0xFF10B981),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.pop(dlgCtx),
+                child: const Text('Отмена', style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: isSaving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.check, size: 18),
+                label: Text(isSaving ? 'Сохранение...' : 'Сохранить', style: const TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: isSaving
+                    ? null
+                    : () async {
+                        final cleanText = retailCtrl.text.replaceAll(',', '.').trim();
+                        final newPrice = double.tryParse(cleanText);
+                        if (newPrice == null || newPrice < 0) {
+                          setDlgState(() => errorText = 'Введите корректную цену');
+                          return;
+                        }
+
+                        setDlgState(() => isSaving = true);
+
+                        final roundedPrice = double.tryParse(newPrice.toStringAsFixed(2)) ?? newPrice;
+                        final targetProductId = item.matchedProductId;
+
+                        Product? matchedProd;
+                        if (targetProductId != null && targetProductId > 0) {
+                          for (final p in _api.cachedProducts) {
+                            if (p.id == targetProductId) {
+                              matchedProd = p;
+                              break;
+                            }
+                          }
+                          if (matchedProd == null && targetProductId < 100000000) {
+                            try {
+                              final catalog = await _api.getProducts();
+                              for (final p in catalog) {
+                                if (p.id == targetProductId) {
+                                  matchedProd = p;
+                                  break;
+                                }
+                              }
+                            } catch (_) {}
+                          }
+                        }
+
+                        bool updatedOnServer = false;
+                        String? serverErr;
+                        double finalPrice = roundedPrice;
+
+                        if (matchedProd != null && matchedProd.id > 0 && matchedProd.id < 100000000) {
+                          final updated = await _api.updateProduct(matchedProd.copyWith(price: roundedPrice));
+                          serverErr = _api.lastUpdateProductError;
+                          if (serverErr == null) {
+                            updatedOnServer = true;
+                            if (updated != null && updated.price >= 0) {
+                              finalPrice = updated.price;
+                            }
+                          }
+                        }
+
+                        if (mounted) {
+                          setState(() {
+                            item.currentRetailPrice = finalPrice;
+                            if (targetProductId != null) {
+                              for (final other in _doc.items) {
+                                if (other.matchedProductId == targetProductId) {
+                                  other.currentRetailPrice = finalPrice;
+                                }
+                              }
+                            }
+                          });
+                        }
+
+                        await _saveAndRefresh();
+
+                        if (dlgCtx.mounted) {
+                          Navigator.pop(dlgCtx);
+                        }
+                        if (mounted) {
+                          if (updatedOnServer) {
+                            TopNotification.showSuccess(
+                              context,
+                              'Розница обновлена в базе gusar.tj: ${finalPrice.toStringAsFixed(2)} TJS',
+                            );
+                          } else if (serverErr != null) {
+                            TopNotification.showWarning(
+                              context,
+                              'Цена ${finalPrice.toStringAsFixed(2)} TJS сохранена в накладной, но сервер не ответил: $serverErr',
+                            );
+                          } else {
+                            TopNotification.showInfo(
+                              context,
+                              'Розница в накладной обновлена: ${finalPrice.toStringAsFixed(2)} TJS',
+                            );
+                          }
+                        }
+                      },
+              ),
+            ],
+          );
+        },
+      ),
+    ).whenComplete(retailCtrl.dispose);
+  }
+
   // 5. Отвязка товара от номенклатуры gusar.tj
   void _unlinkItem(InvoiceItem item) async {
     setState(() {
@@ -2296,12 +2531,47 @@ class _InvoiceReviewScreenState extends State<InvoiceReviewScreen> {
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        Text('Штрихкод: ${item.matchedBarcode ?? 'не указан'}',
-                            style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                        const Spacer(),
-                        if (item.currentRetailPrice != null)
-                          Text('Розница: ${item.currentRetailPrice!.toStringAsFixed(2)} TJS',
-                              style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.w600)),
+                        Expanded(
+                          child: Text(
+                            'Штрихкод: ${item.matchedBarcode ?? 'не указан'}',
+                            style: const TextStyle(color: Colors.white60, fontSize: 11),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(6),
+                            onTap: () => _editRetailPrice(item),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF38BDF8).withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.35)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    item.currentRetailPrice != null
+                                        ? 'Розница: ${item.currentRetailPrice!.toStringAsFixed(2)} TJS'
+                                        : 'Розница: указать',
+                                    style: const TextStyle(
+                                      color: Color(0xFF38BDF8),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.edit_outlined, size: 12, color: Color(0xFF38BDF8)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ],
