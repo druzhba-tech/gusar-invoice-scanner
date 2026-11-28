@@ -12,6 +12,7 @@ enum DocumentStatus {
 class InvoiceDocument {
   String id;
   int storeId;
+  String? accountUsername;
   int? supplierId;
   String supplierName;
   String invoiceNumber;
@@ -31,6 +32,7 @@ class InvoiceDocument {
   InvoiceDocument({
     required this.id,
     required this.storeId,
+    this.accountUsername,
     this.supplierId,
     required this.supplierName,
     required this.invoiceNumber,
@@ -77,6 +79,7 @@ class InvoiceDocument {
     return {
       'id': id,
       'store_id': storeId,
+      'account_username': accountUsername,
       'supplier_id': supplierId,
       'supplier_name': supplierName,
       'invoice_number': invoiceNumber,
@@ -99,6 +102,7 @@ class InvoiceDocument {
     return InvoiceDocument(
       id: json['id'] ?? '',
       storeId: json['store_id'] ?? 3,
+      accountUsername: json['account_username']?.toString(),
       supplierId: json['supplier_id'],
       supplierName: json['supplier_name'] ?? 'Неизвестный поставщик',
       invoiceNumber: json['invoice_number'] ?? 'б/н',

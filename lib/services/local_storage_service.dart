@@ -45,7 +45,8 @@ class LocalStorageService {
             page_photos_json TEXT,
             status TEXT,
             is_synchronized INTEGER,
-            created_at TEXT
+            created_at TEXT,
+            account_username TEXT
           )
         ''');
 
@@ -74,6 +75,9 @@ class LocalStorageService {
           await db.execute('ALTER TABLE invoices ADD COLUMN payment_source TEXT;');
         } catch (_) {}
         try {
+          await db.execute('ALTER TABLE invoices ADD COLUMN account_username TEXT;');
+        } catch (_) {}
+        try {
           await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
         } catch (_) {}
         try {
@@ -89,6 +93,9 @@ class LocalStorageService {
     } catch (_) {}
     try {
       await db.execute('ALTER TABLE invoices ADD COLUMN payment_source TEXT;');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE invoices ADD COLUMN account_username TEXT;');
     } catch (_) {}
     try {
       await db.execute('ALTER TABLE products_cache ADD COLUMN payload_json TEXT;');
@@ -221,15 +228,17 @@ class LocalStorageService {
         'status': doc.status.name,
         'is_synchronized': doc.isSynchronized ? 1 : 0,
         'created_at': doc.createdAt.toIso8601String(),
+        'account_username': (doc.accountUsername ?? '').trim().toLowerCase(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
   // 2. Получение локальных накладных (построчное чтение без переполнения Android SQLite CursorWindow 2MB)
-  Future<List<InvoiceDocument>> getLocalInvoices({int? storeId}) async {
+  Future<List<InvoiceDocument>> getLocalInvoices({int? storeId, String? accountUsername}) async {
     try {
       final db = await database;
+      final cleanAcc = (accountUsername ?? '').trim().toLowerCase();
 
       // 1. Авто-очистка гигантских base64-строк в page_photos_json внутри движка SQLite (до создания CursorWindow!)
       try {
@@ -260,7 +269,7 @@ class LocalStorageService {
             "invoice_date, total_amount, paid_amount, payment_source, "
             "CASE WHEN LENGTH(items_json) > 1500000 THEN '' ELSE items_json END AS items_json, "
             "CASE WHEN LENGTH(page_photos_json) > 100000 THEN '[]' ELSE page_photos_json END AS page_photos_json, "
-            "status, is_synchronized, created_at "
+            "status, is_synchronized, created_at, account_username "
             "FROM invoices WHERE id = ? LIMIT 1",
             [docId],
           );
@@ -333,10 +342,18 @@ class LocalStorageService {
 
           final docDate = DateTime.tryParse(r['invoice_date']?.toString() ?? '') ?? DateTime.now();
           final createdDate = DateTime.tryParse(r['created_at']?.toString() ?? '') ?? docDate;
+          final rowUser = (r['account_username']?.toString() ?? '').trim().toLowerCase();
+          final isSyncedRow = r['is_synchronized'] == 1 || r['is_synchronized'] == true;
+
+          // Изоляция офлайн-черновиков между разными аккаунтами на одном устройстве
+          if (cleanAcc.isNotEmpty && !isSyncedRow && rowUser.isNotEmpty && rowUser != cleanAcc) {
+            continue;
+          }
 
           result.add(InvoiceDocument(
             id: docId,
             storeId: parsedStoreId,
+            accountUsername: rowUser.isNotEmpty ? rowUser : null,
             supplierId: parsedSupId,
             supplierName: r['supplier_name']?.toString() ?? 'Поставщик',
             invoiceNumber: r['invoice_number']?.toString() ?? 'б/н',

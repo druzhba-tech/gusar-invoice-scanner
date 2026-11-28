@@ -10,6 +10,16 @@ import '../utils/cyrillic_decoder.dart';
 import 'invoice_template_service.dart';
 import 'api_service.dart';
 
+/// Защита от устаревших дат с бумажных накладных (например 2024-01-01 из 1С),
+/// чтобы проведённая сегодня накладная не улетала в конец таблицы gusar.tj.
+DateTime sanitizeOcrInvoiceDate(DateTime? parsed, {DateTime? now}) {
+  final ref = now ?? DateTime.now();
+  if (parsed == null) return ref;
+  if (parsed.isBefore(ref.subtract(const Duration(days: 30)))) return ref;
+  if (parsed.isAfter(ref.add(const Duration(days: 2)))) return ref;
+  return parsed;
+}
+
 /// Определение корректного MIME-типа файла накладной для Gemini Vision API
 String detectInvoiceMimeType(String filePath) {
   final lower = filePath.toLowerCase();
@@ -842,12 +852,13 @@ class OcrService {
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
       storeId: ApiService().currentStoreId > 0 ? ApiService().currentStoreId : 1,
+      accountUsername: ApiService().currentUsername.isNotEmpty ? ApiService().currentUsername : null,
       supplierName: data['supplier_name']?.toString() ?? 'Поставщик',
       invoiceNumber: '',
       incomingNumber: data['invoice_number']?.toString() ?? 'б/н',
-      invoiceDate: data['invoice_date'] != null 
-          ? DateTime.tryParse(data['invoice_date']) ?? DateTime.now() 
-          : DateTime.now(),
+      invoiceDate: sanitizeOcrInvoiceDate(
+        data['invoice_date'] != null ? DateTime.tryParse(data['invoice_date'].toString()) : null,
+      ),
       totalAmount: double.parse(totalAmount.toStringAsFixed(2)),
       items: items,
       pagePhotos: imagePaths,
@@ -1238,10 +1249,11 @@ class OcrService {
     return InvoiceDocument(
       id: 'doc_${DateTime.now().millisecondsSinceEpoch}',
       storeId: ApiService().currentStoreId > 0 ? ApiService().currentStoreId : 1,
+      accountUsername: ApiService().currentUsername.isNotEmpty ? ApiService().currentUsername : null,
       supplierName: detectedSupplier,
       invoiceNumber: '',
       incomingNumber: detectedInvoiceNum,
-      invoiceDate: detectedDate,
+      invoiceDate: sanitizeOcrInvoiceDate(detectedDate),
       totalAmount: finalTotal,
       items: items,
       pagePhotos: imagePaths,

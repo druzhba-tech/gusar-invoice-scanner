@@ -9,6 +9,17 @@ import '../models/invoice_item.dart';
 import '../utils/image_utils.dart';
 import 'local_storage_service.dart';
 
+/// Извлекает только чистый последовательный номер накладной (1..99999),
+/// игнорируя авто-заглушки вида "№ 1502", даты или штрихкоды.
+int? extractStrictSequentialInvoiceNumber(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return null;
+  if (!RegExp(r'^\d{1,5}$').hasMatch(trimmed)) return null;
+  final parsed = int.tryParse(trimmed);
+  if (parsed == null || parsed <= 0 || parsed >= 100000) return null;
+  return parsed;
+}
+
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
@@ -17,6 +28,7 @@ class ApiService {
   late Dio _dio;
   String baseUrl = 'https://gusar.tj';
   String? authToken;
+  String currentUsername = '';
   int currentStoreId = 3; // По умолчанию магазин Мағозаи Дарё (#3)
   String currentStoreName = 'Мағозаи Дарё';
   List<Map<String, dynamic>> accessibleStores = [];
@@ -63,6 +75,7 @@ class ApiService {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('api_base_url') ?? 'https://gusar.tj';
     authToken = prefs.getString('auth_token');
+    currentUsername = (prefs.getString('logged_username') ?? prefs.getString('saved_username') ?? '').trim();
     final savedId = prefs.getInt('store_id');
     final savedName = prefs.getString('store_name');
     final lockedId = jwtLockedStoreId;
@@ -539,7 +552,8 @@ class ApiService {
             response.data['data']?['token']?.toString() ??
             'session_${DateTime.now().millisecondsSinceEpoch}';
         updateToken(token);
-        await prefs.setString('logged_username', username);
+        currentUsername = username.trim();
+        await prefs.setString('logged_username', currentUsername);
         await prefs.setBool('is_authenticated', true);
 
         // 1. Сначала подгружаем актуальный список всех магазинов базы gusar.tj
@@ -632,9 +646,14 @@ class ApiService {
         }
 
         // Выбираем итоговый userStoreId:
-        // 1. Приоритет отдаётся прямому выбору пользователя или жесткой привязке аккаунта
+        // 1. Для обычных сотрудников магазина (ADMIN/MANAGER/CASHIER/STOREKEEPER) магазин определяется
+        //    строго по его логину и паролю на сервере (serverStoreId), чтобы номера и данные никогда не путались!
+        //    Только SUPERADMIN может свободно переключать магазин на экране входа.
+        final bool isSuperRole = userRole == 'SUPERADMIN' || userRole == 'SUPER_ADMIN';
         int? userStoreId;
-        if (userExplicitlySelectedStore && preferredStoreId != null && preferredStoreId > 0) {
+        if (serverStoreId != null && serverStoreId > 0 && !isSuperRole) {
+          userStoreId = serverStoreId;
+        } else if (userExplicitlySelectedStore && preferredStoreId != null && preferredStoreId > 0) {
           userStoreId = preferredStoreId;
         } else if (serverStoreId != null && serverStoreId > 0) {
           userStoreId = serverStoreId;
@@ -843,6 +862,7 @@ class ApiService {
 
   Future<void> logout() async {
     authToken = null;
+    currentUsername = '';
     _cachedProducts = [];
     _cachedSuppliers = [];
     final prefs = await SharedPreferences.getInstance();
@@ -2007,59 +2027,103 @@ class ApiService {
   }
 
   // 6.1 Получение следующего последовательного системного номера накладной из базы gusar.tj
-  // Строго берёт max(invoice_number) с сервера + unsynced офлайн-черновики (исключая текущий документ и удалённые накладные)
+  // Строго привязано к текущему store_id (из JWT аккаунта) + локальные черновики этого же (store_id, username)
   Future<String> fetchNextSequentialInvoiceNumber({int? storeId, String? excludeDocId}) async {
     int maxNum = 0;
     final targetStoreId = jwtLockedStoreId ?? storeId ?? currentStoreId;
+    final activeUser = currentUsername.trim();
     bool gotServerData = false;
 
-    // 1. Опрашиваем онлайн-сервер gusar.tj
+    if (authToken == null || authToken!.isEmpty || authToken!.startsWith('session_')) {
+      await _trySilentReLogin();
+    }
+
+    // 1. Основной быстрый эндпоинт сервера: GET /api/purchases/next-number
     try {
-      final response = await _dio.get(
-        '/api/purchases',
-        queryParameters: {'store_id': targetStoreId, 'limit': 200},
-      ).timeout(const Duration(seconds: 7));
-      if (response.statusCode == 200 && response.data != null) {
-        dynamic items = response.data;
-        if (items is Map && items['purchases'] is List) items = items['purchases'];
-        if (items is Map && items['data'] is List) items = items['data'];
+      Response? nextResp;
+      try {
+        nextResp = await _dio.get(
+          '/api/purchases/next-number',
+          queryParameters: {'store_id': targetStoreId},
+        ).timeout(const Duration(seconds: 6));
+      } on DioException catch (dioErr) {
+        if (dioErr.response?.statusCode == 401 && await _trySilentReLogin()) {
+          nextResp = await _dio.get(
+            '/api/purchases/next-number',
+            queryParameters: {'store_id': targetStoreId},
+          ).timeout(const Duration(seconds: 6));
+        }
+      }
 
-        if (items is List) {
+      if (nextResp != null && nextResp.statusCode == 200 && nextResp.data is Map) {
+        final rawNext = nextResp.data['next_number']?.toString() ?? '';
+        final srvNext = extractStrictSequentialInvoiceNumber(rawNext);
+        final srvMax = int.tryParse(nextResp.data['max_number']?.toString() ?? '');
+        if (srvNext != null && srvNext > 0) {
           gotServerData = true;
-          for (var p in items) {
-            if (p is! Map) continue;
-            final st = (p['status'] ?? '').toString().toLowerCase();
-            if (st == 'deleted' || st == 'cancelled') continue;
-            final pSid = int.tryParse(p['store_id']?.toString() ?? '');
-            if (pSid != null && pSid > 0 && pSid != targetStoreId) continue;
+          maxNum = srvMax != null && srvMax >= 0 ? srvMax : (srvNext - 1);
+        }
+      }
+    } catch (_) {}
 
-            // Читаем строго invoice_number / invoice_no (НИКОГДА не p['id']!)
-            final inv = (p['invoice_number'] ?? p['invoice_no'] ?? '').toString().trim();
-            if (inv.isEmpty) continue;
-            final exactNum = int.tryParse(inv) ??
-                int.tryParse(RegExp(r'^\D*(\d{1,5})$').firstMatch(inv)?.group(1) ?? '');
-            if (exactNum != null && exactNum > maxNum && exactNum < 100000) {
-              maxNum = exactNum;
+    // 2. Fallback на полный список накладных магазина (если сервер ещё не обновлён)
+    if (!gotServerData) {
+      try {
+        Response? response;
+        try {
+          response = await _dio.get(
+            '/api/purchases',
+            queryParameters: {'store_id': targetStoreId, 'limit': 500},
+          ).timeout(const Duration(seconds: 7));
+        } on DioException catch (dioErr) {
+          if (dioErr.response?.statusCode == 401 && await _trySilentReLogin()) {
+            response = await _dio.get(
+              '/api/purchases',
+              queryParameters: {'store_id': targetStoreId, 'limit': 500},
+            ).timeout(const Duration(seconds: 7));
+          }
+        }
+
+        if (response != null && response.statusCode == 200 && response.data != null) {
+          dynamic items = response.data;
+          if (items is Map && items['purchases'] is List) items = items['purchases'];
+          if (items is Map && items['data'] is List) items = items['data'];
+
+          if (items is List) {
+            gotServerData = true;
+            for (var p in items) {
+              if (p is! Map) continue;
+              final pSid = int.tryParse(p['store_id']?.toString() ?? '');
+              if (pSid != null && pSid > 0 && pSid != targetStoreId) continue;
+
+              // Только чистый номер накладной этого магазина (включая аннулированные, чтобы номера не повторялись)
+              final inv = (p['invoice_number'] ?? p['invoice_no'] ?? '').toString().trim();
+              final exactNum = extractStrictSequentialInvoiceNumber(inv);
+              if (exactNum != null && exactNum > maxNum) {
+                maxNum = exactNum;
+              }
             }
           }
         }
+      } catch (e) {
+        print('Online getPurchases next num warning: $e');
       }
-    } catch (e) {
-      print('Online getPurchases next num warning: $e');
     }
 
-    // 2. Учитываем только НЕсинхронизированные офлайн-накладные этого магазина (кроме текущего открытого черновика!)
+    // 3. Учитываем только НЕсинхронизированные офлайн-накладные этого магазина И этого аккаунта
     try {
       final storage = LocalStorageService();
-      final localDocs = await storage.getLocalInvoices(storeId: targetStoreId);
+      final localDocs = await storage.getLocalInvoices(
+        storeId: targetStoreId,
+        accountUsername: activeUser.isNotEmpty ? activeUser : null,
+      );
       for (var doc in localDocs) {
         if (excludeDocId != null && doc.id == excludeDocId) continue;
-        // Если сервер ответил, синхронизированные локальные записи уже учтены выше — не даём старому кэшу завышать номер!
+        // Если сервер ответил, синхронизированные локальные записи уже учтены выше
         if (gotServerData && doc.isSynchronized) continue;
         if (doc.status == DocumentStatus.draft && !doc.isSynchronized && gotServerData) continue;
-        final cleanInv = doc.invoiceNumber.trim();
-        final n = int.tryParse(cleanInv);
-        if (n != null && n > maxNum && n < 100000) {
+        final n = extractStrictSequentialInvoiceNumber(doc.invoiceNumber);
+        if (n != null && n > maxNum) {
           maxNum = n;
         }
       }

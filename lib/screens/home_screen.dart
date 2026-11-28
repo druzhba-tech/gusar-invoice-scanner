@@ -430,11 +430,14 @@ class _HomeScreenState extends State<HomeScreen> {
       if (activeStoreId <= 0) {
         activeStoreId = prefs.getInt('store_id') ?? 3;
       }
-      final localDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
+      final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
+      final localDocs = await _storage.getLocalInvoices(
+        storeId: activeStoreId,
+        accountUsername: loggedUser,
+      );
       final String storeName = _api.currentStoreName.isNotEmpty
           ? _api.currentStoreName
           : (prefs.getString('store_name') ?? 'Склад gusar.tj');
-      final loggedUser = prefs.getString('logged_username') ?? prefs.getString('saved_username');
       final isAuth = prefs.getBool('is_authenticated') ?? false;
 
       if (mounted) {
@@ -450,7 +453,10 @@ class _HomeScreenState extends State<HomeScreen> {
       if (syncWithServer) {
         try {
           await _api.syncStoreInvoices(storeId: activeStoreId, fastOnly: true);
-          final syncedDocs = await _storage.getLocalInvoices(storeId: activeStoreId);
+          final syncedDocs = await _storage.getLocalInvoices(
+            storeId: activeStoreId,
+            accountUsername: loggedUser,
+          );
           if (mounted) {
             setState(() {
               _recentInvoices = syncedDocs;
@@ -720,6 +726,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final newDoc = InvoiceDocument(
       id: 'manual_${DateTime.now().millisecondsSinceEpoch}',
       storeId: _api.currentStoreId,
+      accountUsername: _api.currentUsername.isNotEmpty ? _api.currentUsername : _loggedUser,
       invoiceNumber: nextNumber.isNotEmpty ? nextNumber : 'б/н',
       supplierName: 'Неизвестный поставщик',
       invoiceDate: DateTime.now(),

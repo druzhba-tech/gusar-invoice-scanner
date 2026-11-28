@@ -3,6 +3,7 @@ import 'package:gusar_invoice_scanner/models/invoice_document.dart';
 import 'package:gusar_invoice_scanner/models/invoice_item.dart';
 import 'package:gusar_invoice_scanner/models/product.dart';
 import 'package:gusar_invoice_scanner/screens/barcode_verifier_screen.dart';
+import 'package:gusar_invoice_scanner/services/api_service.dart';
 import 'package:gusar_invoice_scanner/services/matching_service.dart';
 import 'package:gusar_invoice_scanner/services/ocr_service.dart';
 
@@ -120,6 +121,36 @@ void main() {
       expect(kGeminiInvoiceModels, isNot(contains('gemini-2.5-flash')));
       expect(kGeminiInvoiceModels, contains('gemini-3.5-flash-lite'));
       expect(kGeminiInvoiceModels, contains('gemini-3.1-flash-lite'));
+    });
+  });
+
+  group('Per-Store Sequential Invoice Numbering & Date Guard (v1.4.49)', () {
+    test('extractStrictSequentialInvoiceNumber accepts only pure integer numbers and ignores fallback IDs', () {
+      expect(extractStrictSequentialInvoiceNumber('13'), 13);
+      expect(extractStrictSequentialInvoiceNumber(' 15 '), 15);
+      expect(extractStrictSequentialInvoiceNumber('№ 1502'), isNull);
+      expect(extractStrictSequentialInvoiceNumber('Вх-25'), isNull);
+      expect(extractStrictSequentialInvoiceNumber('20261128'), isNull);
+      expect(extractStrictSequentialInvoiceNumber('0'), isNull);
+    });
+
+    test('sanitizeOcrInvoiceDate rejects stale years like 2024-01-01 and preserves recent dates', () {
+      final now = DateTime(2026, 11, 28, 12, 0);
+      expect(sanitizeOcrInvoiceDate(DateTime(2024, 1, 1), now: now), now);
+      expect(sanitizeOcrInvoiceDate(DateTime(2030, 1, 1), now: now), now);
+      final yesterday = DateTime(2026, 11, 27, 15, 0);
+      expect(sanitizeOcrInvoiceDate(yesterday, now: now), yesterday);
+    });
+
+    test('InvoiceDocument preserves optional accountUsername for multi-account isolation', () {
+      final doc = InvoiceDocument.fromJson({
+        'id': 'doc_1',
+        'store_id': 3,
+        'account_username': 'testadmin',
+        'items': [],
+      });
+      expect(doc.accountUsername, 'testadmin');
+      expect(doc.toJson()['account_username'], 'testadmin');
     });
   });
 }
